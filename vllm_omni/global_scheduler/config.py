@@ -20,16 +20,8 @@ class ServerConfig(BaseModel):
 class SchedulerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: str = "baseline"
     tie_breaker: str = "random"
     ewma_alpha: float = Field(default=0.2, gt=0.0, le=1.0)
-
-    @field_validator("type")
-    @classmethod
-    def validate_type(cls, value: str) -> str:
-        if value not in {"baseline", "ondisc"}:
-            raise ValueError("scheduler.type must be one of: baseline, ondisc")
-        return value
 
     @field_validator("tie_breaker")
     @classmethod
@@ -54,21 +46,10 @@ class BaselinePolicyConfig(BaseModel):
         return value
 
 
-class OnDiscPolicyConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    alpha: float = 1.0
-    beta: float = 0.2
-    gamma: float = 1.0
-    delta: float = 0.0
-    epsilon: float = 0.1
-
-
 class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     baseline: BaselinePolicyConfig = Field(default_factory=BaselinePolicyConfig)
-    ondisc: OnDiscPolicyConfig = Field(default_factory=OnDiscPolicyConfig)
 
 
 class InstanceConfig(BaseModel):

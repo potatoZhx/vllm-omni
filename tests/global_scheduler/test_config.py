@@ -15,8 +15,6 @@ def test_load_config_success(tmp_path):
             server:
               host: 0.0.0.0
               port: 8089
-            scheduler:
-              type: baseline
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
@@ -34,7 +32,6 @@ def test_load_config_success(tmp_path):
     config = load_config(config_path)
 
     assert config.server.port == 8089
-    assert config.scheduler.type == "baseline"
     assert len(config.instances) == 2
 
 
@@ -85,8 +82,6 @@ def test_load_config_baseline_algorithm_success(tmp_path):
     config_path.write_text(
         textwrap.dedent(
             """
-            scheduler:
-              type: baseline
             policy:
               baseline:
                 algorithm: fcfs
@@ -170,7 +165,7 @@ def test_load_config_legacy_sp1_keys_are_rejected(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="scheduler.type must be one of: baseline, ondisc"):
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         load_config(config_path)
 
 

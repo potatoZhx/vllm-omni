@@ -14,8 +14,6 @@ def test_health_endpoint_returns_scheduler_and_ok(tmp_path):
     config_path.write_text(
         textwrap.dedent(
             """
-            scheduler:
-              type: ondisc
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
@@ -35,11 +33,9 @@ def test_health_endpoint_returns_scheduler_and_ok(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
-    assert payload["scheduler"] == "ondisc"
     assert payload["instance_count"] == 1
     assert payload["checks"]["config_loaded"] is True
     assert payload["checks"]["has_instances"] is True
-    assert payload["checks"]["scheduler_type_valid"] is True
     assert "version" in payload
 
 
@@ -48,8 +44,6 @@ def test_health_endpoint_returns_503_when_config_missing(tmp_path):
     config_path.write_text(
         textwrap.dedent(
             """
-            scheduler:
-              type: baseline
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
@@ -72,7 +66,6 @@ def test_health_endpoint_returns_503_when_config_missing(tmp_path):
     assert payload["status"] == "degraded"
     assert payload["checks"]["config_loaded"] is False
     assert payload["checks"]["has_instances"] is False
-    assert payload["checks"]["scheduler_type_valid"] is False
 
 
 def test_load_config_missing_file_raises_clear_error(tmp_path):
@@ -90,8 +83,6 @@ def test_instance_lifecycle_control_endpoints(tmp_path):
             server:
               instance_health_check_interval_s: 100
               instance_health_check_timeout_s: 0.1
-            scheduler:
-              type: baseline
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001

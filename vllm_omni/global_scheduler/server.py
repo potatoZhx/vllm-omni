@@ -23,21 +23,16 @@ def _build_health_payload(config: Any) -> tuple[int, dict[str, Any]]:
     checks = {
         "config_loaded": isinstance(config, GlobalSchedulerConfig),
         "has_instances": False,
-        "scheduler_type_valid": False,
     }
 
-    scheduler_type = None
     instance_count = 0
     if isinstance(config, GlobalSchedulerConfig):
-        scheduler_type = config.scheduler.type
         instance_count = len(config.instances)
         checks["has_instances"] = instance_count > 0
-        checks["scheduler_type_valid"] = scheduler_type in {"baseline", "ondisc"}
 
     healthy = all(checks.values())
     payload: dict[str, Any] = {
         "status": "ok" if healthy else "degraded",
-        "scheduler": scheduler_type,
         "instance_count": instance_count,
         "checks": checks,
         "version": __version__,
