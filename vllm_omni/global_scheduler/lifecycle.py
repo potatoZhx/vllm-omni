@@ -21,6 +21,11 @@ class InstanceLifecycleStatus:
 
 class InstanceLifecycleManager:
     def __init__(self, instances: list[InstanceSpec]) -> None:
+        """Initialize lifecycle manager with configured instances.
+
+        Args:
+            instances: Initial instance specs from scheduler config.
+        """
         if not instances:
             raise ValueError("instances must not be empty")
 
@@ -52,6 +57,15 @@ class InstanceLifecycleManager:
             ]
 
     def set_enabled(self, instance_id: str, enabled: bool) -> InstanceLifecycleStatus:
+        """Set operator enabled flag for an instance.
+
+        Args:
+            instance_id: Target instance id.
+            enabled: Whether the instance should accept new traffic.
+
+        Returns:
+            A copied lifecycle status after update.
+        """
         with self._lock:
             status = self._get_status(instance_id)
             status.enabled = enabled
@@ -59,6 +73,16 @@ class InstanceLifecycleManager:
             return self._copy_status(status)
 
     def mark_health(self, instance_id: str, healthy: bool, error: str | None = None) -> InstanceLifecycleStatus:
+        """Update health-check result for an instance.
+
+        Args:
+            instance_id: Target instance id.
+            healthy: Probing result.
+            error: Optional health-check error message.
+
+        Returns:
+            A copied lifecycle status after update.
+        """
         with self._lock:
             status = self._get_status(instance_id)
             status.healthy = healthy
@@ -67,6 +91,11 @@ class InstanceLifecycleManager:
             return self._copy_status(status)
 
     def probe_all(self, timeout_s: float) -> None:
+        """Probe all enabled instances and update their health status.
+
+        Args:
+            timeout_s: TCP probing timeout in seconds.
+        """
         with self._lock:
             statuses = list(self._instances.values())
 
@@ -77,13 +106,22 @@ class InstanceLifecycleManager:
             self.mark_health(status.instance.id, healthy=healthy, error=error)
 
     def sync_instances(self, instances: list[InstanceSpec], runtime_snapshot: dict[str, RuntimeStats]) -> None:
+        """Synchronize lifecycle entries with latest configured instances.
+
+        Existing desired instances keep operator state (`enabled`/`draining`) so
+        reload does not override manual lifecycle operations. Instances removed by
+        reload are put into draining when they still have pending runtime work.
+
+        Args:
+            instances: New configured instances after reload.
+            runtime_snapshot: Runtime counters used to determine pending work.
+        """
         desired = {item.id: item for item in instances}
         with self._lock:
             for instance_id, status in list(self._instances.items()):
                 if instance_id in desired:
                     incoming = desired[instance_id]
                     status.instance = incoming
-                    status.draining = False
                     continue
 
                 current_runtime = runtime_snapshot.get(instance_id)
@@ -100,13 +138,18 @@ class InstanceLifecycleManager:
                     self._instances[instance_id] = InstanceLifecycleStatus(instance=instance)
 
     def converge_draining(self, runtime_snapshot: dict[str, RuntimeStats]) -> None:
+        """Converge draining instances based on current runtime stats.
+
+        Args:
+            runtime_snapshot: Runtime counters for all tracked instances.
+        """
         with self._lock:
             for instance_id, status in list(self._instances.items()):
                 if not status.draining:
                     continue
                 stats = runtime_snapshot.get(instance_id)
                 if stats is None or (stats.queue_len == 0 and stats.inflight == 0):
-                    if not status.enabled:
+                    if status.last_error == "removed_by_reload_draining":
                         del self._instances[instance_id]
                     else:
                         status.draining = False

@@ -37,5 +37,5 @@ class AlgorithmPolicyRouter(PolicyBase):
         runtime_stats: dict[str, RuntimeStats],
     ) -> RouteDecision:
         decision = self._delegate.select_instance(request=request, instances=instances, runtime_stats=runtime_stats)
-        decision.reason = f"algorithm={self._algorithm};{decision.reason}"
+        decision.reason = f"router={self._algorithm};{decision.reason}"
         return decision

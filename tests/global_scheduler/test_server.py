@@ -197,3 +197,38 @@ def test_reload_endpoint_returns_501_without_loader(tmp_path):
 
     response = client.post("/instances/reload")
     assert response.status_code == 501
+
+
+def test_probe_endpoint_runs_probe_in_to_thread(tmp_path, monkeypatch):
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+              instance_health_check_timeout_s: 0.1
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    app = create_app(config)
+    calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls.append((func, args, kwargs))
+        return None
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.asyncio.to_thread", _fake_to_thread)
+
+    client = TestClient(app)
+    response = client.post("/instances/probe")
+
+    assert response.status_code == 200
+    assert len(calls) == 1

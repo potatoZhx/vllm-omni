@@ -55,3 +55,39 @@ def test_reload_keeps_removed_instance_until_inflight_converges():
     assert "worker-1" not in final_manager_snapshot
     final_runtime_snapshot = store.snapshot()
     assert "worker-1" not in final_runtime_snapshot
+
+
+def test_reload_does_not_clear_operator_draining_state_for_desired_instance():
+    instances = _instances()
+    manager = InstanceLifecycleManager(instances)
+
+    manager.set_enabled("worker-0", enabled=False)
+    before_reload = manager.snapshot()
+    assert before_reload["worker-0"].draining is True
+
+    manager.sync_instances(instances, runtime_snapshot={})
+
+    after_reload = manager.snapshot()
+    assert after_reload["worker-0"].enabled is False
+    assert after_reload["worker-0"].draining is True
+
+
+def test_user_disabled_instance_is_kept_after_drain_converges():
+    instances = _instances()
+    store = RuntimeStateStore(instances=instances)
+    manager = InstanceLifecycleManager(instances)
+
+    manager.set_enabled("worker-1", enabled=False)
+    store.on_request_start("worker-1")
+
+    manager.converge_draining(store.snapshot())
+    mid = manager.snapshot()
+    assert mid["worker-1"].draining is True
+
+    store.on_request_finish("worker-1", latency_s=0.3, ok=False)
+    manager.converge_draining(store.snapshot())
+
+    final = manager.snapshot()
+    assert "worker-1" in final
+    assert final["worker-1"].enabled is False
+    assert final["worker-1"].draining is False

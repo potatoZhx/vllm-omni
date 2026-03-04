@@ -67,11 +67,16 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
     async def lifespan(app: FastAPI):
         async def _run() -> None:
             while True:
-                app.state.instance_lifecycle_manager.probe_all(
-                    timeout_s=config.server.instance_health_check_timeout_s,
+                current_config = getattr(app.state, "global_scheduler_config", config)
+                timeout_s = current_config.server.instance_health_check_timeout_s
+                interval_s = current_config.server.instance_health_check_interval_s
+
+                await asyncio.to_thread(
+                    app.state.instance_lifecycle_manager.probe_all,
+                    timeout_s,
                 )
                 app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
-                await asyncio.sleep(config.server.instance_health_check_interval_s)
+                await asyncio.sleep(interval_s)
 
         app.state.health_probe_task = asyncio.create_task(_run())
         try:
@@ -169,7 +174,11 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
 
     @app.post("/instances/probe")
     async def probe_instances() -> JSONResponse:
-        app.state.instance_lifecycle_manager.probe_all(timeout_s=config.server.instance_health_check_timeout_s)
+        current_config = getattr(app.state, "global_scheduler_config", config)
+        await asyncio.to_thread(
+            app.state.instance_lifecycle_manager.probe_all,
+            current_config.server.instance_health_check_timeout_s,
+        )
         app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
         return JSONResponse(status_code=200, content={"status": "ok"})
 
