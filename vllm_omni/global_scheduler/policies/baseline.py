@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from vllm_omni.global_scheduler.policies.base import BasePolicy
+from vllm_omni.global_scheduler.policies.baseline_estimated_completion_time import (
+    BaselineEstimatedCompletionTimePolicy,
+)
 from vllm_omni.global_scheduler.policies.baseline_fcfs import BaselineFCFSPolicy
 from vllm_omni.global_scheduler.policies.baseline_short_queue_runtime import BaselineShortQueueRuntimePolicy
 from vllm_omni.global_scheduler.policies.runtime_estimator import RuntimeEstimator
@@ -16,6 +19,11 @@ class BaselinePolicy(BasePolicy):
             self._delegate = BaselineFCFSPolicy(tie_breaker=tie_breaker)
         elif algorithm == "short_queue_runtime":
             self._delegate = BaselineShortQueueRuntimePolicy(
+                tie_breaker=tie_breaker,
+                estimator=RuntimeEstimator(),
+            )
+        elif algorithm == "estimated_completion_time":
+            self._delegate = BaselineEstimatedCompletionTimePolicy(
                 tie_breaker=tie_breaker,
                 estimator=RuntimeEstimator(),
             )
