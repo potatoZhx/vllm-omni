@@ -13,20 +13,22 @@ class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8089, ge=1, le=65535)
     request_timeout_s: int = Field(default=1800, ge=1)
+    instance_health_check_interval_s: float = Field(default=5.0, gt=0.0)
+    instance_health_check_timeout_s: float = Field(default=1.0, gt=0.0)
 
 
 class SchedulerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: str = "baseline_sp1"
+    type: str = "baseline"
     tie_breaker: str = "random"
     ewma_alpha: float = Field(default=0.2, gt=0.0, le=1.0)
 
     @field_validator("type")
     @classmethod
     def validate_type(cls, value: str) -> str:
-        if value not in {"baseline_sp1", "ondisc_sp1"}:
-            raise ValueError("scheduler.type must be one of: baseline_sp1, ondisc_sp1")
+        if value not in {"baseline", "ondisc"}:
+            raise ValueError("scheduler.type must be one of: baseline, ondisc")
         return value
 
     @field_validator("tie_breaker")
@@ -40,13 +42,15 @@ class SchedulerConfig(BaseModel):
 class BaselinePolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: str = "ect"
+    algorithm: str = "fcfs"
 
-    @field_validator("mode")
+    @field_validator("algorithm")
     @classmethod
-    def validate_mode(cls, value: str) -> str:
-        if value not in {"shortest_queue", "ect"}:
-            raise ValueError("policy.baseline_sp1.mode must be one of: shortest_queue, ect")
+    def validate_algorithm(cls, value: str) -> str:
+        if value not in {"fcfs", "short_queue_runtime", "estimated_completion_time"}:
+            raise ValueError(
+                "policy.baseline.algorithm must be one of: fcfs, short_queue_runtime, estimated_completion_time"
+            )
         return value
 
 
@@ -63,8 +67,8 @@ class OnDiscPolicyConfig(BaseModel):
 class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    baseline_sp1: BaselinePolicyConfig = Field(default_factory=BaselinePolicyConfig)
-    ondisc_sp1: OnDiscPolicyConfig = Field(default_factory=OnDiscPolicyConfig)
+    baseline: BaselinePolicyConfig = Field(default_factory=BaselinePolicyConfig)
+    ondisc: OnDiscPolicyConfig = Field(default_factory=OnDiscPolicyConfig)
 
 
 class InstanceConfig(BaseModel):
