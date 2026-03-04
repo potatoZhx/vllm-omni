@@ -22,6 +22,8 @@ class RuntimeStateStore:
 
         self._ewma_alpha = ewma_alpha
         self._lock = RLock()
+        self._default_ewma_service_time_s = default_ewma_service_time_s
+        self._draining_instance_ids: set[str] = set()
         self._stats: dict[str, RuntimeStats] = {
             instance.id: RuntimeStats(
                 queue_len=0,
@@ -38,6 +40,30 @@ class RuntimeStateStore:
         """Return an immutable snapshot copy of all instance runtime stats."""
         with self._lock:
             return {instance_id: replace(stats) for instance_id, stats in self._stats.items()}
+
+    def sync_instances(self, instances: list[InstanceSpec]) -> None:
+        with self._lock:
+            desired_ids = {instance.id for instance in instances}
+
+            for instance_id in list(self._stats):
+                if instance_id in desired_ids:
+                    self._draining_instance_ids.discard(instance_id)
+                    continue
+
+                stats = self._stats[instance_id]
+                if stats.queue_len == 0 and stats.inflight == 0:
+                    del self._stats[instance_id]
+                    self._draining_instance_ids.discard(instance_id)
+                else:
+                    self._draining_instance_ids.add(instance_id)
+
+            for instance in instances:
+                if instance.id not in self._stats:
+                    self._stats[instance.id] = RuntimeStats(
+                        queue_len=0,
+                        inflight=0,
+                        ewma_service_time_s=self._default_ewma_service_time_s,
+                    )
 
     def on_request_start(self, instance_id: str) -> RuntimeStats:
         with self._lock:
@@ -57,6 +83,11 @@ class RuntimeStateStore:
                 stats.ewma_service_time_s = (
                     self._ewma_alpha * latency_s + (1.0 - self._ewma_alpha) * stats.ewma_service_time_s
                 )
+
+            if instance_id in self._draining_instance_ids and stats.queue_len == 0 and stats.inflight == 0:
+                self._draining_instance_ids.remove(instance_id)
+                del self._stats[instance_id]
+                return RuntimeStats(queue_len=0, inflight=0, ewma_service_time_s=stats.ewma_service_time_s)
 
             return replace(stats)
 

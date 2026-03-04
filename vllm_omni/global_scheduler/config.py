@@ -13,6 +13,8 @@ class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8089, ge=1, le=65535)
     request_timeout_s: int = Field(default=1800, ge=1)
+    instance_health_check_interval_s: float = Field(default=5.0, gt=0.0)
+    instance_health_check_timeout_s: float = Field(default=1.0, gt=0.0)
 
 
 class SchedulerConfig(BaseModel):
@@ -40,13 +42,15 @@ class SchedulerConfig(BaseModel):
 class BaselinePolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: str = "ect"
+    mode: str = "estimated_completion_time"
 
     @field_validator("mode")
     @classmethod
     def validate_mode(cls, value: str) -> str:
-        if value not in {"shortest_queue", "ect"}:
-            raise ValueError("policy.baseline_sp1.mode must be one of: shortest_queue, ect")
+        if value not in {"shortest_queue", "estimated_completion_time"}:
+            raise ValueError(
+                "policy.baseline_sp1.mode must be one of: shortest_queue, estimated_completion_time"
+            )
         return value
 
 

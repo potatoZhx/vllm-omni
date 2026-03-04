@@ -71,3 +71,31 @@ def test_unknown_instance_raises_key_error():
 
     with pytest.raises(KeyError, match="Unknown instance id"):
         store.on_request_start("missing-worker")
+
+
+def test_sync_instances_adds_and_removes_idle_instances():
+    store = _make_store()
+
+    store.sync_instances([InstanceSpec(id="worker-2", endpoint="http://127.0.0.1:9003", max_concurrency=2)])
+    snapshot = store.snapshot()
+
+    assert "worker-0" not in snapshot
+    assert "worker-1" not in snapshot
+    assert "worker-2" in snapshot
+
+
+def test_sync_instances_keeps_draining_instance_until_finish_converges():
+    store = _make_store()
+    store.on_request_start("worker-1")
+
+    store.sync_instances([InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2)])
+    after_sync = store.snapshot()
+    assert "worker-1" in after_sync
+    assert after_sync["worker-1"].inflight == 1
+
+    finished = store.on_request_finish("worker-1", latency_s=0.8, ok=False)
+    assert finished.queue_len == 0
+    assert finished.inflight == 0
+
+    final_snapshot = store.snapshot()
+    assert "worker-1" not in final_snapshot
