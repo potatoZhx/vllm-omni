@@ -32,7 +32,7 @@ def _build_health_payload(config: Any) -> tuple[int, dict[str, Any]]:
         scheduler_type = config.scheduler.type
         instance_count = len(config.instances)
         checks["has_instances"] = instance_count > 0
-        checks["scheduler_type_valid"] = scheduler_type in {"baseline_sp1", "ondisc_sp1"}
+        checks["scheduler_type_valid"] = scheduler_type in {"baseline", "ondisc"}
 
     healthy = all(checks.values())
     payload: dict[str, Any] = {

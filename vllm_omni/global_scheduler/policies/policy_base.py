@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta, RouteDecision, RuntimeStats
 
 
-class BasePolicy(ABC):
+class PolicyBase(ABC):
     def __init__(self, tie_breaker: str = "random") -> None:
         if tie_breaker not in {"random", "lexical"}:
             raise ValueError("tie_breaker must be one of: random, lexical")

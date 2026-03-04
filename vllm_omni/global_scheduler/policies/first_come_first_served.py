@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from vllm_omni.global_scheduler.policies.base import BasePolicy
+from vllm_omni.global_scheduler.policies.policy_base import PolicyBase
 from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta, RouteDecision, RuntimeStats
 
 
-class BaselineFCFSPolicy(BasePolicy):
+class FirstComeFirstServedPolicy(PolicyBase):
     def select_instance(
         self,
         request: RequestMeta,

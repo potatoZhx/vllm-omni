@@ -1,13 +1,13 @@
 import pytest
 
-from vllm_omni.global_scheduler.policies.baseline_fcfs import BaselineFCFSPolicy
+from vllm_omni.global_scheduler.policies.first_come_first_served import FirstComeFirstServedPolicy
 from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta, RuntimeStats
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
 def test_fcfs_selects_first_available_instance():
-    policy = BaselineFCFSPolicy(tie_breaker="lexical")
+    policy = FirstComeFirstServedPolicy(tie_breaker="lexical")
     request = RequestMeta(request_id="r1")
     instances = [
         InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
@@ -26,7 +26,7 @@ def test_fcfs_selects_first_available_instance():
 
 
 def test_fcfs_falls_back_to_lexical_when_all_busy():
-    policy = BaselineFCFSPolicy(tie_breaker="lexical")
+    policy = FirstComeFirstServedPolicy(tie_breaker="lexical")
     request = RequestMeta(request_id="r2")
     instances = [
         InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=1),
