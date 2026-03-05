@@ -54,7 +54,7 @@ Usage:
         --backend v1/videos --dataset random --task t2v --num-prompts 1 \
         --max-concurrency 1 --enable-negative-prompt \
         --random-request-config '[
-            {"width":854,"height":480,"num_inference_steps":18,"num_frames":120,"fps":24,"weight":1},
+            {"width":854,"height":480,"num_inference_steps":18,"num_frames":120,"fps":24,"weight":1}
         ]'
 
 
