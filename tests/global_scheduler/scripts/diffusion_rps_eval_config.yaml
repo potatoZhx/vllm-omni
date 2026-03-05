@@ -1,0 +1,60 @@
+hf:
+  endpoint: "https://hf-mirror.com"
+  # auto | true | false
+  enable_hf_transfer: auto
+
+runtime:
+  run_root: "./benchmark_outputs/global_scheduler"
+  run_name_prefix: "run_"
+  timestamp_format: "%Y%m%d-%H%M%S"
+  log_dir_name: "logs"
+  config_dir_name: "configs"
+
+deployment:
+  manage_services: true
+  num_gpus: 1
+  num_instances: 1
+  serving_model: "Qwen/Qwen-Image"
+  instance_host: "127.0.0.1"
+  instance_port_base: 19091
+  instance_gpu_map: [3]
+  instance_extra_args:
+    - "--gpu-memory-utilization"
+    - "0.9"
+  stage_config_path: ""
+  instance_max_concurrency: 100000
+  instance_health_timeout_s: 1200
+  auto_kill_port_owner: 0
+  scheduler_host: "127.0.0.1"
+  scheduler_port: 18089
+  scheduler_algorithm: "estimated_completion_time"
+  scheduler_tie_breaker: "random"
+  scheduler_ewma_alpha: 0.2
+
+benchmark:
+  benchmark_name: "qwen_image_trace_t2i"
+  benchmark_tool: "diffusion_serving"
+  model: "Qwen/Qwen-Image"
+  endpoint: "/v1/chat/completions"
+  backend: "vllm-omni"
+  task: "t2i"
+  dataset: "trace"
+  dataset_path: ""
+  run_mode: "duration"
+  rps_values: [0.5]
+  total_duration_s: 1800
+  percentile_metrics: "e2el"
+  metric_percentiles: "95"
+  latency_metric: "e2el"
+  slo_metric: "e2el"
+  slo_base_latency_ms: 8000
+  slo_multiplier: 1.2
+  max_retries: 1
+  extra_bench_args:
+    max_concurrency: 100000
+    warmup_requests: 1
+    warmup_num_inference_steps: 1
+    num_inference_steps: 50
+    disable_tqdm: true
+    slo: true
+    slo_scale: 3.0
