@@ -6,7 +6,7 @@ This document describes how to deploy and benchmark **Wan-AI/Wan2.2-T2V-A14B-Dif
 
 # 1. Overview
 
-Wan-AI/Wan2.2-T2V-A14B-Diffusers is a multimodal text-to-image generation model served through the vLLM-Omni infrastructure.
+Wan-AI/Wan2.2-T2V-A14B-Diffusers is a multimodal text-to-video generation model served through the vLLM-Omni infrastructure.
 
 This document covers:
 
@@ -29,7 +29,7 @@ This document covers:
 ## 3.1 Basic Serving Command
 
 ```bash
-vllm serve Qwen/Qwen-Image --omni \
+vllm serve Wan-AI/Wan2.2-T2V-A14B-Diffusers --omni \
     --port 8091
 ```
 
