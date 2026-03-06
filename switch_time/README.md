@@ -1,76 +1,29 @@
-# 特性切换耗时测试（配置 1 ↔ 配置 26）
+# switch_time：配置切换与性能评测脚本
 
-在 **不修改 vllm-omni-2 项目源码** 的前提下，通过重复「起服 → 停服 → 起另一配置」测量 **Stop / Startup-to-Ready / Switch** 时间。
+在 **vLLM-Omni** 上测试「不同并行配置（SP/CFG/TP 等）下服务器启停与推理耗时」，不修改仓库源码，仅通过 `vllm serve` CLI 与 HTTP 接口完成。适用于 Qwen-Image 与 Wan2.2 等扩散模型。
 
-- **配置 1（c1）**：SP=1 基准（1 卡，Cache=none，CFG=1，TP=1，无 CPU Offload，无 FP8）
-- **配置 26（c26）**：SP=8 + FP8（8 卡，`--ulysses-degree 8`，可选 `--quantization-config` 开启 FP8）
+---
 
-**不向实例发推理请求**：脚本只轮询 `GET /v1/models` 判定就绪，不调用 T2I 或任何生成接口。
+## 文件说明
 
-## 是否需要改项目源码
+| 文件 | 作用 |
+|------|------|
+| **run_switch_all.sh** | 特性切换耗时：26 种配置（含 cache/FP8/cpu_offload 等）**分开测**，每配置「1 次首次启动 + 10 次停→起」。不发起推理，仅轮询 `/v1/models` 判就绪，输出 Stop/Startup/Switch 均值与标准差。 |
+| **run_switch_parallel.sh** | Qwen-Image **并行表**：16 种 GPU=SP×CFG×TP 组合，每配置「1 次首次 + 5 次停→起」。不推理，仅轮询就绪。输出 CSV 与统计到 `qwen_parallel_log/`。可 `sbatch` 或直接 `bash`。 |
+| **run_switch_parallel_wan.sh** | Wan2.2 **并行表**：23 种配置（TP 套件 + Ring 冒烟 + HSDP P0），逻辑同 `run_switch_parallel.sh`，模型为 `Wan-AI/Wan2.2-T2V-A14B-Diffusers`，日志到 `wan_parallel_log/`。 |
+| **test_qwen_profile.sh** | Qwen-Image **文生图性能画像**：按 `profile.md` 的 20 个数据项（分辨率×步数）× 9 种配置，对每个组合发 5 次真实 `/v1/images/generations` 请求，记录单次完成时间与 run2~5 均值。结果追加到 `logs/` 下 CSV 与结果日志。 |
+| **profile.md** | Qwen-Image 实验说明、数据项/配置定义、**实验结果记录**（请求完成时间均值、冷启动、run1 首请求等表格）。 |
+| **Qwen-Image-特性切换测试说明表.md** | Qwen-Image 特性切换测试的说明与结果表（与 profile 互补）。 |
+| **并行测试表_qwen.md** | 汇总 run_switch_parallel.sh 的 **16 配置** 结果：首次 Startup、Stop/Startup/Switch 的 μ 与 σ。 |
+| **并行测试表_wan.md** | 汇总 run_switch_parallel_wan.sh 的 **多配置** 结果：同上。 |
+| **image/** | 结果图表（如特性切换结果表相关图片）。 |
+| **logs/** | 各脚本生成的运行日志、CSV、server 日志（可按需加入 .gitignore）。 |
 
-**不需要。** 仅通过 `vllm serve ...` 的 CLI 参数切换配置，用 shell 计时、轮询 `/v1/models` 判定 Ready，所有结果与日志落在本目录下。
+脚本均依赖同目录或上级的 **setup_env.sh**（若存在）做环境准备；支持 `START_CONFIG`、`START_DATA_ITEM` 等环境变量续跑或跳过部分配置/数据项。
 
-## 集群资源建议（A100）
+---
 
-根据 [SAIKS HPC 用户指南](https://saids.hpc.gleamoe.com/) 的推荐：**每申请 1 张 GPU 卡搭配 16 核 CPU 和 128 GB 内存**。本测试需 8 卡，因此推荐：
+## 使用方式
 
-- **GPU**：`--gres=gpu:8`
-- **CPU**：`--cpus-per-task=128`（8 × 16）
-- **内存**：`--mem=1024G`（8 × 128 GB）
-- **任务数**：`-n 1`（只跑一个进程，避免多 task 抢同一端口）
-
-脚本内已按上述写入 `#SBATCH`；若你站点的 A100 分区有不同规范，可自行改 `--cpus-per-task` / `--mem`。
-
-## 用法
-
-1. 将整个 **vllm-omni-2** 传到集群登录节点（如 [SAIKS HPC](https://saids.hpc.gleamoe.com/)）。
-2. （可选）你可以手动先运行一次 `setup_env.sh`，预先创建/升级环境：
-   ```bash
-   cd /path/to/vllm-omni-2/switch_time
-   bash setup_env.sh
-   ```
-   若环境已存在，`setup_env.sh` 会激活并升级依赖；否则创建 conda 环境并安装 vllm + `pip install -e .`。
-3. **运行切换测试**：脚本会在开头自动调用同目录下的 `setup_env.sh`（除非设置了 `SKIP_SETUP_ENV=1`）：
-   - 全表 26 配置：`bash run_switch_all.sh` 或 `sbatch run_switch_all.sh`
-   - 仅 16 种并行组合：`bash run_switch_parallel.sh` 或 `sbatch run_switch_parallel.sh`
-4. 结果与日志在 `switch_time/logs/`；运行结束会打印各配置的 mean/std 到 `*_stats.log`。
-
-### 测试表中所有配置（run_switch_all.sh）
-
-若需**同时覆盖测试表 5.2 中全部 26 种配置**的切换耗时，使用同目录的 `run_switch_all.sh`：
-
-- **策略（分开测）**：与说明表一致，**配置 1 测完再测配置 2**，依次到 26，每种配置的测试彼此独立。对每个配置：先做 **1 次首次启动**（单独记录「首次 Startup(s)」，不参与 mean/std），再做 **10 次「停→起」**（停本配置 → 起本配置），得到该配置的 Stop/Startup/Switch 的 10 个样本并算 mean/std（共 11 次/配置）。
-- **参数**：默认 `NUM_SAMPLES=10`（每配置 10 次停→起）；总次数 = 26 配置 ×（1 首次 + 10 样本）= 26×11 次启动。
-- **资源**：需 8 卡（部分配置用 1/2/4 卡），SBATCH 已写 72 小时，建议用 sbatch 提交。
-- **输出**：`logs/switch_all_*.csv` 列含 `config_id,run,first_startup_s,stop_s,startup_s,switch_s,ready_poll_s`（run=0 为首次启动行，run=1..10 为样本行）；`*_stats.log` 按 `config_id` 汇总每配置的首次 Startup、Stop/Startup/Switch 的 mean/std。
-- **运行**：`bash run_switch_all.sh` 或 `sbatch run_switch_all.sh`（同样会先调用 `setup_env.sh`）。
-
-### 仅并行组合（run_switch_parallel.sh，对应《并行测试表》）
-
-若只测 **GPU=SP×CFG×TP** 的 16 种组合（无 Cache/CPU Offload/FP8），用同目录的 `run_switch_parallel.sh`：
-
-- **配置范围**：与 `并行测试表.md` 一致，共 16 个配置（编号 1～16），仅 SP/CFG/TP 组合。
-- **样本数**：每配置 **5 次**（1 次首次启动 + 5 次「停→起」），可通过 `NUM_SAMPLES=5` 覆盖。
-- **错误放弃**：每配置内统计两类错误并累计：① 未就绪（首次或某次样本 `wait_ready` 超时）；② 该轮 server 日志中新增了 ERROR 行（每轮至多计 1 次）。当累计达到 **10 次**（默认 `CONFIG_ERROR_LIMIT=10`）即放弃本配置、进入下一配置。
-- **日志累计 ERROR 检测**：每个样例（首次或某次停→起）结束后统计**本配置** server 日志中累计 ERROR 关键字个数；若超过 **20**（默认 `LOG_ERROR_LIMIT=20`），则报错并**放弃整个配置**（停止该配置后续样例，测下一配置）。
-- **输出目录**：`switch_time/qwen_parallel_log/`，内含 `switch_parallel_*.csv`、`run_parallel_*.log`、`server_parallel_c{N}_*.log`，统计写进 `*_stats.log`。
-- **运行**：`bash run_switch_parallel.sh` 或 `sbatch run_switch_parallel.sh`。
-
-## 自检（配置是否生效）
-
-- 脚本开头会打印 **实际使用的 c1/c26 命令行** 及 `vllm serve -h` 中与 ulysses/ring/parallel 相关的参数。
-- 第一次启动配置 26 后，会从对应 server 日志里 **grep** 是否出现 `Applying sequence parallelism` 或 `ulysses=`/`sp_size=` 等，便于核对 headless 路径下 SP 是否真生效。
-
-## 计时方式与精度
-
-- **Stop**：以 **PGID（进程组 ID）** 为目标：`kill -TERM -PGID` → 轮询进程组是否清空（最多 30s）→ 未清空则 `kill -KILL -PGID`；停后调用 `cleanup_gpu_residuals` 清理可能残留的 multiprocessing.spawn 孤儿进程（PPID=1）。
-- **Startup**：在启动命令执行前打点，轮询 `/v1/models` 返回 200 时再打点，差值为 Startup-to-Ready。
-- **精度**：`date +%s.%N` 为秒+纳秒；实际误差主要来自 curl 轮询间隔（1s），对几十秒级启动时间一般可接受。
-
-## 输出说明
-
-- `logs/run_*.log`：当次运行的标准输出（含自检与配置命令）。
-- `logs/server_*.log`：当次 vllm serve 的 stdout/stderr，便于排查启动失败或核对 SP 日志。
-- **run_switch_all**：`logs/switch_all_*.csv`、`logs/run_all_*.log`、`logs/server_c{N}_*.log`（按配置编号 N 分文件，每配置一个 server 日志）。
-- **run_switch_parallel**：输出在 `qwen_parallel_log/`，含 `switch_parallel_*.csv`、`run_parallel_*.log`、`server_parallel_c{N}_*.log`（16 种并行组合，每配置 5 次样本；单样例日志 ERROR 超 20 则报错并测下一样例，配置累计错误达 10 则放弃本配置）。
+- 在 `switch_time` 目录下激活 conda 后执行：`bash run_switch_parallel.sh` 或 `sbatch run_switch_parallel.sh`（其它脚本同理）。
+- 可选环境变量见各脚本头部注释（如 `START_CONFIG=8` 从第 8 个配置起测）。
