@@ -1,0 +1,8 @@
+{
+  "height_width": [
+    [768, 432],
+    [768, 1360]
+  ],
+  "num_frames": [17, 33, 65, 81],
+  "num_inference_steps": [30, 40, 50]
+}

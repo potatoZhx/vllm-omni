@@ -1,0 +1,183 @@
+global:
+  model: /home/wtz2333/model/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
+  host: 127.0.0.1
+  port: 8091
+  ready_path: /v1/models
+  request_path: /v1/images/generations
+  ready_timeout_sec: 600
+  poll_interval_sec: 2
+  stop_timeout_sec: 60
+  max_gpu_per_case: 4
+  log_root: ./image_steps_results
+
+  # Request benchmark settings
+  prompt: a cute corgi wearing sunglasses, highly detailed, natural lighting
+  negative_prompt: blurry, low quality, deformed
+  num_outputs: 1
+  warmup_runs_per_combo: 1
+  measured_runs_per_combo: 5
+  request_timeout_sec: 1800
+  inter_run_sleep_sec: 0
+  seed_base: 2026
+  use_fixed_seed: false
+
+  # Target matrix
+  resolutions:
+    - 128x128
+    - 256x256
+    - 512x512
+    - 768x768
+    - 1024x1024
+    - 1536x1536
+  step_values:
+    - 5
+    - 10
+    - 50
+
+  # Extra args appended to `vllm serve`
+  extra_cli_args: []
+
+cases:
+  - id: 1
+    name: sp1-cfg1-tp1-baseline
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 2
+    name: sp1-cfg1-tp2
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 3
+    name: sp1-cfg1-tp4
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 4
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 4
+    name: sp1-cfg1-tp8
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 8
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 5
+    name: sp1-cfg2-tp1
+    enabled: true
+    sp: 1
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 6
+    name: sp1-cfg2-tp2
+    enabled: true
+    sp: 1
+    cfg: 2
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 7
+    name: sp1-cfg2-tp4
+    enabled: true
+    sp: 1
+    cfg: 2
+    tp: 4
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 8
+    name: sp2-cfg1-tp1
+    enabled: true
+    sp: 2
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 9
+    name: sp2-cfg1-tp2
+    enabled: true
+    sp: 2
+    cfg: 1
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 10
+    name: sp2-cfg1-tp4
+    enabled: true
+    sp: 2
+    cfg: 1
+    tp: 4
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 11
+    name: sp2-cfg2-tp1
+    enabled: true
+    sp: 2
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 12
+    name: sp2-cfg2-tp2
+    enabled: true
+    sp: 2
+    cfg: 2
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 13
+    name: sp4-cfg1-tp1
+    enabled: true
+    sp: 4
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 14
+    name: sp4-cfg1-tp2
+    enabled: true
+    sp: 4
+    cfg: 1
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 15
+    name: sp4-cfg2-tp1
+    enabled: true
+    sp: 4
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 16
+    name: sp8-cfg1-tp1
+    enabled: true
+    sp: 8
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true

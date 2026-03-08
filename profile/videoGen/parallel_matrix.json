@@ -1,0 +1,259 @@
+{
+  "1": [
+    {
+      "name": "baseline",
+      "enabled": true,
+      "vae_patch_parallel_size": 1,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    }
+  ],
+  "2": [
+    {
+      "name": "tp2",
+      "enabled": true,
+      "vae_patch_parallel_size": 2,
+      "tensor_parallel_size": 2,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "usp2",
+      "enabled": true,
+      "vae_patch_parallel_size": 2,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 2,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "usp2_hsdp",
+      "enabled": true,
+      "vae_patch_parallel_size": 2,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 2,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1,
+      "use_hsdp": true
+    },
+    {
+      "name": "cfg2",
+      "enabled": true,
+      "vae_patch_parallel_size": 2,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2
+    },
+    {
+      "name": "cfg2_hsdp",
+      "enabled": true,
+      "vae_patch_parallel_size": 2,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2,
+      "use_hsdp": true
+    },
+    {
+      "name": "hsdp2",
+      "enabled": true,
+      "vae_patch_parallel_size": 2,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1,
+      "use_hsdp": true,
+      "hsdp_shard_size": 2,
+      "hsdp_replicate_size": 1
+    }
+  ],
+  "4": [
+    {
+      "name": "tp4",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 4,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "usp4",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 4,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "usp4_hsdp",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 4,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1,
+      "use_hsdp": true
+    },
+    {
+      "name": "tp2_usp2",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 2,
+      "ulysses_degree": 2,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "tp2_cfg2",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 2,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2
+    },
+    {
+      "name": "usp2_cfg2",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 2,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2
+    },
+    {
+      "name": "usp2_cfg2_hsdp",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 2,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2,
+      "use_hsdp": true
+    },
+    {
+      "name": "hsdp4",
+      "enabled": true,
+      "vae_patch_parallel_size": 4,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1,
+      "use_hsdp": true,
+      "hsdp_shard_size": 4,
+      "hsdp_replicate_size": 1
+    }
+  ],
+  "8": [
+    {
+      "name": "tp8",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 8,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "sp8_ulysses",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 8,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "sp8_ulysses_hsdp",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 8,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1,
+      "use_hsdp": true
+    },
+    {
+      "name": "tp2_sp4",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 2,
+      "ulysses_degree": 4,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "tp4_sp2",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 4,
+      "ulysses_degree": 2,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1
+    },
+    {
+      "name": "tp4_cfg2",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 4,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2
+    },
+    {
+      "name": "tp2_sp2_cfg2",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 2,
+      "ulysses_degree": 2,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2
+    },
+    {
+      "name": "sp4_hybrid_2x2_cfg2",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 2,
+      "ring_degree": 2,
+      "cfg_parallel_size": 2
+    },
+    {
+      "name": "sp4_cfg2",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 4,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2
+    },
+    {
+      "name": "sp4_cfg2_hsdp",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 4,
+      "ring_degree": 1,
+      "cfg_parallel_size": 2,
+      "use_hsdp": true
+    },
+    {
+      "name": "hsdp8",
+      "enabled": true,
+      "vae_patch_parallel_size": 8,
+      "tensor_parallel_size": 1,
+      "ulysses_degree": 1,
+      "ring_degree": 1,
+      "cfg_parallel_size": 1,
+      "use_hsdp": true,
+      "hsdp_shard_size": 8,
+      "hsdp_replicate_size": 1
+    }
+  ]
+}

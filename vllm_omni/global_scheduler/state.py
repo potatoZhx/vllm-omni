@@ -31,6 +31,8 @@ class RuntimeStateStore:
         self._lock = RLock()
         self._default_ewma_service_time_s = default_ewma_service_time_s
         self._draining_instance_ids: set[str] = set()
+        self._default_ewma_service_time_s = default_ewma_service_time_s
+        self._draining_instance_ids: set[str] = set()
         self._stats: dict[str, RuntimeStats] = {
             instance.id: RuntimeStats(
                 queue_len=0,
@@ -113,6 +115,11 @@ class RuntimeStateStore:
                 stats.ewma_service_time_s = (
                     self._ewma_alpha * latency_s + (1.0 - self._ewma_alpha) * stats.ewma_service_time_s
                 )
+
+            if instance_id in self._draining_instance_ids and stats.queue_len == 0 and stats.inflight == 0:
+                self._draining_instance_ids.remove(instance_id)
+                del self._stats[instance_id]
+                return RuntimeStats(queue_len=0, inflight=0, ewma_service_time_s=stats.ewma_service_time_s)
 
             if instance_id in self._draining_instance_ids and stats.queue_len == 0 and stats.inflight == 0:
                 self._draining_instance_ids.remove(instance_id)

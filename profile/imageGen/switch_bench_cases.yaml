@@ -1,0 +1,94 @@
+global:
+  model: /home/wtz2333/model/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
+  host: 127.0.0.1
+  port: 8091
+  ready_path: /v1/models
+  ready_timeout_sec: 600
+  poll_interval_sec: 2
+  measured_runs: 20
+  stop_timeout_sec: 60
+  max_gpu_per_case: 4
+  log_root: ./image_switch_results
+  extra_cli_args: []
+
+cases:
+  - id: 1
+    name: sp1-baseline
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 4
+    name: sp1-cfg2
+    enabled: true
+    sp: 1
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 5
+    name: sp1-tp2
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 6
+    name: sp1-tp4
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 4
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 10
+    name: sp2-baseline
+    enabled: true
+    sp: 2
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 13
+    name: sp2-cfg2
+    enabled: true
+    sp: 2
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 14
+    name: sp2-tp2
+    enabled: true
+    sp: 2
+    cfg: 1
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 17
+    name: sp4-baseline
+    enabled: true
+    sp: 4
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 27
+    name: sp1-vae-slicing-tiling
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
