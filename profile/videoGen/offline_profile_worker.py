@@ -186,6 +186,7 @@ def _save_payload(
     order_map: dict[str, int],
     planned_total: int,
     warmup_done: bool,
+    warmup_stats: dict,
 ) -> None:
     rows = _serialize_rows(rows_by_key, order_map)
     ok_count = sum(1 for r in rows if r.get("status") == "ok")
@@ -201,6 +202,7 @@ def _save_payload(
         "completed_ok": ok_count,
         "completed_failed": failed_count,
         "warmup_done": warmup_done,
+        "warmup_stats": warmup_stats,
         "results": rows,
         "summary_by_request_type": summarize(rows),
     }
@@ -277,6 +279,14 @@ def main() -> None:
 
     rows_by_key: dict[tuple[str, int], dict] = {}
     warmup_done = False
+    warmup_stats: dict[str, object] = {
+        "request_type_id": "",
+        "planned_iters": int(args.warmup_iters),
+        "completed_iters": 0,
+        "latency_seconds_total": 0.0,
+        "latency_seconds_mean": 0.0,
+        "latency_seconds": [],
+    }
     if args.resume:
         existing_rows = _load_existing_rows(out_path)
         for row in existing_rows:
@@ -288,6 +298,19 @@ def main() -> None:
             try:
                 payload = json.loads(out_path.read_text(encoding="utf-8"))
                 warmup_done = bool(payload.get("warmup_done", False))
+                loaded_warmup_stats = payload.get("warmup_stats", None)
+                if isinstance(loaded_warmup_stats, dict):
+                    warmup_stats = {
+                        "request_type_id": str(loaded_warmup_stats.get("request_type_id", "")),
+                        "planned_iters": int(loaded_warmup_stats.get("planned_iters", args.warmup_iters)),
+                        "completed_iters": int(loaded_warmup_stats.get("completed_iters", 0)),
+                        "latency_seconds_total": float(loaded_warmup_stats.get("latency_seconds_total", 0.0)),
+                        "latency_seconds_mean": float(loaded_warmup_stats.get("latency_seconds_mean", 0.0)),
+                        "latency_seconds": [
+                            float(x)
+                            for x in loaded_warmup_stats.get("latency_seconds", [])
+                        ],
+                    }
             except Exception:
                 warmup_done = False
         print(f"[Worker] Resume enabled. Existing entries: {len(rows_by_key)}")
@@ -375,11 +398,12 @@ def main() -> None:
     if not warmup_done:
         warmup_req = request_types[0]
         print(f"[Worker] Warmup start: iters={args.warmup_iters}, request={warmup_req['request_type_id']}")
+        warmup_latencies: list[float] = []
         for warmup_idx in range(args.warmup_iters):
             warmup_label = f"warmup_{warmup_req['request_type_id']}_iter{warmup_idx + 1}"
             mark_request_start(warmup_label)
             try:
-                _ = run_one(
+                warmup_latency_s = run_one(
                     omni=omni,
                     req=warmup_req,
                     seed=args.seed + warmup_idx,
@@ -387,10 +411,30 @@ def main() -> None:
                     prompt=args.prompt,
                     negative_prompt=args.negative_prompt,
                 )
+                warmup_latencies.append(float(warmup_latency_s))
             finally:
                 mark_request_end()
+
+        warmup_total = float(sum(warmup_latencies))
+        warmup_count = len(warmup_latencies)
+        warmup_stats = {
+            "request_type_id": str(warmup_req["request_type_id"]),
+            "planned_iters": int(args.warmup_iters),
+            "completed_iters": int(warmup_count),
+            "latency_seconds_total": warmup_total,
+            "latency_seconds_mean": (warmup_total / warmup_count) if warmup_count > 0 else 0.0,
+            "latency_seconds": warmup_latencies,
+        }
         warmup_done = True
-        _save_payload(out_path, args, rows_by_key, order_map, planned_total, warmup_done)
+        _save_payload(
+            out_path,
+            args,
+            rows_by_key,
+            order_map,
+            planned_total,
+            warmup_done,
+            warmup_stats,
+        )
         print("[Worker] Warmup done")
     else:
         print("[Worker] Warmup skipped due to resume state.")
@@ -468,12 +512,28 @@ def main() -> None:
                 }
                 rows_by_key[key] = row
                 print(f"[Worker][Error] {req['request_type_id']} r{repeat_id}: {exc}")
-                _save_payload(out_path, args, rows_by_key, order_map, planned_total, warmup_done)
+                _save_payload(
+                    out_path,
+                    args,
+                    rows_by_key,
+                    order_map,
+                    planned_total,
+                    warmup_done,
+                    warmup_stats,
+                )
                 if args.request_fail_fast:
                     raise
                 continue
 
-            _save_payload(out_path, args, rows_by_key, order_map, planned_total, warmup_done)
+            _save_payload(
+                out_path,
+                args,
+                rows_by_key,
+                order_map,
+                planned_total,
+                warmup_done,
+                warmup_stats,
+            )
 
     print(f"[Worker] Saved: {out_path}")
 
