@@ -3,7 +3,6 @@ import argparse
 import csv
 import json
 import os
-import socket
 import signal
 import statistics
 import subprocess
@@ -252,29 +251,46 @@ def build_payload(global_cfg: GlobalConfig, size: str, steps: int, seed: int) ->
 
 
 def request_once(endpoint: str, payload: bytes, timeout_sec: int) -> tuple[str, float, str]:
+    # Use curl subprocess instead of urllib to avoid long, opaque hangs on some NPU environments.
     start = time.monotonic()
-    req = urllib.request.Request(
+    cmd = [
+        "curl",
+        "-sS",
+        "-X",
+        "POST",
         endpoint,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+        "-H",
+        "Content-Type: application/json",
+        "--max-time",
+        str(timeout_sec),
+        "--data-binary",
+        payload.decode("utf-8"),
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code},%{time_total}",
+    ]
     try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            latency = time.monotonic() - start
-            return str(resp.status), latency, ""
-    except urllib.error.HTTPError as exc:
+        result = subprocess.run(  # noqa: S603
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=max(timeout_sec + 5, 10),
+            check=False,
+        )
         latency = time.monotonic() - start
-        return str(exc.code), latency, f"http-{exc.code}"
-    except urllib.error.URLError as exc:
-        latency = time.monotonic() - start
-        if isinstance(exc.reason, TimeoutError | socket.timeout):
+
+        output = (result.stdout or "").strip()
+        if output:
+            parts = output.split(",", 1)
+            if len(parts) == 2:
+                http_code = parts[0].strip() or "000"
+                return http_code, latency, "" if http_code == "200" else f"http-{http_code}"
+
+        if result.returncode == 28:
             return "000", latency, "request-timeout"
         return "000", latency, "request-error"
-    except socket.timeout:
-        latency = time.monotonic() - start
-        return "000", latency, "request-timeout"
-    except TimeoutError:
+    except subprocess.TimeoutExpired:
         latency = time.monotonic() - start
         return "000", latency, "request-timeout"
     except Exception:
@@ -428,6 +444,10 @@ def run_case(summary_csv: Path, run_root: Path, global_cfg: GlobalConfig, case: 
 
                 seed = global_cfg.seed_base if global_cfg.use_fixed_seed else (global_cfg.seed_base + w)
                 payload = build_payload(global_cfg, size, steps, seed)
+                print(
+                    f"    sending warmup request {w}/{global_cfg.warmup_runs_per_combo} "
+                    f"(seed={seed}, timeout={global_cfg.request_timeout_sec}s)"
+                )
                 http_code, latency_s, err = request_once(infer_url, payload, global_cfg.request_timeout_sec)
 
                 status = "PASS" if http_code == "200" else "FAIL"
@@ -513,6 +533,10 @@ def run_case(summary_csv: Path, run_root: Path, global_cfg: GlobalConfig, case: 
                     else (global_cfg.seed_base + global_cfg.warmup_runs_per_combo + run_idx)
                 )
                 payload = build_payload(global_cfg, size, steps, seed)
+                print(
+                    f"    sending measure request {run_idx}/{global_cfg.measured_runs_per_combo} "
+                    f"(seed={seed}, timeout={global_cfg.request_timeout_sec}s)"
+                )
                 http_code, latency_s, err = request_once(infer_url, payload, global_cfg.request_timeout_sec)
                 status = "PASS" if http_code == "200" else "FAIL"
                 if status == "FAIL":
