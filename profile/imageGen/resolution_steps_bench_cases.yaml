@@ -39,7 +39,7 @@ global:
 
 cases:
   - id: 1
-    name: sp1-baseline
+    name: sp1-cfg1-tp1-baseline
     enabled: true
     sp: 1
     cfg: 1
@@ -47,17 +47,8 @@ cases:
     vae_use_slicing: true
     vae_use_tiling: true
 
-  - id: 4
-    name: sp1-cfg2
-    enabled: true
-    sp: 1
-    cfg: 2
-    tp: 1
-    vae_use_slicing: true
-    vae_use_tiling: true
-
-  - id: 5
-    name: sp1-tp2
+  - id: 2
+    name: sp1-cfg1-tp2
     enabled: true
     sp: 1
     cfg: 1
@@ -65,8 +56,8 @@ cases:
     vae_use_slicing: true
     vae_use_tiling: true
 
-  - id: 6
-    name: sp1-tp4
+  - id: 3
+    name: sp1-cfg1-tp4
     enabled: true
     sp: 1
     cfg: 1
@@ -74,8 +65,44 @@ cases:
     vae_use_slicing: true
     vae_use_tiling: true
 
-  - id: 10
-    name: sp2-baseline
+  - id: 4
+    name: sp1-cfg1-tp8
+    enabled: true
+    sp: 1
+    cfg: 1
+    tp: 8
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 5
+    name: sp1-cfg2-tp1
+    enabled: true
+    sp: 1
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 6
+    name: sp1-cfg2-tp2
+    enabled: true
+    sp: 1
+    cfg: 2
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 7
+    name: sp1-cfg2-tp4
+    enabled: true
+    sp: 1
+    cfg: 2
+    tp: 4
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 8
+    name: sp2-cfg1-tp1
     enabled: true
     sp: 2
     cfg: 1
@@ -83,17 +110,8 @@ cases:
     vae_use_slicing: true
     vae_use_tiling: true
 
-  - id: 13
-    name: sp2-cfg2
-    enabled: true
-    sp: 2
-    cfg: 2
-    tp: 1
-    vae_use_slicing: true
-    vae_use_tiling: true
-
-  - id: 14
-    name: sp2-tp2
+  - id: 9
+    name: sp2-cfg1-tp2
     enabled: true
     sp: 2
     cfg: 1
@@ -101,8 +119,35 @@ cases:
     vae_use_slicing: true
     vae_use_tiling: true
 
-  - id: 17
-    name: sp4-baseline
+  - id: 10
+    name: sp2-cfg1-tp4
+    enabled: true
+    sp: 2
+    cfg: 1
+    tp: 4
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 11
+    name: sp2-cfg2-tp1
+    enabled: true
+    sp: 2
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 12
+    name: sp2-cfg2-tp2
+    enabled: true
+    sp: 2
+    cfg: 2
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 13
+    name: sp4-cfg1-tp1
     enabled: true
     sp: 4
     cfg: 1
@@ -110,10 +155,28 @@ cases:
     vae_use_slicing: true
     vae_use_tiling: true
 
-  - id: 27
-    name: sp1-vae-slicing-tiling
+  - id: 14
+    name: sp4-cfg1-tp2
     enabled: true
-    sp: 1
+    sp: 4
+    cfg: 1
+    tp: 2
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 15
+    name: sp4-cfg2-tp1
+    enabled: true
+    sp: 4
+    cfg: 2
+    tp: 1
+    vae_use_slicing: true
+    vae_use_tiling: true
+
+  - id: 16
+    name: sp8-cfg1-tp1
+    enabled: true
+    sp: 8
     cfg: 1
     tp: 1
     vae_use_slicing: true
