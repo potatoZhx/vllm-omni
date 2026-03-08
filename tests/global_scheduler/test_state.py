@@ -1,3 +1,5 @@
+"""Runtime state store concurrency and reconciliation tests."""
+
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -9,6 +11,14 @@ pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
 def _make_store(ewma_alpha: float = 0.2) -> RuntimeStateStore:
+    """Create a runtime store fixture with two stable worker ids.
+
+    Args:
+        ewma_alpha: EWMA smoothing factor used by the test case.
+
+    Returns:
+        Runtime state store preloaded with two instances.
+    """
     return RuntimeStateStore(
         instances=[
             InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
@@ -20,6 +30,7 @@ def _make_store(ewma_alpha: float = 0.2) -> RuntimeStateStore:
 
 
 def test_snapshot_returns_copy():
+    """Snapshot should return detached copies, not mutable internal objects."""
     store = _make_store()
     snapshot = store.snapshot()
     snapshot["worker-0"].queue_len = 100
@@ -29,6 +40,7 @@ def test_snapshot_returns_copy():
 
 
 def test_counters_have_lower_bound_protection():
+    """Finish calls should not drive queue/inflight counters below zero."""
     store = _make_store()
 
     store.on_request_finish("worker-0", latency_s=0.5, ok=False)
@@ -40,6 +52,7 @@ def test_counters_have_lower_bound_protection():
 
 
 def test_ewma_updates_on_finish():
+    """EWMA service time should update on request finish with latency."""
     store = _make_store(ewma_alpha=0.5)
     store.on_request_start("worker-0")
     stats = store.on_request_finish("worker-0", latency_s=3.0, ok=True)
@@ -48,6 +61,7 @@ def test_ewma_updates_on_finish():
 
 
 def test_concurrent_start_and_finish_updates_are_consistent():
+    """Concurrent start/finish updates should remain counter-consistent."""
     store = _make_store()
     operations = 200
 
@@ -67,6 +81,7 @@ def test_concurrent_start_and_finish_updates_are_consistent():
 
 
 def test_unknown_instance_raises_key_error():
+    """Unknown instance ids should raise KeyError on state updates."""
     store = _make_store()
 
     with pytest.raises(KeyError, match="Unknown instance id"):
@@ -74,6 +89,7 @@ def test_unknown_instance_raises_key_error():
 
 
 def test_sync_instances_adds_and_removes_idle_instances():
+    """sync_instances should remove idle removed ids and add new ids."""
     store = _make_store()
 
     store.sync_instances([InstanceSpec(id="worker-2", endpoint="http://127.0.0.1:9003", max_concurrency=2)])
@@ -85,6 +101,7 @@ def test_sync_instances_adds_and_removes_idle_instances():
 
 
 def test_sync_instances_keeps_draining_instance_until_finish_converges():
+    """Draining instances should be retained until in-flight work converges."""
     store = _make_store()
     store.on_request_start("worker-1")
 
