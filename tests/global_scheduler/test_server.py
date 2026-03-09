@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from vllm_omni.global_scheduler.config import load_config
+from vllm_omni.global_scheduler.process_controller import ProcessController
 from vllm_omni.global_scheduler.server import UpstreamHTTPError, create_app
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
@@ -466,3 +467,112 @@ def test_chat_completions_streaming_passthrough_and_state_cleanup(tmp_path, monk
     snapshot = app.state.runtime_state_store.snapshot()
     assert snapshot["worker-0"].queue_len == 0
     assert snapshot["worker-0"].inflight == 0
+
+
+class _FakeProcessController(ProcessController):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def stop(self, instance) -> None:
+        self.calls.append(("stop", instance.id))
+
+    def start(self, instance) -> None:
+        self.calls.append(("start", instance.id))
+
+    def restart(self, instance) -> None:
+        self.calls.append(("restart", instance.id))
+
+
+def test_instance_lifecycle_ops_endpoints_update_process_state(tmp_path):
+    """stop/start/restart endpoints should update state and use process controller."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+    controller = _FakeProcessController()
+    config = load_config(config_path)
+    app = create_app(config, process_controller=controller)
+    client = TestClient(app)
+
+    stop_resp = client.post("/instances/worker-0/stop")
+    assert stop_resp.status_code == 200
+    assert stop_resp.json()["process_state"] == "stopped"
+
+    start_resp = client.post("/instances/worker-0/start")
+    assert start_resp.status_code == 200
+    assert start_resp.json()["process_state"] == "running"
+
+    restart_resp = client.post("/instances/worker-0/restart")
+    assert restart_resp.status_code == 200
+    assert restart_resp.json()["process_state"] == "running"
+
+    assert controller.calls == [("stop", "worker-0"), ("start", "worker-0"), ("restart", "worker-0")]
+    instance_view = client.get("/instances").json()["instances"][0]
+    assert instance_view["process_state"] == "running"
+    assert instance_view["last_operation"] == "restart"
+
+
+def test_lifecycle_ops_conflict_with_reload_returns_409(tmp_path):
+    """Lifecycle op should reject requests while reload is in progress."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config, process_controller=_FakeProcessController())
+    app.state.reload_in_progress = True
+    client = TestClient(app)
+
+    response = client.post("/instances/worker-0/restart")
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["error"]["code"] == "GS_LIFECYCLE_CONFLICT"
+
+
+def test_lifecycle_ops_unconfigured_command_returns_400(tmp_path):
+    """Missing lifecycle command should return GS_LIFECYCLE_UNSUPPORTED."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+    client = TestClient(app)
+
+    response = client.post("/instances/worker-0/stop")
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["code"] == "GS_LIFECYCLE_UNSUPPORTED"

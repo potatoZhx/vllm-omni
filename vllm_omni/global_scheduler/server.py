@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import json
 import socket
+from threading import RLock
 import time
 import uuid
 from typing import Any
@@ -23,6 +24,12 @@ from vllm_omni.version import __version__
 
 from .config import GlobalSchedulerConfig, load_config
 from .lifecycle import InstanceLifecycleManager
+from .process_controller import (
+    LifecycleExecutionError,
+    LifecycleUnsupportedError,
+    LocalProcessController,
+    ProcessController,
+)
 from .router import build_policy
 from .state import RuntimeStateStore
 from .types import InstanceSpec, RequestMeta
@@ -248,7 +255,19 @@ class ReloadResponse(BaseModel):
     instance_count: int
 
 
-def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> FastAPI:
+class LifecycleOpResponse(BaseModel):
+    id: str
+    operation: str
+    status: str
+    process_state: str
+    message: str
+
+
+def create_app(
+    config: GlobalSchedulerConfig,
+    config_loader: Any = None,
+    process_controller: ProcessController | None = None,
+) -> FastAPI:
     """Create FastAPI app with scheduler lifecycle endpoints.
 
     Args:
@@ -294,6 +313,10 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
     app.state.policy = build_policy(config)
     app.state.config_loader = config_loader
     app.state.health_probe_task = None
+    app.state.process_controller = process_controller or LocalProcessController()
+    app.state.reload_in_progress = False
+    app.state.lifecycle_operation_locks: dict[str, asyncio.Lock] = {}
+    app.state.lifecycle_operation_locks_guard = RLock()
     instance_specs = _to_instance_specs(config)
     app.state.runtime_state_store = RuntimeStateStore(
         instances=instance_specs,
@@ -303,6 +326,10 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
     app.state.policy = build_policy(config)
     app.state.config_loader = config_loader
     app.state.health_probe_task = None
+    app.state.process_controller = process_controller or LocalProcessController()
+    app.state.reload_in_progress = False
+    app.state.lifecycle_operation_locks = {}
+    app.state.lifecycle_operation_locks_guard = RLock()
 
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -326,6 +353,10 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
                     "enabled": lifecycle.enabled,
                     "healthy": lifecycle.healthy,
                     "draining": lifecycle.draining,
+                    "process_state": lifecycle.process_state,
+                    "last_operation": lifecycle.last_operation,
+                    "last_operation_ts_s": lifecycle.last_operation_ts_s,
+                    "last_operation_error": lifecycle.last_operation_error,
                     "routable": lifecycle.enabled and lifecycle.healthy and not lifecycle.draining,
                     "queue_len": stats.queue_len if stats else 0,
                     "inflight": stats.inflight if stats else 0,
@@ -361,22 +392,31 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
 
     @app.post("/instances/reload", response_model=ReloadResponse)
     async def reload_instances() -> ReloadResponse:
+        if app.state.reload_in_progress:
+            raise HTTPException(status_code=409, detail="reload is already in progress")
+        if any(lock.locked() for lock in app.state.lifecycle_operation_locks.values()):
+            raise HTTPException(status_code=409, detail="lifecycle operation in progress")
+
         loader = getattr(app.state, "config_loader", None)
         if loader is None:
             raise HTTPException(status_code=501, detail="config reload is not enabled")
 
-        new_config = loader()
-        app.state.global_scheduler_config = new_config
-        new_instance_specs = _to_instance_specs(new_config)
+        app.state.reload_in_progress = True
+        try:
+            new_config = loader()
+            app.state.global_scheduler_config = new_config
+            new_instance_specs = _to_instance_specs(new_config)
 
-        app.state.runtime_state_store.sync_instances(new_instance_specs)
-        app.state.instance_lifecycle_manager.sync_instances(
-            new_instance_specs,
-            runtime_snapshot=app.state.runtime_state_store.snapshot(),
-        )
-        app.state.policy = build_policy(new_config)
-        app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
-        return ReloadResponse(status="ok", instance_count=len(new_instance_specs))
+            app.state.runtime_state_store.sync_instances(new_instance_specs)
+            app.state.instance_lifecycle_manager.sync_instances(
+                new_instance_specs,
+                runtime_snapshot=app.state.runtime_state_store.snapshot(),
+            )
+            app.state.policy = build_policy(new_config)
+            app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
+            return ReloadResponse(status="ok", instance_count=len(new_instance_specs))
+        finally:
+            app.state.reload_in_progress = False
 
     @app.post("/instances/probe")
     async def probe_instances() -> JSONResponse:
@@ -387,6 +427,155 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
         )
         app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
         return JSONResponse(status_code=200, content={"status": "ok"})
+
+    def _build_lifecycle_error(
+        *,
+        status_code: int,
+        code: str,
+        message: str,
+        request_id: str,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status_code,
+            content=_build_error_payload(code=code, message=message, request_id=request_id),
+        )
+
+    def _instance_op_lock(instance_id: str) -> asyncio.Lock:
+        with app.state.lifecycle_operation_locks_guard:
+            lock = app.state.lifecycle_operation_locks.get(instance_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                app.state.lifecycle_operation_locks[instance_id] = lock
+            return lock
+
+    async def _run_lifecycle_operation(instance_id: str, operation: str) -> JSONResponse:
+        request_id = str(uuid.uuid4())
+        if app.state.reload_in_progress:
+            return _build_lifecycle_error(
+                status_code=409,
+                code="GS_LIFECYCLE_CONFLICT",
+                message="reload is in progress",
+                request_id=request_id,
+            )
+
+        lock = _instance_op_lock(instance_id)
+        if lock.locked():
+            return _build_lifecycle_error(
+                status_code=409,
+                code="GS_LIFECYCLE_CONFLICT",
+                message=f"{operation} conflicts with another lifecycle operation",
+                request_id=request_id,
+            )
+
+        async with lock:
+            if app.state.reload_in_progress:
+                return _build_lifecycle_error(
+                    status_code=409,
+                    code="GS_LIFECYCLE_CONFLICT",
+                    message="reload is in progress",
+                    request_id=request_id,
+                )
+
+            snapshot = app.state.instance_lifecycle_manager.snapshot()
+            status = snapshot.get(instance_id)
+            if status is None:
+                return _build_lifecycle_error(
+                    status_code=404,
+                    code="GS_UNKNOWN_INSTANCE",
+                    message=f"Unknown instance id: {instance_id}",
+                    request_id=request_id,
+                )
+
+            if status.process_state in {"starting", "stopping", "restarting"}:
+                return _build_lifecycle_error(
+                    status_code=409,
+                    code="GS_LIFECYCLE_CONFLICT",
+                    message=f"instance is in {status.process_state}",
+                    request_id=request_id,
+                )
+
+            manager = app.state.instance_lifecycle_manager
+            controller: ProcessController = app.state.process_controller
+            instance_spec = status.instance
+
+            if operation == "stop":
+                manager.set_enabled(instance_id, enabled=False)
+                manager.set_process_state(instance_id, process_state="stopping", operation=operation, error=None)
+                execute = controller.stop
+                final_state = "stopped"
+            elif operation == "start":
+                manager.set_process_state(instance_id, process_state="starting", operation=operation, error=None)
+                execute = controller.start
+                final_state = "running"
+            elif operation == "restart":
+                manager.set_enabled(instance_id, enabled=False)
+                manager.set_process_state(instance_id, process_state="restarting", operation=operation, error=None)
+                execute = controller.restart
+                final_state = "running"
+            else:
+                return _build_lifecycle_error(
+                    status_code=400,
+                    code="GS_LIFECYCLE_UNSUPPORTED",
+                    message=f"unsupported operation: {operation}",
+                    request_id=request_id,
+                )
+
+            try:
+                await asyncio.to_thread(execute, instance_spec)
+            except LifecycleUnsupportedError as exc:
+                manager.set_process_state(instance_id, process_state="error", operation=operation, error=str(exc))
+                return _build_lifecycle_error(
+                    status_code=400,
+                    code="GS_LIFECYCLE_UNSUPPORTED",
+                    message=str(exc),
+                    request_id=request_id,
+                )
+            except LifecycleExecutionError as exc:
+                manager.set_process_state(instance_id, process_state="error", operation=operation, error=str(exc))
+                return _build_lifecycle_error(
+                    status_code=502,
+                    code="GS_LIFECYCLE_EXEC_ERROR",
+                    message=str(exc),
+                    request_id=request_id,
+                )
+            except Exception as exc:
+                manager.set_process_state(instance_id, process_state="error", operation=operation, error=str(exc))
+                return _build_lifecycle_error(
+                    status_code=502,
+                    code="GS_LIFECYCLE_EXEC_ERROR",
+                    message=str(exc),
+                    request_id=request_id,
+                )
+
+            if operation in {"start", "restart"}:
+                manager.set_enabled(instance_id, enabled=True)
+                manager.mark_health(instance_id, healthy=False, error=f"awaiting_probe_after_{operation}")
+            else:
+                manager.mark_health(instance_id, healthy=False, error="stopped_by_operator")
+
+            finished = manager.set_process_state(instance_id, process_state=final_state, operation=operation, error=None)
+            return JSONResponse(
+                status_code=200,
+                content=LifecycleOpResponse(
+                    id=instance_id,
+                    operation=operation,
+                    status="completed",
+                    process_state=finished.process_state,
+                    message=f"{operation} completed",
+                ).model_dump(),
+            )
+
+    @app.post("/instances/{instance_id}/stop", response_model=LifecycleOpResponse)
+    async def stop_instance(instance_id: str) -> JSONResponse:
+        return await _run_lifecycle_operation(instance_id=instance_id, operation="stop")
+
+    @app.post("/instances/{instance_id}/start", response_model=LifecycleOpResponse)
+    async def start_instance(instance_id: str) -> JSONResponse:
+        return await _run_lifecycle_operation(instance_id=instance_id, operation="start")
+
+    @app.post("/instances/{instance_id}/restart", response_model=LifecycleOpResponse)
+    async def restart_instance(instance_id: str) -> JSONResponse:
+        return await _run_lifecycle_operation(instance_id=instance_id, operation="restart")
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
