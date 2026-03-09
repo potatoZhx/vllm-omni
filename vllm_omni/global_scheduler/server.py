@@ -16,7 +16,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from pydantic import BaseModel
+
 
 from vllm_omni.version import __version__
 
@@ -325,7 +325,19 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
         payload = await request.json()
-        request_id = request.headers.get("x-request-id") or payload.get("request_id") or str(uuid.uuid4())
+        header_request_id = request.headers.get("x-request-id")
+        if isinstance(payload, dict):
+            request_id = header_request_id or payload.get("request_id") or str(uuid.uuid4())
+        else:
+            request_id = header_request_id or str(uuid.uuid4())
+            return JSONResponse(
+                status_code=400,
+                content=_build_error_payload(
+                    code="GS_INVALID_REQUEST_BODY",
+                    message="Request JSON body must be an object",
+                    request_id=request_id,
+                ),
+            )
         request_meta = _extract_request_meta(payload, request_id=request_id)
         runtime_snapshot = app.state.runtime_state_store.snapshot()
         candidates = app.state.instance_lifecycle_manager.get_routable_instances()
@@ -367,7 +379,10 @@ def create_app(config: GlobalSchedulerConfig, config_loader: Any = None) -> Fast
                 _filter_forward_headers(request.headers),
                 current_config.server.request_timeout_s,
             )
-            response = Response(status_code=200, content=response_body, media_type="application/json")
+            # Use the appropriate media type for streaming vs non-streaming responses.
+            is_stream = bool(payload.get("stream"))
+            media_type = "text/event-stream" if is_stream else "application/json"
+            response = Response(status_code=200, content=response_body, media_type=media_type)
             app.state.runtime_state_store.on_request_finish(
                 decision.instance_id,
                 latency_s=time.monotonic() - started_at,
@@ -432,7 +447,7 @@ def run_server(config_path: str) -> None:
     """
     config = load_config(config_path)
     app = create_app(config, config_loader=lambda: load_config(config_path))
-    app = create_app(config, config_loader=lambda: load_config(config_path))
+
     uvicorn.run(app, host=config.server.host, port=config.server.port)
 
 

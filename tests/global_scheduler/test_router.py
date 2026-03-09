@@ -39,7 +39,7 @@ def test_router_builds_fcfs_policy(tmp_path):
     assert isinstance(policy._delegate, FirstComeFirstServedPolicy)
 
 
-def test_router_rejects_unknown_scheduler_type(tmp_path):
+def test_router_rejects_extra_scheduler_keys(tmp_path):
     """Unexpected scheduler keys should fail strict config validation."""
     config_path = tmp_path / "scheduler.yaml"
     config_path.write_text(

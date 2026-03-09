@@ -31,8 +31,7 @@ class RuntimeStateStore:
         self._lock = RLock()
         self._default_ewma_service_time_s = default_ewma_service_time_s
         self._draining_instance_ids: set[str] = set()
-        self._default_ewma_service_time_s = default_ewma_service_time_s
-        self._draining_instance_ids: set[str] = set()
+
         self._stats: dict[str, RuntimeStats] = {
             instance.id: RuntimeStats(
                 queue_len=0,
@@ -121,13 +120,7 @@ class RuntimeStateStore:
                 del self._stats[instance_id]
                 return RuntimeStats(queue_len=0, inflight=0, ewma_service_time_s=stats.ewma_service_time_s)
 
-            if instance_id in self._draining_instance_ids and stats.queue_len == 0 and stats.inflight == 0:
-                self._draining_instance_ids.remove(instance_id)
-                del self._stats[instance_id]
-                return RuntimeStats(queue_len=0, inflight=0, ewma_service_time_s=stats.ewma_service_time_s)
-
             return replace(stats)
-
     def _get_stats(self, instance_id: str) -> RuntimeStats:
         if instance_id not in self._stats:
             raise KeyError(f"Unknown instance id: {instance_id}")

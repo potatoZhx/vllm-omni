@@ -17,8 +17,7 @@ class ServerConfig(BaseModel):
     request_timeout_s: int = Field(default=1800, ge=1)
     instance_health_check_interval_s: float = Field(default=5.0, gt=0.0)
     instance_health_check_timeout_s: float = Field(default=1.0, gt=0.0)
-    instance_health_check_interval_s: float = Field(default=5.0, gt=0.0)
-    instance_health_check_timeout_s: float = Field(default=1.0, gt=0.0)
+
 
 
 class SchedulerConfig(BaseModel):
