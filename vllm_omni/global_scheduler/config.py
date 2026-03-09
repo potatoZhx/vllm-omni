@@ -71,6 +71,9 @@ class InstanceConfig(BaseModel):
     endpoint: str
     sp_size: int = 1
     max_concurrency: int = Field(default=1, ge=1)
+    start_command: str | None = None
+    stop_command: str | None = None
+    restart_command: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -97,6 +100,15 @@ class InstanceConfig(BaseModel):
         if parsed.path not in {"", "/"}:
             raise ValueError("instances[].endpoint must not include path")
         return value.rstrip("/")
+
+    @field_validator("start_command", "stop_command", "restart_command")
+    @classmethod
+    def validate_commands(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("instances[] lifecycle commands cannot be empty")
+        return value
 
 
 class GlobalSchedulerConfig(BaseModel):

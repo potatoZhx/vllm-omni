@@ -235,6 +235,9 @@ def _to_instance_specs(config: GlobalSchedulerConfig) -> list[InstanceSpec]:
             endpoint=instance.endpoint,
             sp_size=instance.sp_size,
             max_concurrency=instance.max_concurrency,
+            start_command=instance.start_command,
+            stop_command=instance.stop_command,
+            restart_command=instance.restart_command,
         )
         for instance in config.instances
     ]

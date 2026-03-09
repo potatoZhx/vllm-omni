@@ -199,3 +199,50 @@ def test_load_config_legacy_mode_key_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         load_config(config_path)
+
+
+def test_load_config_instance_lifecycle_commands_success(tmp_path):
+    """Lifecycle command fields should be accepted when non-empty."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 2
+                start_command: "echo start"
+                stop_command: "echo stop"
+                restart_command: "echo restart"
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.instances[0].start_command == "echo start"
+    assert config.instances[0].stop_command == "echo stop"
+    assert config.instances[0].restart_command == "echo restart"
+
+
+def test_load_config_empty_lifecycle_command_rejected(tmp_path):
+    """Lifecycle command field should reject blank strings."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 2
+                start_command: "   "
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="lifecycle commands cannot be empty"):
+        load_config(config_path)

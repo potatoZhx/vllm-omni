@@ -7,6 +7,7 @@ from .policies import (
     RuntimeEstimator,
     ShortQueueRuntimePolicy,
 )
+from .process_controller import LocalProcessController, ProcessController
 from .router import build_policy
 from .server import create_app
 from .state import RuntimeStateStore
@@ -17,6 +18,8 @@ __all__ = [
     "FirstComeFirstServedPolicy",
     "GlobalSchedulerConfig",
     "InstanceLifecycleManager",
+    "LocalProcessController",
+    "ProcessController",
     "RuntimeStateStore",
     "RuntimeEstimator",
     "ShortQueueRuntimePolicy",

@@ -33,6 +33,9 @@ class InstanceSpec:
     endpoint: str
     sp_size: int = 1
     max_concurrency: int = 1
+    start_command: str | None = None
+    stop_command: str | None = None
+    restart_command: str | None = None
 
 
 @dataclass(slots=True)
