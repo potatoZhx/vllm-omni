@@ -13,8 +13,8 @@ def test_fcfs_selects_first_available_instance():
     policy = FirstComeFirstServedPolicy(tie_breaker="lexical")
     request = RequestMeta(request_id="r1")
     instances = [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=2),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", launch_args=["--max-concurrency", "2"]),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
     ]
     runtime_stats = {
         "worker-0": RuntimeStats(queue_len=1, inflight=1, ewma_service_time_s=1.0),
@@ -33,8 +33,8 @@ def test_fcfs_falls_back_to_lexical_when_all_busy():
     policy = FirstComeFirstServedPolicy(tie_breaker="lexical")
     request = RequestMeta(request_id="r2")
     instances = [
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=1),
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=1),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001"),
     ]
     runtime_stats = {
         "worker-0": RuntimeStats(queue_len=2, inflight=1, ewma_service_time_s=1.0),

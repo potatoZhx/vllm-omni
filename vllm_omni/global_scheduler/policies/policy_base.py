@@ -35,7 +35,27 @@ class PolicyBase(ABC):
 
     def _is_available(self, instance: InstanceSpec, runtime_stats: dict[str, RuntimeStats]) -> bool:
         stats = runtime_stats[instance.id]
-        return stats.inflight < instance.max_concurrency
+        return stats.inflight < self._max_concurrency_from_args(instance.launch_args)
+
+    @staticmethod
+    def _max_concurrency_from_args(args: list[str]) -> int:
+        keys = {"--max-concurrency"}
+        for idx, item in enumerate(args):
+            if "=" in item:
+                key, value = item.split("=", 1)
+                if key in keys:
+                    try:
+                        parsed = int(value)
+                    except ValueError:
+                        return 1
+                    return max(parsed, 1)
+            if item in keys and idx + 1 < len(args):
+                try:
+                    parsed = int(args[idx + 1])
+                except ValueError:
+                    return 1
+                return max(parsed, 1)
+        return 1
 
     def _break_tie(self, instances: list[InstanceSpec]) -> InstanceSpec:
         if self._tie_breaker == "lexical":

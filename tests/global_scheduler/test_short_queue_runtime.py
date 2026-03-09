@@ -15,8 +15,8 @@ def test_short_queue_runtime_prefers_lower_estimated_queue_runtime():
     policy = ShortQueueRuntimePolicy(estimator=estimator, tie_breaker="lexical")
     request = RequestMeta(request_id="r1", width=1280, height=720, num_inference_steps=50)
     instances = [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=2),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001"),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
     ]
     runtime_stats = {
         "worker-0": RuntimeStats(queue_len=3, inflight=1, ewma_service_time_s=1.0),
@@ -35,8 +35,8 @@ def test_short_queue_runtime_uses_ewma_fallback_when_profile_missing():
     policy = ShortQueueRuntimePolicy(estimator=estimator, tie_breaker="lexical")
     request = RequestMeta(request_id="r2", width=640, height=360, num_inference_steps=20)
     instances = [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=2),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001"),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
     ]
     runtime_stats = {
         "worker-0": RuntimeStats(queue_len=2, inflight=0, ewma_service_time_s=0.5),

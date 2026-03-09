@@ -21,12 +21,8 @@ def test_load_config_success(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
               - id: worker-1
                 endpoint: http://127.0.0.1:9002
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -47,12 +43,8 @@ def test_load_config_duplicate_instance_id(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
               - id: worker-0
                 endpoint: http://127.0.0.1:9002
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -71,8 +63,6 @@ def test_load_config_invalid_endpoint(tmp_path):
             instances:
               - id: worker-0
                 endpoint: https://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -94,8 +84,6 @@ def test_load_config_baseline_algorithm_success(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -118,8 +106,6 @@ def test_load_config_short_queue_runtime_algorithm(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -142,8 +128,6 @@ def test_load_config_invalid_baseline_algorithm(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -167,8 +151,6 @@ def test_load_config_legacy_sp1_keys_are_rejected(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -190,8 +172,6 @@ def test_load_config_legacy_mode_key_is_rejected(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -210,8 +190,6 @@ def test_load_config_instance_lifecycle_structured_fields_success(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
                 launch:
                   model: Qwen/Qwen-Image
                   executable: vllm
@@ -245,8 +223,6 @@ def test_load_config_empty_launch_arg_rejected(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
                 launch:
                   model: Qwen/Qwen-Image
                   args: ["--omni", "   "]

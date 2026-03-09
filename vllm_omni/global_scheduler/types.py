@@ -31,8 +31,6 @@ class InstanceSpec:
 
     id: str
     endpoint: str
-    sp_size: int = 1
-    max_concurrency: int = 1
     launch_executable: str | None = None
     launch_model: str | None = None
     launch_args: list[str] = field(default_factory=list)

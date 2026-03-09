@@ -15,8 +15,8 @@ def test_estimated_completion_time_selects_lowest_score():
     policy = EstimatedCompletionTimePolicy(estimator=estimator, tie_breaker="lexical")
     request = RequestMeta(request_id="r1", width=1280, height=720, num_inference_steps=50)
     instances = [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=2),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001"),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
     ]
     runtime_stats = {
         "worker-0": RuntimeStats(queue_len=2, inflight=1, ewma_service_time_s=1.0),
@@ -35,8 +35,8 @@ def test_estimated_completion_time_uses_fallback_when_profiling_missing():
     policy = EstimatedCompletionTimePolicy(estimator=estimator, tie_breaker="lexical")
     request = RequestMeta(request_id="r2", width=640, height=360, num_inference_steps=20)
     instances = [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=2),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001"),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
     ]
     runtime_stats = {
         "worker-0": RuntimeStats(queue_len=1, inflight=0, ewma_service_time_s=0.5),

@@ -32,12 +32,10 @@ policy:
 instances:
   - id: worker-0
     endpoint: http://127.0.0.1:9001
-    sp_size: 1
-    max_concurrency: 2
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
-      args: ["--omni", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
+      args: ["--omni", "--max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
       env:
         CUDA_VISIBLE_DEVICES: "0,1"
     stop:
@@ -45,12 +43,10 @@ instances:
       args: ["-f", "vllm serve Qwen/Qwen-Image --port 9001"]
   - id: worker-1
     endpoint: http://127.0.0.1:9002
-    sp_size: 1
-    max_concurrency: 2
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
-      args: ["--omni", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
+      args: ["--omni", "--max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
       env:
         CUDA_VISIBLE_DEVICES: "2,3"
     stop:
@@ -172,6 +168,8 @@ curl -sS -X POST http://127.0.0.1:8089/instances/probe
 
 - `scheduler.tie_breaker`: `random` 或 `lexical`
 - `scheduler.ewma_alpha`: EWMA 平滑系数 `(0, 1]`
+- 实例路由并发上限由 `instances[].launch.args` 推导
+  - 推荐使用 `--max-concurrency`
 
 ## 4. 错误语义
 
@@ -245,7 +243,7 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
 - `instances[].id` 重复
 - `policy.baseline.algorithm` 非法
 - endpoint 格式错误（必须是 `http://host:port`）
-- 当前阶段 `sp_size != 1`
+- `launch/stop` 结构化配置不合法
 
 ## 7. 当前限制
 

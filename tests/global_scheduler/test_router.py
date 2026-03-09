@@ -26,8 +26,6 @@ def test_router_builds_fcfs_policy(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -50,8 +48,6 @@ def test_router_rejects_unknown_scheduler_type(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -73,8 +69,6 @@ def test_router_builds_short_queue_runtime_policy(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -98,8 +92,6 @@ def test_router_builds_estimated_completion_time_policy(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -123,8 +115,6 @@ def test_router_reason_uses_router_prefix_without_duplicate_algorithm_marker(tmp
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 2
             """
         ),
         encoding="utf-8",
@@ -134,7 +124,7 @@ def test_router_reason_uses_router_prefix_without_duplicate_algorithm_marker(tmp
     policy = build_policy(config)
     decision = policy.select_instance(
         request=RequestMeta(request_id="req-1"),
-        instances=[InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2)],
+        instances=[InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001")],
         runtime_stats={"worker-0": RuntimeStats(queue_len=0, inflight=0, ewma_service_time_s=1.0)},
     )
 

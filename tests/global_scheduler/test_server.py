@@ -22,8 +22,6 @@ def test_health_endpoint_returns_scheduler_and_ok(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -53,8 +51,6 @@ def test_health_endpoint_returns_503_when_config_missing(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -94,8 +90,6 @@ def test_instance_lifecycle_control_endpoints(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -137,8 +131,6 @@ def test_reload_endpoint_replaces_instance_set(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -151,8 +143,6 @@ def test_reload_endpoint_replaces_instance_set(tmp_path):
             instances:
               - id: worker-1
                 endpoint: http://127.0.0.1:9002
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -185,8 +175,6 @@ def test_reload_endpoint_returns_501_without_loader(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -212,8 +200,6 @@ def test_probe_endpoint_runs_probe_in_to_thread(tmp_path, monkeypatch):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -252,8 +238,6 @@ def test_chat_completions_success_sets_route_headers_and_state(tmp_path, monkeyp
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -300,8 +284,6 @@ def test_chat_completions_returns_503_when_no_routable_instance(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -339,8 +321,6 @@ def test_chat_completions_error_semantics_and_state_cleanup(tmp_path, monkeypatc
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -384,8 +364,6 @@ def test_chat_completions_unexpected_exception_still_cleans_state(tmp_path, monk
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -424,8 +402,6 @@ def test_chat_completions_streaming_passthrough_and_state_cleanup(tmp_path, monk
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -494,8 +470,6 @@ def test_instance_lifecycle_ops_endpoints_update_process_state(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -534,8 +508,6 @@ def test_lifecycle_ops_conflict_with_reload_returns_409(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",
@@ -562,8 +534,6 @@ def test_lifecycle_ops_unconfigured_command_returns_400(tmp_path):
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
-                sp_size: 1
-                max_concurrency: 1
             """
         ),
         encoding="utf-8",

@@ -127,8 +127,6 @@ class InstanceConfig(BaseModel):
 
     id: str
     endpoint: str
-    sp_size: int = 1
-    max_concurrency: int = Field(default=1, ge=1)
     launch: LaunchConfig | None = None
     stop: StopConfig | None = None
 
@@ -137,13 +135,6 @@ class InstanceConfig(BaseModel):
     def validate_id(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("instances[].id cannot be empty")
-        return value
-
-    @field_validator("sp_size")
-    @classmethod
-    def validate_sp_size(cls, value: int) -> int:
-        if value != 1:
-            raise ValueError("instances[].sp_size must be 1 in current stage")
         return value
 
     @field_validator("endpoint")

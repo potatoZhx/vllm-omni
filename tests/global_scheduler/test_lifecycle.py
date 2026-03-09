@@ -16,8 +16,8 @@ def _instances() -> list[InstanceSpec]:
         Static instance list used by lifecycle state assertions.
     """
     return [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=2),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001"),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
     ]
 
 
@@ -46,10 +46,10 @@ def test_reload_keeps_removed_instance_until_inflight_converges():
     manager = InstanceLifecycleManager(instances)
 
     store.on_request_start("worker-1")
-    store.sync_instances([InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2)])
+    store.sync_instances([InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001")])
 
     manager.sync_instances(
-        [InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2)],
+        [InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001")],
         runtime_snapshot=store.snapshot(),
     )
 

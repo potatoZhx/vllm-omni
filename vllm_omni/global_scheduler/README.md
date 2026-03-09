@@ -33,12 +33,10 @@ policy:
 instances:
   - id: worker-0
     endpoint: http://127.0.0.1:9001
-    sp_size: 1
-    max_concurrency: 2
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
-      args: ["--omni", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
+      args: ["--omni", "--max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
       env:
         CUDA_VISIBLE_DEVICES: "0,1"
     stop:
@@ -46,12 +44,10 @@ instances:
       args: ["-f", "vllm serve Qwen/Qwen-Image --port 9001"]
   - id: worker-1
     endpoint: http://127.0.0.1:9002
-    sp_size: 1
-    max_concurrency: 2
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
-      args: ["--omni", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
+      args: ["--omni", "--max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
       env:
         CUDA_VISIBLE_DEVICES: "2,3"
     stop:
@@ -173,6 +169,8 @@ Related knobs:
 
 - `scheduler.tie_breaker`: `random` or `lexical`
 - `scheduler.ewma_alpha`: EWMA smoothing factor `(0, 1]`
+- per-instance routing concurrency is inferred from `instances[].launch.args`
+  - recommended flag: `--max-concurrency`
 
 ## 4. Error Semantics
 
@@ -246,7 +244,7 @@ Common causes:
 - duplicate `instances[].id`
 - invalid `policy.baseline.algorithm`
 - invalid endpoint format (must be `http://host:port`)
-- `sp_size != 1` in current stage
+- malformed structured `launch/stop` config
 
 ## 7. Current Limitations
 

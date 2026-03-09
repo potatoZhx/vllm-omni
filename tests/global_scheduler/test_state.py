@@ -21,8 +21,8 @@ def _make_store(ewma_alpha: float = 0.2) -> RuntimeStateStore:
     """
     return RuntimeStateStore(
         instances=[
-            InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2),
-            InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", max_concurrency=2),
+            InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001"),
+            InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
         ],
         ewma_alpha=ewma_alpha,
         default_ewma_service_time_s=1.0,
@@ -92,7 +92,7 @@ def test_sync_instances_adds_and_removes_idle_instances():
     """sync_instances should remove idle removed ids and add new ids."""
     store = _make_store()
 
-    store.sync_instances([InstanceSpec(id="worker-2", endpoint="http://127.0.0.1:9003", max_concurrency=2)])
+    store.sync_instances([InstanceSpec(id="worker-2", endpoint="http://127.0.0.1:9003")])
     snapshot = store.snapshot()
 
     assert "worker-0" not in snapshot
@@ -105,7 +105,7 @@ def test_sync_instances_keeps_draining_instance_until_finish_converges():
     store = _make_store()
     store.on_request_start("worker-1")
 
-    store.sync_instances([InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", max_concurrency=2)])
+    store.sync_instances([InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001")])
     after_sync = store.snapshot()
     assert "worker-1" in after_sync
     assert after_sync["worker-1"].inflight == 1

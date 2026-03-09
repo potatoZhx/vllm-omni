@@ -240,8 +240,6 @@ def _to_instance_specs(config: GlobalSchedulerConfig) -> list[InstanceSpec]:
         InstanceSpec(
             id=instance.id,
             endpoint=instance.endpoint,
-            sp_size=instance.sp_size,
-            max_concurrency=instance.max_concurrency,
             launch_executable=instance.launch.executable if instance.launch is not None else None,
             launch_model=instance.launch.model if instance.launch is not None else None,
             launch_args=list(instance.launch.args) if instance.launch is not None else [],
