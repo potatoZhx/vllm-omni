@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 
 class ServerConfig(BaseModel):
+    """Top-level scheduler server settings."""
+
     model_config = ConfigDict(extra="forbid")
 
     host: str = "0.0.0.0"
@@ -17,19 +19,14 @@ class ServerConfig(BaseModel):
     instance_health_check_timeout_s: float = Field(default=1.0, gt=0.0)
 
 
+
 class SchedulerConfig(BaseModel):
+    """Global scheduler runtime tuning parameters."""
+
     model_config = ConfigDict(extra="forbid")
 
-    type: str = "baseline_sp1"
     tie_breaker: str = "random"
     ewma_alpha: float = Field(default=0.2, gt=0.0, le=1.0)
-
-    @field_validator("type")
-    @classmethod
-    def validate_type(cls, value: str) -> str:
-        if value not in {"baseline_sp1", "ondisc_sp1"}:
-            raise ValueError("scheduler.type must be one of: baseline_sp1, ondisc_sp1")
-        return value
 
     @field_validator("tie_breaker")
     @classmethod
@@ -40,38 +37,33 @@ class SchedulerConfig(BaseModel):
 
 
 class BaselinePolicyConfig(BaseModel):
+    """Baseline policy family configuration."""
+
     model_config = ConfigDict(extra="forbid")
 
-    mode: str = "estimated_completion_time"
+    algorithm: str = "fcfs"
 
-    @field_validator("mode")
+    @field_validator("algorithm")
     @classmethod
-    def validate_mode(cls, value: str) -> str:
-        if value not in {"shortest_queue", "estimated_completion_time"}:
+    def validate_algorithm(cls, value: str) -> str:
+        if value not in {"fcfs", "short_queue_runtime", "estimated_completion_time"}:
             raise ValueError(
-                "policy.baseline_sp1.mode must be one of: shortest_queue, estimated_completion_time"
+                "policy.baseline.algorithm must be one of: fcfs, short_queue_runtime, estimated_completion_time"
             )
         return value
 
 
-class OnDiscPolicyConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    alpha: float = 1.0
-    beta: float = 0.2
-    gamma: float = 1.0
-    delta: float = 0.0
-    epsilon: float = 0.1
-
-
 class PolicyConfig(BaseModel):
+    """Policy namespace root configuration."""
+
     model_config = ConfigDict(extra="forbid")
 
-    baseline_sp1: BaselinePolicyConfig = Field(default_factory=BaselinePolicyConfig)
-    ondisc_sp1: OnDiscPolicyConfig = Field(default_factory=OnDiscPolicyConfig)
+    baseline: BaselinePolicyConfig = Field(default_factory=BaselinePolicyConfig)
 
 
 class InstanceConfig(BaseModel):
+    """Static upstream instance configuration entry."""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -107,6 +99,8 @@ class InstanceConfig(BaseModel):
 
 
 class GlobalSchedulerConfig(BaseModel):
+    """Validated root config object for global scheduler service."""
+
     model_config = ConfigDict(extra="forbid")
 
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -123,6 +117,14 @@ class GlobalSchedulerConfig(BaseModel):
 
 
 def load_config(config_path: str | Path) -> GlobalSchedulerConfig:
+    """Load and validate global scheduler YAML config.
+
+    Args:
+        config_path: Path to scheduler YAML file.
+
+    Returns:
+        Parsed and validated scheduler config model.
+    """
     path = Path(config_path)
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))

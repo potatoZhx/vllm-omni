@@ -1,21 +1,22 @@
+"""Scheduler server endpoint and lifecycle API tests."""
+
 import textwrap
 
 import pytest
 from fastapi.testclient import TestClient
 
 from vllm_omni.global_scheduler.config import load_config
-from vllm_omni.global_scheduler.server import create_app
+from vllm_omni.global_scheduler.server import UpstreamHTTPError, create_app
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
 def test_health_endpoint_returns_scheduler_and_ok(tmp_path):
+    """Health endpoint should report ok when config is present and valid."""
     config_path = tmp_path / "scheduler.yaml"
     config_path.write_text(
         textwrap.dedent(
             """
-            scheduler:
-              type: ondisc_sp1
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
@@ -35,21 +36,18 @@ def test_health_endpoint_returns_scheduler_and_ok(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
-    assert payload["scheduler"] == "ondisc_sp1"
     assert payload["instance_count"] == 1
     assert payload["checks"]["config_loaded"] is True
     assert payload["checks"]["has_instances"] is True
-    assert payload["checks"]["scheduler_type_valid"] is True
     assert "version" in payload
 
 
 def test_health_endpoint_returns_503_when_config_missing(tmp_path):
+    """Health endpoint should degrade when app config is missing."""
     config_path = tmp_path / "scheduler.yaml"
     config_path.write_text(
         textwrap.dedent(
             """
-            scheduler:
-              type: baseline_sp1
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
@@ -72,10 +70,10 @@ def test_health_endpoint_returns_503_when_config_missing(tmp_path):
     assert payload["status"] == "degraded"
     assert payload["checks"]["config_loaded"] is False
     assert payload["checks"]["has_instances"] is False
-    assert payload["checks"]["scheduler_type_valid"] is False
 
 
 def test_load_config_missing_file_raises_clear_error(tmp_path):
+    """Missing config file should produce a clear validation error."""
     missing = tmp_path / "not_found.yaml"
 
     with pytest.raises(ValueError, match="Config file not found"):
@@ -83,6 +81,7 @@ def test_load_config_missing_file_raises_clear_error(tmp_path):
 
 
 def test_instance_lifecycle_control_endpoints(tmp_path):
+    """Enable/disable endpoints should update routable state as expected."""
     config_path = tmp_path / "scheduler.yaml"
     config_path.write_text(
         textwrap.dedent(
@@ -90,8 +89,6 @@ def test_instance_lifecycle_control_endpoints(tmp_path):
             server:
               instance_health_check_interval_s: 100
               instance_health_check_timeout_s: 0.1
-            scheduler:
-              type: baseline_sp1
             instances:
               - id: worker-0
                 endpoint: http://127.0.0.1:9001
@@ -126,6 +123,7 @@ def test_instance_lifecycle_control_endpoints(tmp_path):
 
 
 def test_reload_endpoint_replaces_instance_set(tmp_path):
+    """Reload endpoint should reconcile and replace configured instances."""
     initial_path = tmp_path / "scheduler.yaml"
     reloaded_path = tmp_path / "scheduler_reloaded.yaml"
 
@@ -175,6 +173,7 @@ def test_reload_endpoint_replaces_instance_set(tmp_path):
 
 
 def test_reload_endpoint_returns_501_without_loader(tmp_path):
+    """Reload endpoint should return 501 when reload loader is not configured."""
     config_path = tmp_path / "scheduler.yaml"
     config_path.write_text(
         textwrap.dedent(
@@ -197,3 +196,175 @@ def test_reload_endpoint_returns_501_without_loader(tmp_path):
 
     response = client.post("/instances/reload")
     assert response.status_code == 501
+
+
+def test_probe_endpoint_runs_probe_in_to_thread(tmp_path, monkeypatch):
+    """Probe endpoint should delegate probe work to asyncio.to_thread."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+              instance_health_check_timeout_s: 0.1
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    app = create_app(config)
+    calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        """Record to_thread invocation without executing background work."""
+        calls.append((func, args, kwargs))
+        return None
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.asyncio.to_thread", _fake_to_thread)
+
+    client = TestClient(app)
+    response = client.post("/instances/probe")
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+
+
+def test_chat_completions_success_sets_route_headers_and_state(tmp_path, monkeypatch):
+    """Proxy success path should add route headers and release counters."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            policy:
+              baseline:
+                algorithm: fcfs
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+
+    def _fake_proxy(endpoint, body, headers, timeout_s):
+        """Return a deterministic JSON response without real upstream call."""
+        assert endpoint == "http://127.0.0.1:9001"
+        assert timeout_s == 2
+        assert b'"model": "demo"' in body
+        assert headers["content-type"] == "application/json"
+        return b'{"id": "resp-1"}'
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_chat_completion", _fake_proxy)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"content-type": "application/json", "x-request-id": "req-1"},
+        json={"model": "demo", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "resp-1"
+    assert response.headers["X-Routed-Instance"] == "worker-0"
+    assert "router=fcfs" in response.headers["X-Route-Reason"]
+    assert float(response.headers["X-Route-Score"]) >= 0.0
+
+    snapshot = app.state.runtime_state_store.snapshot()
+    assert snapshot["worker-0"].queue_len == 0
+    assert snapshot["worker-0"].inflight == 0
+
+
+def test_chat_completions_returns_503_when_no_routable_instance(tmp_path):
+    """Proxy should return GS_NO_ROUTABLE_INSTANCE when no instance is routable."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+    app.state.instance_lifecycle_manager.set_enabled("worker-0", enabled=False)
+    client = TestClient(app)
+
+    response = client.post("/v1/chat/completions", json={"model": "demo", "messages": []})
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"]["code"] == "GS_NO_ROUTABLE_INSTANCE"
+    assert payload["error"]["request_id"]
+
+
+@pytest.mark.parametrize(
+    "raised,status_code,error_code",
+    [
+        (UpstreamHTTPError(status_code=503, body=b"{}"), 503, "GS_UPSTREAM_HTTP_ERROR"),
+        (TimeoutError("timeout"), 502, "GS_UPSTREAM_TIMEOUT"),
+        (OSError("network down"), 502, "GS_UPSTREAM_NETWORK_ERROR"),
+    ],
+)
+def test_chat_completions_error_semantics_and_state_cleanup(tmp_path, monkeypatch, raised, status_code, error_code):
+    """Proxy should classify upstream errors and always cleanup runtime state."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 3
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                sp_size: 1
+                max_concurrency: 1
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+
+    def _fake_proxy(*_args, **_kwargs):
+        """Raise synthetic upstream errors for classification tests."""
+        raise raised
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_chat_completion", _fake_proxy)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-request-id": "req-error"},
+        json={"model": "demo", "messages": []},
+    )
+
+    assert response.status_code == status_code
+    payload = response.json()
+    assert payload["error"]["code"] == error_code
+    assert payload["error"]["request_id"] == "req-error"
+    assert response.headers["X-Routed-Instance"] == "worker-0"
+
+    snapshot = app.state.runtime_state_store.snapshot()
+    assert snapshot["worker-0"].queue_len == 0
+    assert snapshot["worker-0"].inflight == 0
