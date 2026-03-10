@@ -16,7 +16,7 @@ policy:
 benchmark:
   worker_ids: [worker-gpu0, worker-gpu1]
   worker_ready_timeout_s: 600
-  model: /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
+  model: Qwen/Qwen-Image
   task: t2i
   dataset: trace
   dataset_path: benchmarks/dataset/sd3_trace_redistributed.txt
@@ -31,7 +31,7 @@ instances:
     endpoint: http://127.0.0.1:8001
     launch:
       executable: vllm
-      model: /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
+      model: Qwen/Qwen-Image
       args:
         - --omni
         - --max-concurrency
@@ -46,13 +46,13 @@ instances:
       executable: pkill
       args:
         - -f
-        - "vllm serve /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6 --port {endpoint_port}"
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
 
   - id: worker-gpu1
     endpoint: http://127.0.0.1:8002
     launch:
       executable: vllm
-      model: /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
+      model: Qwen/Qwen-Image
       args:
         - --omni
         - --max-concurrency
@@ -67,4 +67,4 @@ instances:
       executable: pkill
       args:
         - -f
-        - "vllm serve /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6 --port {endpoint_port}"
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
