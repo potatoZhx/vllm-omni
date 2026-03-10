@@ -7,7 +7,9 @@ set -euo pipefail
 # 2) Lifecycle config exists in global_scheduler.yaml for worker ids below.
 
 NUM_PROMPTS="${NUM_PROMPTS:-20}"
-REQUEST_RATE="${REQUEST_RATE:-0.5}"
+REQUEST_RATE="${REQUEST_RATE:-0.1}"
+REQUEST_RATES="${REQUEST_RATES:-0.1,0.2,0.5,1}"
+REQUEST_DURATION_S="${REQUEST_DURATION_S:-1800}"
 STARTED_WORKERS=0
 BENCH_RUNNING=0
 BENCH_PID=""
@@ -223,6 +225,88 @@ terminate_benchmark() {
   BENCH_PID=""
 }
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+parse_request_rates() {
+  local rates_raw="${REQUEST_RATES:-${REQUEST_RATE}}"
+  local normalized=()
+  local token
+  rates_raw="${rates_raw//,/ }"
+  for token in ${rates_raw}; do
+    token="$(trim "${token}")"
+    if [[ -z "${token}" ]]; then
+      continue
+    fi
+    normalized+=("${token}")
+  done
+
+  if [[ "${#normalized[@]}" -eq 0 ]]; then
+    echo "No request rates configured. Set REQUEST_RATE or REQUEST_RATES." >&2
+    return 1
+  fi
+
+  REQUEST_RATE_LIST=("${normalized[@]}")
+}
+
+sanitize_rate_for_filename() {
+  local rate="$1"
+  rate="${rate//./p}"
+  rate="${rate//[^a-zA-Z0-9_-]/_}"
+  printf '%s' "${rate}"
+}
+
+resolve_num_prompts_for_rate() {
+  local rate="$1"
+  if [[ -n "${REQUEST_DURATION_S}" ]]; then
+    python3 - "${rate}" "${REQUEST_DURATION_S}" <<'PY'
+import math
+import sys
+
+rate = float(sys.argv[1])
+duration = float(sys.argv[2])
+if not math.isfinite(rate):
+    raise ValueError("REQUEST_DURATION_S requires a finite request rate")
+if duration <= 0:
+    raise ValueError("REQUEST_DURATION_S must be > 0")
+if rate <= 0:
+    raise ValueError("request rate must be > 0 when REQUEST_DURATION_S is set")
+print(max(1, math.ceil(rate * duration)))
+PY
+    return 0
+  fi
+
+  printf '%s\n' "${NUM_PROMPTS}"
+}
+
+resolve_output_file_for_rate() {
+  local rate="$1"
+  if [[ -z "${OUTPUT_FILE}" ]]; then
+    return 0
+  fi
+
+  if [[ "${#REQUEST_RATE_LIST[@]}" -le 1 ]]; then
+    printf '%s\n' "${OUTPUT_FILE}"
+    return 0
+  fi
+
+  python3 - "${OUTPUT_FILE}" "$(sanitize_rate_for_filename "${rate}")" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+suffix = sys.argv[2]
+if path.suffix:
+    print(str(path.with_name(f"{path.stem}_rps_{suffix}{path.suffix}")))
+else:
+    print(str(path.with_name(f"{path.name}_rps_{suffix}")))
+PY
+}
+
 cleanup() {
   if [[ "${_CLEANED_UP}" == "1" ]]; then
     return 0
@@ -327,39 +411,32 @@ wait_workers_api_ready() {
   done
 }
 
-main() {
-  trap on_signal INT TERM
-  trap on_exit EXIT
+run_benchmark_for_rate() {
+  local rate="$1"
+  local run_num_prompts
+  local run_output_file
 
-  echo "[check] scheduler health: ${SCHEDULER_URL}"
-  if ! check_scheduler_ready; then
-    echo "Scheduler is not reachable at ${SCHEDULER_URL}" >&2
-    exit 1
-  fi
+  run_num_prompts="$(resolve_num_prompts_for_rate "${rate}")"
+  run_output_file="$(resolve_output_file_for_rate "${rate}")"
 
-  start_workers
-  STARTED_WORKERS=1
-  wait_workers_routable "${WORKER_READY_TIMEOUT_S}"
-  wait_workers_api_ready "${WORKER_READY_TIMEOUT_S}"
-
-  echo "[bench] start benchmark"
-  cmd=(
+  echo "[bench] start benchmark: rate=${rate}, num_prompts=${run_num_prompts}${REQUEST_DURATION_S:+, request_duration_s=${REQUEST_DURATION_S}}"
+  local cmd=(
     python3 "${BENCH_SCRIPT}"
     --base-url "${SCHEDULER_URL}"
     --model "${MODEL}"
     --task "${TASK}"
     --dataset "${DATASET}"
-    --num-prompts "${NUM_PROMPTS}"
+    --num-prompts "${run_num_prompts}"
     --max-concurrency "${MAX_CONCURRENCY}"
-    --request-rate "${REQUEST_RATE}"
+    --request-rate "${rate}"
     --warmup-requests "${WARMUP_REQUESTS}"
     --warmup-num-inference-steps "${WARMUP_NUM_INFERENCE_STEPS}"
   )
   if [[ -n "${DATASET_PATH}" ]]; then
     cmd+=(--dataset-path "${DATASET_PATH}")
   fi
-  if [[ -n "${OUTPUT_FILE}" ]]; then
-    cmd+=(--output-file "${OUTPUT_FILE}")
+  if [[ -n "${run_output_file}" ]]; then
+    cmd+=(--output-file "${run_output_file}")
   fi
 
   echo "Running: ${cmd[*]}"
@@ -373,6 +450,29 @@ main() {
   BENCH_RUNNING=0
   BENCH_PID=""
   return "${bench_status}"
+}
+
+main() {
+  trap on_signal INT TERM
+  trap on_exit EXIT
+
+  parse_request_rates
+
+  echo "[check] scheduler health: ${SCHEDULER_URL}"
+  if ! check_scheduler_ready; then
+    echo "Scheduler is not reachable at ${SCHEDULER_URL}" >&2
+    exit 1
+  fi
+
+  start_workers
+  STARTED_WORKERS=1
+  wait_workers_routable "${WORKER_READY_TIMEOUT_S}"
+  wait_workers_api_ready "${WORKER_READY_TIMEOUT_S}"
+
+  local rate
+  for rate in "${REQUEST_RATE_LIST[@]}"; do
+    run_benchmark_for_rate "${rate}"
+  done
 }
 
 main "$@"
