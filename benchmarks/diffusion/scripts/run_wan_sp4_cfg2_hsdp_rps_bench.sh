@@ -29,6 +29,7 @@ MASTER_PORT="${MASTER_PORT:-29600}"
 # Benchmark 参数。
 TASK="${TASK:-t2i}"
 DATASET="${DATASET:-trace}"
+DATASET_PATH="${DATASET_PATH:-/home/mumura/omni/dataset/trace/cogvideox_trace.txt/cogvideox_trace.txt}"
 NUM_PROMPTS_DURATION_SECONDS="${NUM_PROMPTS_DURATION_SECONDS:-10}"
 RPS_LIST="${RPS_LIST:-[0.1, 1]}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-200}"
@@ -49,6 +50,8 @@ echo "===== Run dir: ${RUN_DIR} =====" | tee -a "$MASTER_LOG"
 echo "===== Model: ${MODEL} =====" | tee -a "$MASTER_LOG"
 echo "===== RPS list: ${RPS_LIST} =====" | tee -a "$MASTER_LOG"
 echo "===== Duration(seconds): ${NUM_PROMPTS_DURATION_SECONDS} =====" | tee -a "$MASTER_LOG"
+echo "===== Dataset: ${DATASET} =====" | tee -a "$MASTER_LOG"
+echo "===== Dataset path: ${DATASET_PATH} =====" | tee -a "$MASTER_LOG"
 echo "===== Repo root: ${REPO_ROOT} =====" | tee -a "$MASTER_LOG"
 
 # 前置校验：脚本假设当前环境已配置好 python3 / vllm。
@@ -58,6 +61,11 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 if ! command -v vllm >/dev/null 2>&1; then
   echo "vllm command not found in PATH" | tee -a "$MASTER_LOG"
+  exit 1
+fi
+if [ "$DATASET" = "trace" ] && [ -z "$DATASET_PATH" -o ! -f "$DATASET_PATH" ]; then
+  echo "trace dataset file not found: ${DATASET_PATH}" | tee -a "$MASTER_LOG"
+  echo "Please set DATASET_PATH to a local trace file path." | tee -a "$MASTER_LOG"
   exit 1
 fi
 
@@ -157,6 +165,7 @@ for rps in $RPS_ITEMS; do
     --model "$MODEL" \
     --task "$TASK" \
     --dataset "$DATASET" \
+    --dataset-path "$DATASET_PATH" \
     --num-prompts "$num_prompts" \
     --request-rate "$rps" \
     --max-concurrency "$MAX_CONCURRENCY" \
