@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Preconditions:
+# 1) Scheduler is already running, e.g.:
+#    python3 -m vllm_omni.global_scheduler.server --config ./global_scheduler.yaml
+# 2) Lifecycle config exists in global_scheduler.yaml for worker ids below.
+
+SCHEDULER_URL="${SCHEDULER_URL:-http://127.0.0.1:8089}"
+WORKER_IDS="${WORKER_IDS:-worker-gpu0 worker-gpu1}"
+WORKER_READY_TIMEOUT_S="${WORKER_READY_TIMEOUT_S:-600}"
+
+MODEL="${MODEL:-Qwen/Qwen-Image}"
+TASK="${TASK:-t2i}"
+DATASET="${DATASET:-trace}"
+DATASET_PATH="${DATASET_PATH:-/home/tianzhu/vllm-omni-wtz/benchmarks/dataset/sd3_trace_redistributed.txt}"
+NUM_PROMPTS="${NUM_PROMPTS:-20}"
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-20}"
+WARMUP_REQUESTS="${WARMUP_REQUESTS:-0}"
+WARMUP_NUM_INFERENCE_STEPS="${WARMUP_NUM_INFERENCE_STEPS:-1}"
+REQUEST_RATE="${REQUEST_RATE:-0.5}"
+OUTPUT_FILE="${OUTPUT_FILE:-}"
+AUTO_STOP="${AUTO_STOP:-1}"
+STARTED_WORKERS=0
+BENCH_PID=""
+_CLEANED_UP=0
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BENCH_SCRIPT="${REPO_ROOT}/benchmarks/diffusion/diffusion_benchmark_serving.py"
+
+if [[ ! -f "${BENCH_SCRIPT}" ]]; then
+  echo "Benchmark script not found: ${BENCH_SCRIPT}" >&2
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required." >&2
+  exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required." >&2
+  exit 1
+fi
+
+# Keep global proxy settings untouched, but force local loopback traffic
+# in this script to bypass proxy.
+export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
+export no_proxy="${no_proxy:-127.0.0.1,localhost}"
+
+curl_local() {
+  curl --noproxy '*' "$@"
+}
+
+check_scheduler_ready() {
+  local health
+  health="$(curl_local -fsS "${SCHEDULER_URL}/health" || true)"
+  if [[ -z "${health}" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+is_worker_routable() {
+  local worker_id="$1"
+  local instances_json
+  instances_json="$(curl_local -fsS "${SCHEDULER_URL}/instances" || true)"
+  if [[ -z "${instances_json}" ]]; then
+    echo "0"
+    return 0
+  fi
+  INSTANCES_JSON="${instances_json}" python3 - "${worker_id}" <<'PY'
+import json
+import os
+import sys
+
+worker_id = sys.argv[1]
+raw = os.environ.get("INSTANCES_JSON", "")
+if not raw:
+    print("0")
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError:
+    print("0")
+    raise SystemExit(0)
+
+for inst in payload.get("instances", []):
+    if inst.get("id") == worker_id:
+        print("1" if inst.get("routable") else "0")
+        break
+else:
+    print("0")
+PY
+}
+
+get_worker_endpoint() {
+  local worker_id="$1"
+  local instances_json
+  instances_json="$(curl_local -fsS "${SCHEDULER_URL}/instances" || true)"
+  if [[ -z "${instances_json}" ]]; then
+    echo ""
+    return 0
+  fi
+  INSTANCES_JSON="${instances_json}" python3 - "${worker_id}" <<'PY'
+import json
+import os
+import sys
+
+worker_id = sys.argv[1]
+raw = os.environ.get("INSTANCES_JSON", "")
+if not raw:
+    print("")
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError:
+    print("")
+    raise SystemExit(0)
+
+for inst in payload.get("instances", []):
+    if inst.get("id") == worker_id:
+        print(inst.get("endpoint", "") or "")
+        break
+else:
+    print("")
+PY
+}
+
+start_workers() {
+  for wid in ${WORKER_IDS}; do
+    echo "[start] ${wid}"
+    curl_local -fsS -X POST "${SCHEDULER_URL}/instances/${wid}/start" >/dev/null
+  done
+}
+
+stop_workers() {
+  for wid in ${WORKER_IDS}; do
+    echo "[stop] ${wid}"
+    curl_local -fsS -X POST "${SCHEDULER_URL}/instances/${wid}/stop" >/dev/null || true
+  done
+}
+
+cleanup() {
+  if [[ "${_CLEANED_UP}" == "1" ]]; then
+    return 0
+  fi
+  _CLEANED_UP=1
+
+  if [[ -n "${BENCH_PID}" ]]; then
+    kill "${BENCH_PID}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${AUTO_STOP}" == "1" && "${STARTED_WORKERS}" == "1" ]]; then
+    stop_workers
+  fi
+}
+
+on_signal() {
+  echo "[signal] interrupted, cleaning up..."
+  cleanup
+  exit 130
+}
+
+on_exit() {
+  cleanup
+}
+
+wait_workers_routable() {
+  local timeout_s="${1:-120}"
+  local start_ts
+  start_ts="$(date +%s)"
+  for wid in ${WORKER_IDS}; do
+    while true; do
+      local routable
+      routable="$(is_worker_routable "${wid}")"
+      if [[ "${routable}" == "1" ]]; then
+        echo "[ready] ${wid} routable=true"
+        break
+      fi
+      if (( $(date +%s) - start_ts > timeout_s )); then
+        echo "Timeout waiting for worker to become routable: ${wid}" >&2
+        return 1
+      fi
+      sleep 1
+    done
+  done
+}
+
+is_worker_api_ready() {
+  local endpoint="$1"
+  local tmp_body
+  local status
+  local payload
+  tmp_body="$(mktemp)"
+  payload="$(cat <<EOF
+{"model":"${MODEL}","messages":[{"role":"user","content":"ready-check"}],"extra_body":{"width":64,"height":64,"num_inference_steps":1}}
+EOF
+)"
+
+  status="$(
+    curl_local -sS --max-time 30 -o "${tmp_body}" -w "%{http_code}" \
+      -X POST "${endpoint%/}/v1/chat/completions" \
+      -H 'Content-Type: application/json' \
+      -d "${payload}" || true
+  )"
+  if [[ "${status}" == "200" ]]; then
+    rm -f "${tmp_body}"
+    echo "1"
+    return 0
+  fi
+  if grep -qi "model.*not found" "${tmp_body}" 2>/dev/null; then
+    rm -f "${tmp_body}"
+    echo "MODEL_NOT_FOUND"
+    return 0
+  fi
+  rm -f "${tmp_body}"
+  echo "0"
+}
+
+wait_workers_api_ready() {
+  local timeout_s="${1:-600}"
+
+  for wid in ${WORKER_IDS}; do
+    local start_ts
+    start_ts="$(date +%s)"
+    while true; do
+      local endpoint
+      local ready
+      endpoint="$(get_worker_endpoint "${wid}")"
+      if [[ -n "${endpoint}" ]]; then
+        ready="$(is_worker_api_ready "${endpoint}")"
+        if [[ "${ready}" == "1" ]]; then
+          echo "[ready] ${wid} api ready: ${endpoint%/}/v1/chat/completions"
+          break
+        fi
+        if [[ "${ready}" == "MODEL_NOT_FOUND" ]]; then
+          echo "Model not found on ${wid}: MODEL=${MODEL}" >&2
+          return 1
+        fi
+      fi
+      if (( $(date +%s) - start_ts > timeout_s )); then
+        echo "Timeout waiting for worker API ready: ${wid}" >&2
+        return 1
+      fi
+      sleep 2
+    done
+  done
+}
+
+main() {
+  trap on_signal INT TERM
+  trap on_exit EXIT
+
+  echo "[check] scheduler health: ${SCHEDULER_URL}"
+  if ! check_scheduler_ready; then
+    echo "Scheduler is not reachable at ${SCHEDULER_URL}" >&2
+    exit 1
+  fi
+
+  start_workers
+  STARTED_WORKERS=1
+  wait_workers_routable "${WORKER_READY_TIMEOUT_S}"
+  wait_workers_api_ready "${WORKER_READY_TIMEOUT_S}"
+
+  echo "[bench] start benchmark"
+  cmd=(
+    python3 "${BENCH_SCRIPT}"
+    --base-url "${SCHEDULER_URL}"
+    --model "${MODEL}"
+    --task "${TASK}"
+    --dataset "${DATASET}"
+    --num-prompts "${NUM_PROMPTS}"
+    --max-concurrency "${MAX_CONCURRENCY}"
+    --request-rate "${REQUEST_RATE}"
+    --warmup-requests "${WARMUP_REQUESTS}"
+    --warmup-num-inference-steps "${WARMUP_NUM_INFERENCE_STEPS}"
+  )
+  if [[ -n "${DATASET_PATH}" ]]; then
+    cmd+=(--dataset-path "${DATASET_PATH}")
+  fi
+  if [[ -n "${OUTPUT_FILE}" ]]; then
+    cmd+=(--output-file "${OUTPUT_FILE}")
+  fi
+
+  echo "Running: ${cmd[*]}"
+  "${cmd[@]}" &
+  BENCH_PID="$!"
+  wait "${BENCH_PID}"
+  BENCH_PID=""
+}
+
+main "$@"
