@@ -47,7 +47,8 @@ class LocalProcessController(ProcessController):
             raise LifecycleUnsupportedError(f"stop config not provided for instance {instance.id}")
         if not instance.stop_args:
             raise LifecycleUnsupportedError(f"stop.args is empty for instance {instance.id}")
-        self._run(operation="stop", instance=instance, argv=[instance.stop_executable, *instance.stop_args], env=None)
+        stop_args = self._expand_instance_placeholders(instance.stop_args, instance)
+        self._run(operation="stop", instance=instance, argv=[instance.stop_executable, *stop_args], env=None)
 
     def start(self, instance: InstanceSpec) -> None:
         argv, env = self._build_start_argv_and_env(instance)
@@ -95,6 +96,30 @@ class LocalProcessController(ProcessController):
             filtered.append(item)
             idx += 1
         return filtered
+
+    @staticmethod
+    def _expand_instance_placeholders(args: list[str], instance: InstanceSpec) -> list[str]:
+        """Expand lifecycle arg placeholders derived from one instance endpoint."""
+        parsed = urlparse(instance.endpoint)
+        endpoint_port = parsed.port
+        if endpoint_port is None:
+            raise LifecycleUnsupportedError(f"endpoint has no port for instance {instance.id}")
+        endpoint_host = parsed.hostname
+        if endpoint_host is None:
+            raise LifecycleUnsupportedError(f"endpoint has no host for instance {instance.id}")
+
+        replacements = {
+            "{instance_id}": instance.id,
+            "{endpoint}": instance.endpoint,
+            "{endpoint_host}": endpoint_host,
+            "{endpoint_port}": str(endpoint_port),
+        }
+        expanded: list[str] = []
+        for arg in args:
+            for placeholder, value in replacements.items():
+                arg = arg.replace(placeholder, value)
+            expanded.append(arg)
+        return expanded
 
     @staticmethod
     def _run(operation: str, instance: InstanceSpec, argv: list[str], env: dict[str, str] | None) -> None:
