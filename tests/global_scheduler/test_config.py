@@ -37,6 +37,43 @@ def test_load_config_success(tmp_path):
     assert len(config.instances) == 2
 
 
+def test_load_config_benchmark_section_success(tmp_path):
+    """Benchmark section should be accepted and parsed with typed fields."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            benchmark:
+              worker_ids: [worker-0, worker-1]
+              worker_ready_timeout_s: 900
+              model: Qwen/Qwen-Image
+              task: t2i
+              dataset: trace
+              dataset_path: /tmp/prompts.txt
+              max_concurrency: 16
+              warmup_requests: 2
+              warmup_num_inference_steps: 3
+              output_file: /tmp/metrics.json
+              auto_stop: false
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+              - id: worker-1
+                endpoint: http://127.0.0.1:9002
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.benchmark.worker_ids == ["worker-0", "worker-1"]
+    assert config.benchmark.worker_ready_timeout_s == 900
+    assert config.benchmark.model == "Qwen/Qwen-Image"
+    assert config.benchmark.max_concurrency == 16
+    assert config.benchmark.auto_stop is False
+
+
 def test_load_config_duplicate_instance_id(tmp_path):
     """Duplicate instance ids should be rejected by config validation."""
     """Duplicate instance ids should be rejected by config validation."""

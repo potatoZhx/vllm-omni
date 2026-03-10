@@ -6,27 +6,16 @@ set -euo pipefail
 #    python3 -m vllm_omni.global_scheduler.server --config ./global_scheduler.yaml
 # 2) Lifecycle config exists in global_scheduler.yaml for worker ids below.
 
-SCHEDULER_URL="${SCHEDULER_URL:-http://127.0.0.1:8089}"
-WORKER_IDS="${WORKER_IDS:-worker-gpu0 worker-gpu1}"
-WORKER_READY_TIMEOUT_S="${WORKER_READY_TIMEOUT_S:-600}"
-
-MODEL="${MODEL:-Qwen/Qwen-Image}"
-TASK="${TASK:-t2i}"
-DATASET="${DATASET:-trace}"
-DATASET_PATH="${DATASET_PATH:-/home/tianzhu/vllm-omni-wtz/benchmarks/dataset/sd3_trace_redistributed.txt}"
 NUM_PROMPTS="${NUM_PROMPTS:-20}"
-MAX_CONCURRENCY="${MAX_CONCURRENCY:-20}"
-WARMUP_REQUESTS="${WARMUP_REQUESTS:-0}"
-WARMUP_NUM_INFERENCE_STEPS="${WARMUP_NUM_INFERENCE_STEPS:-1}"
 REQUEST_RATE="${REQUEST_RATE:-0.5}"
-OUTPUT_FILE="${OUTPUT_FILE:-}"
-AUTO_STOP="${AUTO_STOP:-1}"
 STARTED_WORKERS=0
+BENCH_RUNNING=0
 BENCH_PID=""
 _CLEANED_UP=0
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BENCH_SCRIPT="${REPO_ROOT}/benchmarks/diffusion/diffusion_benchmark_serving.py"
+CONFIG_FILE="${CONFIG_FILE:-${REPO_ROOT}/global_scheduler.yaml}"
 
 if [[ ! -f "${BENCH_SCRIPT}" ]]; then
   echo "Benchmark script not found: ${BENCH_SCRIPT}" >&2
@@ -43,10 +32,89 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+load_benchmark_config() {
+  local config_lines
+  config_lines="$(
+    PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - "${CONFIG_FILE}" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+from vllm_omni.global_scheduler.config import load_config
+
+config_path = Path(sys.argv[1]).resolve()
+config = load_config(config_path)
+benchmark = config.benchmark
+instances_by_id = {instance.id: instance for instance in config.instances}
+worker_ids = benchmark.worker_ids or [instance.id for instance in config.instances]
+missing_worker_ids = [worker_id for worker_id in worker_ids if worker_id not in instances_by_id]
+if missing_worker_ids:
+    raise ValueError(f"benchmark.worker_ids contains unknown instances: {', '.join(missing_worker_ids)}")
+
+model = benchmark.model
+if model is None:
+    launch_models = {
+        instance.launch.model
+        for worker_id in worker_ids
+        for instance in [instances_by_id[worker_id]]
+        if instance.launch is not None and instance.launch.model
+    }
+    if len(launch_models) != 1:
+        raise ValueError("benchmark.model is required when selected workers do not share exactly one launch.model")
+    model = next(iter(launch_models))
+
+scheduler_host = config.server.host
+if scheduler_host in {"0.0.0.0", "::"}:
+    scheduler_host = "127.0.0.1"
+scheduler_url = f"http://{scheduler_host}:{config.server.port}"
+
+def resolve_config_path(value: str | None) -> str:
+    if not value:
+        return ""
+    path = Path(value)
+    if not path.is_absolute():
+        path = (config_path.parent / path).resolve()
+    return str(path)
+
+values = {
+    "SCHEDULER_HOST": scheduler_host,
+    "SCHEDULER_URL": scheduler_url,
+    "WORKER_IDS": " ".join(worker_ids),
+    "WORKER_READY_TIMEOUT_S": str(benchmark.worker_ready_timeout_s),
+    "MODEL": model,
+    "TASK": benchmark.task,
+    "DATASET": benchmark.dataset,
+    "DATASET_PATH": resolve_config_path(benchmark.dataset_path),
+    "MAX_CONCURRENCY": str(benchmark.max_concurrency),
+    "WARMUP_REQUESTS": str(benchmark.warmup_requests),
+    "WARMUP_NUM_INFERENCE_STEPS": str(benchmark.warmup_num_inference_steps),
+    "OUTPUT_FILE": resolve_config_path(benchmark.output_file),
+    "AUTO_STOP": "1" if benchmark.auto_stop else "0",
+}
+
+for key, value in values.items():
+    print(f"{key}={shlex.quote(value)}")
+PY
+  )"
+
+  while IFS= read -r line; do
+    if [[ ! "${line}" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
+      continue
+    fi
+    eval "${line}"
+  done <<<"${config_lines}"
+}
+
+load_benchmark_config
+
 # Keep global proxy settings untouched, but force local loopback traffic
 # in this script to bypass proxy.
-export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
-export no_proxy="${no_proxy:-127.0.0.1,localhost}"
+DEFAULT_NO_PROXY="127.0.0.1,localhost"
+if [[ "${SCHEDULER_HOST}" == "127.0.0.1" || "${SCHEDULER_HOST}" == "localhost" ]]; then
+  DEFAULT_NO_PROXY="${DEFAULT_NO_PROXY},${SCHEDULER_HOST}"
+fi
+export NO_PROXY="${NO_PROXY:-${DEFAULT_NO_PROXY}}"
+export no_proxy="${no_proxy:-${DEFAULT_NO_PROXY}}"
 
 curl_local() {
   curl --noproxy '*' "$@"
@@ -143,15 +211,25 @@ stop_workers() {
   done
 }
 
+terminate_benchmark() {
+  if [[ "${BENCH_RUNNING}" != "1" || -z "${BENCH_PID}" ]]; then
+    return 0
+  fi
+  if kill -0 "${BENCH_PID}" >/dev/null 2>&1; then
+    kill -TERM "${BENCH_PID}" >/dev/null 2>&1 || true
+    wait "${BENCH_PID}" >/dev/null 2>&1 || true
+  fi
+  BENCH_RUNNING=0
+  BENCH_PID=""
+}
+
 cleanup() {
   if [[ "${_CLEANED_UP}" == "1" ]]; then
     return 0
   fi
   _CLEANED_UP=1
 
-  if [[ -n "${BENCH_PID}" ]]; then
-    kill "${BENCH_PID}" >/dev/null 2>&1 || true
-  fi
+  terminate_benchmark
   if [[ "${AUTO_STOP}" == "1" && "${STARTED_WORKERS}" == "1" ]]; then
     stop_workers
   fi
@@ -287,8 +365,14 @@ main() {
   echo "Running: ${cmd[*]}"
   "${cmd[@]}" &
   BENCH_PID="$!"
-  wait "${BENCH_PID}"
+  BENCH_RUNNING=1
+  local bench_status=0
+  if ! wait "${BENCH_PID}"; then
+    bench_status=$?
+  fi
+  BENCH_RUNNING=0
   BENCH_PID=""
+  return "${bench_status}"
 }
 
 main "$@"

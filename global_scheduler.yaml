@@ -11,18 +11,29 @@ scheduler:
 
 policy:
   baseline:
-    algorithm: fcfs
+    algorithm: round_robin
+
+benchmark:
+  worker_ids: [worker-gpu0, worker-gpu1]
+  worker_ready_timeout_s: 600
+  model: /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
+  task: t2i
+  dataset: trace
+  dataset_path: benchmarks/dataset/sd3_trace_redistributed.txt
+  max_concurrency: 20
+  warmup_requests: 0
+  warmup_num_inference_steps: 1
+  output_file: logs/global_scheduler_benchmark_metrics.json
+  auto_stop: true
 
 instances:
   - id: worker-gpu0
     endpoint: http://127.0.0.1:8001
     launch:
       executable: vllm
-      model: Qwen/Qwen-Image
+      model: /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
       args:
         - --omni
-        - --port
-        - "8001"
         - --max-concurrency
         - "100"
         - --ulysses-degree
@@ -35,17 +46,15 @@ instances:
       executable: pkill
       args:
         - -f
-        - "vllm serve Qwen/Qwen-Image --port 8001"
+        - "vllm serve /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6 --port {endpoint_port}"
 
   - id: worker-gpu1
     endpoint: http://127.0.0.1:8002
     launch:
       executable: vllm
-      model: Qwen/Qwen-Image
+      model: /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6
       args:
         - --omni
-        - --port
-        - "8002"
         - --max-concurrency
         - "100"
         - --ulysses-degree
@@ -58,4 +67,4 @@ instances:
       executable: pkill
       args:
         - -f
-        - "vllm serve Qwen/Qwen-Image --port 8002"
+        - "vllm serve /home/tianzhu/.cache/huggingface/hub/models--Qwen--Qwen-Image/snapshots/75e0b4be04f60ec59a75f475837eced720f823b6 --port {endpoint_port}"

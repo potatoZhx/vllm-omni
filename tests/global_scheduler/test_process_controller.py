@@ -51,6 +51,36 @@ def test_local_process_controller_success_command():
     controller.stop(instance)
 
 
+def test_local_process_controller_expands_stop_placeholders(monkeypatch):
+    """stop() should expand endpoint-derived placeholders in stop args."""
+    captured: dict[str, object] = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return None
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.process_controller.subprocess.run", _fake_run)
+
+    controller = LocalProcessController()
+    instance = InstanceSpec(
+        id="worker-0",
+        endpoint="http://127.0.0.1:9001",
+        stop_executable="pkill",
+        stop_args=["-f", "vllm serve --host {endpoint_host} --port {endpoint_port} --tag {instance_id}"],
+    )
+
+    controller.stop(instance)
+
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert argv == [
+        "pkill",
+        "-f",
+        "vllm serve --host 127.0.0.1 --port 9001 --tag worker-0",
+    ]
+
+
 def test_local_process_controller_start_with_structured_launch():
     """Start should execute structured launch command with endpoint port."""
     controller = LocalProcessController()

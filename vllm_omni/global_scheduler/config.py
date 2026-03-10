@@ -46,7 +46,9 @@ class BaselinePolicyConfig(BaseModel):
     @classmethod
     def validate_algorithm(cls, value: str) -> str:
         if value not in {"fcfs", "round_robin", "short_queue_runtime", "estimated_completion_time"}:
+        if value not in {"fcfs", "round_robin", "short_queue_runtime", "estimated_completion_time"}:
             raise ValueError(
+                "policy.baseline.algorithm must be one of: fcfs, round_robin, short_queue_runtime, estimated_completion_time"
                 "policy.baseline.algorithm must be one of: fcfs, round_robin, short_queue_runtime, estimated_completion_time"
             )
         return value
@@ -58,6 +60,64 @@ class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     baseline: BaselinePolicyConfig = Field(default_factory=BaselinePolicyConfig)
+
+
+class BenchmarkConfig(BaseModel):
+    """Benchmark launcher settings colocated with scheduler config."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker_ids: list[str] = Field(default_factory=list)
+    worker_ready_timeout_s: int = Field(default=600, ge=1)
+    model: str | None = None
+    task: str = "t2i"
+    dataset: str = "trace"
+    dataset_path: str | None = None
+    max_concurrency: int = Field(default=20, ge=1)
+    warmup_requests: int = Field(default=0, ge=0)
+    warmup_num_inference_steps: int = Field(default=1, ge=1)
+    output_file: str | None = None
+    auto_stop: bool = True
+
+    @field_validator("worker_ids")
+    @classmethod
+    def validate_worker_ids(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item.strip():
+                raise ValueError("benchmark.worker_ids cannot include empty items")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("benchmark.model cannot be empty")
+        return value
+
+    @field_validator("task")
+    @classmethod
+    def validate_task(cls, value: str) -> str:
+        if value not in {"t2v", "i2v", "ti2v", "ti2i", "i2i", "t2i"}:
+            raise ValueError("benchmark.task must be one of: t2v, i2v, ti2v, ti2i, i2i, t2i")
+        return value
+
+    @field_validator("dataset")
+    @classmethod
+    def validate_dataset(cls, value: str) -> str:
+        if value not in {"vbench", "trace", "random"}:
+            raise ValueError("benchmark.dataset must be one of: vbench, trace, random")
+        return value
+
+    @field_validator("dataset_path", "output_file")
+    @classmethod
+    def validate_optional_non_empty_str(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("benchmark.dataset_path and benchmark.output_file cannot be empty")
+        return value
 
 
 class LaunchConfig(BaseModel):
@@ -127,6 +187,8 @@ class InstanceConfig(BaseModel):
     endpoint: str
     launch: LaunchConfig | None = None
     stop: StopConfig | None = None
+    launch: LaunchConfig | None = None
+    stop: StopConfig | None = None
 
     @field_validator("id")
     @classmethod
@@ -156,6 +218,7 @@ class GlobalSchedulerConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    benchmark: BenchmarkConfig = Field(default_factory=BenchmarkConfig)
     instances: list[InstanceConfig]
 
     @model_validator(mode="after")
