@@ -4,7 +4,9 @@
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from math import inf
+from typing import Any
 
 import zmq
 from vllm.logger import init_logger
@@ -20,6 +22,16 @@ logger = init_logger(__name__)
 class _QueuedRequest:
     request: OmniDiffusionRequest
     enqueue_time: float
+    sequence_id: int
+    schedule_metrics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _WaitingPlan:
+    ordered_queue: list[_QueuedRequest]
+    feasible_ids: set[int]
+    completion_ts: dict[int, float]
+    regret_drop_count: int
 
 
 class Stage1Scheduler(Scheduler):
@@ -30,6 +42,8 @@ class Stage1Scheduler(Scheduler):
         self._queue_cv = threading.Condition()
         self._waiting_queue: deque[_QueuedRequest] = deque()
         self._active_request: _QueuedRequest | None = None
+        self._active_started_at: float | None = None
+        self._enqueue_seq = 0
 
     @staticmethod
     def _request_label(request: OmniDiffusionRequest) -> str:
@@ -48,24 +62,168 @@ class Stage1Scheduler(Scheduler):
             "exec_all_ranks": True,
         }
 
+    def _policy_name(self) -> str:
+        return getattr(self.od_config, "instance_scheduler_policy", "fcfs")
+
+    def _estimate_cost_seconds(self, request: OmniDiffusionRequest) -> float:
+        sampling_params = request.sampling_params
+        extra_args = getattr(sampling_params, "extra_args", {}) or {}
+        if extra_args.get("estimated_cost_s") is not None:
+            return max(float(extra_args["estimated_cost_s"]), 0.0)
+
+        num_steps = max(int(getattr(sampling_params, "num_inference_steps", 1) or 1), 1)
+        num_outputs = max(int(getattr(sampling_params, "num_outputs_per_prompt", 1) or 1), 1)
+        num_frames = max(int(getattr(sampling_params, "num_frames", 1) or 1), 1)
+        width = getattr(sampling_params, "width", None)
+        height = getattr(sampling_params, "height", None)
+        resolution = getattr(sampling_params, "resolution", None) or 1024
+        if width and height:
+            area_scale = max((float(width) * float(height)) / float(1024 * 1024), 0.0)
+        else:
+            area_scale = max((float(resolution) * float(resolution)) / float(1024 * 1024), 0.0)
+        return max(float(num_steps * num_outputs * num_frames) * max(area_scale, 0.0625), 0.001)
+
+    def _deadline_ts(self, queued_request: _QueuedRequest) -> float:
+        extra_args = getattr(queued_request.request.sampling_params, "extra_args", {}) or {}
+        if extra_args.get("deadline_ts") is not None:
+            return float(extra_args["deadline_ts"])
+
+        slo_target_ms = extra_args.get("slo_target_ms")
+        if slo_target_ms is None:
+            slo_target_ms = extra_args.get("slo_ms")
+        if slo_target_ms is None:
+            slo_target_ms = getattr(self.od_config, "instance_scheduler_slo_target_ms", None)
+        if slo_target_ms is None:
+            return inf
+
+        floor_ms = float(getattr(self.od_config, "instance_scheduler_slo_floor_ms", 0.0) or 0.0)
+        effective_target_ms = max(float(slo_target_ms), floor_ms)
+        return queued_request.enqueue_time + (effective_target_ms / 1000.0)
+
+    def _tail_priority(self, queued_request: _QueuedRequest, now: float) -> float:
+        aging_factor = float(getattr(self.od_config, "instance_scheduler_aging_factor", 0.0) or 0.0)
+        wait_s = max(now - queued_request.enqueue_time, 0.0)
+        return self._estimate_cost_seconds(queued_request.request) / (1.0 + aging_factor * wait_s)
+
+    def _availability_ts(self, now: float) -> float:
+        if self._active_request is None or self._active_started_at is None:
+            return now
+        elapsed = max(now - self._active_started_at, 0.0)
+        remaining = max(self._estimate_cost_seconds(self._active_request.request) - elapsed, 0.0)
+        return now + remaining
+
+    def _build_waiting_plan(self, waiting_requests: list[_QueuedRequest], now: float) -> _WaitingPlan:
+        if not waiting_requests:
+            return _WaitingPlan(ordered_queue=[], feasible_ids=set(), completion_ts={}, regret_drop_count=0)
+
+        availability_ts = self._availability_ts(now)
+        deadline_sorted = sorted(
+            waiting_requests,
+            key=lambda queued: (self._deadline_ts(queued), queued.enqueue_time, queued.sequence_id),
+        )
+
+        prefix: list[_QueuedRequest] = []
+        work = 0.0
+        regret_drop_count = 0
+        for queued in deadline_sorted:
+            prefix.append(queued)
+            work += self._estimate_cost_seconds(queued.request)
+            if availability_ts + work > self._deadline_ts(queued):
+                longest = max(
+                    prefix,
+                    key=lambda candidate: (self._estimate_cost_seconds(candidate.request), candidate.sequence_id),
+                )
+                prefix.remove(longest)
+                work -= self._estimate_cost_seconds(longest.request)
+                regret_drop_count += 1
+
+        feasible_ids = {queued.sequence_id for queued in prefix}
+        prefix_ordered = sorted(
+            prefix,
+            key=lambda queued: (self._deadline_ts(queued), queued.enqueue_time, queued.sequence_id),
+        )
+        tail = [queued for queued in waiting_requests if queued.sequence_id not in feasible_ids]
+        tail_ordered = sorted(
+            tail,
+            key=lambda queued: (self._tail_priority(queued, now), queued.enqueue_time, queued.sequence_id),
+        )
+        ordered_queue = prefix_ordered + tail_ordered
+
+        completion_ts: dict[int, float] = {}
+        cursor = availability_ts
+        for queued in ordered_queue:
+            cursor += self._estimate_cost_seconds(queued.request)
+            completion_ts[queued.sequence_id] = cursor
+
+        return _WaitingPlan(
+            ordered_queue=ordered_queue,
+            feasible_ids=feasible_ids,
+            completion_ts=completion_ts,
+            regret_drop_count=regret_drop_count,
+        )
+
+    def _maybe_reorder_waiting_queue(self, new_request: _QueuedRequest, now: float) -> None:
+        if self._policy_name() != "slo_first":
+            return
+
+        waiting_before = list(self._waiting_queue)[:-1]
+        before_plan = self._build_waiting_plan(waiting_before, now)
+        after_plan = self._build_waiting_plan(list(self._waiting_queue), now)
+        self._waiting_queue = deque(after_plan.ordered_queue)
+
+        attain_before = len(before_plan.feasible_ids)
+        attain_after = len(after_plan.feasible_ids)
+        damage_count = len(before_plan.feasible_ids - after_plan.feasible_ids)
+        self_hit = 1 if new_request.sequence_id in after_plan.feasible_ids else 0
+        deadline_ts = self._deadline_ts(new_request)
+        completion_ts = after_plan.completion_ts.get(new_request.sequence_id)
+        slack_ms = None
+        if completion_ts is not None and deadline_ts != inf:
+            slack_ms = (deadline_ts - completion_ts) * 1000.0
+
+        new_request.schedule_metrics.update(
+            {
+                "scheduler_policy": "slo_first",
+                "attain_before": attain_before,
+                "attain_after": attain_after,
+                "self_hit": self_hit,
+                "damage_count": damage_count,
+                "tail_set_size": len(after_plan.ordered_queue) - len(after_plan.feasible_ids),
+                "regret_drop_count": after_plan.regret_drop_count,
+                "queue_reorder_count": 1,
+                "deadline_slack_ms": slack_ms,
+            }
+        )
+        logger.info(
+            "QUEUE_REORDER request_id=%s attain_before=%d attain_after=%d self_hit=%d damage_count=%d",
+            self._request_label(new_request.request),
+            attain_before,
+            attain_after,
+            self_hit,
+            damage_count,
+        )
+
     def _annotate_output(
         self,
         output: DiffusionOutput,
+        queued_request: _QueuedRequest,
         request: OmniDiffusionRequest,
         queue_wait_ms: float,
         execute_latency_ms: float,
     ) -> DiffusionOutput:
         request_label = self._request_label(request)
         metrics = dict(getattr(output, "metrics", {}) or {})
+        queued_metrics = dict(queued_request.schedule_metrics)
         metrics.update(
             {
-                "scheduler_policy": "fcfs",
+                "scheduler_policy": self._policy_name(),
                 "queue_wait_ms": queue_wait_ms,
                 "scheduler_execute_ms": execute_latency_ms,
                 "scheduler_latency_ms": queue_wait_ms + execute_latency_ms,
                 "queue_len": len(self._waiting_queue),
             }
         )
+        metrics.update(queued_metrics)
         output.metrics = metrics
         output.request_id = output.request_id or request_label
         return output
@@ -76,20 +234,29 @@ class Stage1Scheduler(Scheduler):
             error=error,
             error_code=error_code,
             request_id=request_label,
-            metrics={"scheduler_policy": "fcfs", "queue_len": len(self._waiting_queue)},
+            metrics={"scheduler_policy": self._policy_name(), "queue_len": len(self._waiting_queue)},
         )
 
     def add_req(self, request: OmniDiffusionRequest) -> DiffusionOutput:
-        queued_request = _QueuedRequest(request=request, enqueue_time=time.monotonic())
+        enqueue_time = time.monotonic()
         request_label = self._request_label(request)
 
         with self._queue_cv:
+            self._enqueue_seq += 1
+            queued_request = _QueuedRequest(
+                request=request,
+                enqueue_time=enqueue_time,
+                sequence_id=self._enqueue_seq,
+                schedule_metrics={"scheduler_policy": self._policy_name()},
+            )
             self._waiting_queue.append(queued_request)
+            self._maybe_reorder_waiting_queue(queued_request, enqueue_time)
             logger.info("QUEUE_ENQUEUE request_id=%s queue_len=%d", request_label, len(self._waiting_queue))
             while self._waiting_queue[0] is not queued_request or self._active_request is not None:
                 self._queue_cv.wait()
             self._waiting_queue.popleft()
             self._active_request = queued_request
+            self._active_started_at = time.monotonic()
             queue_wait_ms = (time.monotonic() - queued_request.enqueue_time) * 1000
             logger.info("QUEUE_DEQUEUE request_id=%s queue_len=%d", request_label, len(self._waiting_queue))
 
@@ -119,10 +286,11 @@ class Stage1Scheduler(Scheduler):
         finally:
             with self._queue_cv:
                 self._active_request = None
+                self._active_started_at = None
                 self._queue_cv.notify_all()
 
         execute_latency_ms = (time.monotonic() - execute_start) * 1000
-        output = self._annotate_output(output, request, queue_wait_ms, execute_latency_ms)
+        output = self._annotate_output(output, queued_request, request, queue_wait_ms, execute_latency_ms)
 
         if output.error:
             if output.error_code is None:

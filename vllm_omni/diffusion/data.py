@@ -414,6 +414,12 @@ class OmniDiffusionConfig:
 
     scheduler_port: int = 5555
 
+    # Instance-local scheduler configuration
+    instance_scheduler_policy: str = "fcfs"
+    instance_scheduler_slo_target_ms: float | None = None
+    instance_scheduler_slo_floor_ms: float = 0.0
+    instance_scheduler_aging_factor: float = 0.0
+
     # Stage verification
     enable_stage_verification: bool = True
 
@@ -575,6 +581,19 @@ class OmniDiffusionConfig:
             self.max_cpu_loras = 1
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
+
+        valid_policies = {"fcfs", "slo_first"}
+        if self.instance_scheduler_policy not in valid_policies:
+            raise ValueError(
+                "instance_scheduler_policy must be one of "
+                f"{sorted(valid_policies)}, got {self.instance_scheduler_policy!r}"
+            )
+        if self.instance_scheduler_slo_target_ms is not None and self.instance_scheduler_slo_target_ms <= 0:
+            raise ValueError("instance_scheduler_slo_target_ms must be > 0 when provided")
+        if self.instance_scheduler_slo_floor_ms < 0:
+            raise ValueError("instance_scheduler_slo_floor_ms must be >= 0")
+        if self.instance_scheduler_aging_factor < 0:
+            raise ValueError("instance_scheduler_aging_factor must be >= 0")
 
     def update_multimodal_support(self) -> None:
         self.supports_multimodal_inputs = self.model_class_name in {"QwenImageEditPlusPipeline"}

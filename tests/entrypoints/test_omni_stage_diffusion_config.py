@@ -13,6 +13,8 @@ def test_build_od_config_includes_diffusion_fields():
         "cache_backend": "cache_dit",
         "cache_config": {"Fn_compute_blocks": 2},
         "vae_use_slicing": True,
+        "instance_scheduler_policy": "slo_first",
+        "instance_scheduler_slo_target_ms": 1800.0,
     }
     od_config = _build_od_config(engine_args, model="dummy-model")
 
@@ -20,6 +22,8 @@ def test_build_od_config_includes_diffusion_fields():
     assert od_config["cache_backend"] == "cache_dit"
     assert od_config["cache_config"]["Fn_compute_blocks"] == 2
     assert od_config["vae_use_slicing"] is True
+    assert od_config["instance_scheduler_policy"] == "slo_first"
+    assert od_config["instance_scheduler_slo_target_ms"] == 1800.0
 
 
 def test_build_od_config_respects_explicit_config():
