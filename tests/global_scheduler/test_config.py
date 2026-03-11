@@ -158,6 +158,33 @@ def test_load_config_short_queue_runtime_algorithm(tmp_path):
     assert config.policy.baseline.algorithm == "short_queue_runtime"
 
 
+def test_load_config_runtime_profile_path_success(tmp_path):
+    """Profiling JSON path should be accepted for baseline policies."""
+    config_path = tmp_path / "scheduler.yaml"
+    profile_path = tmp_path / "runtime_profile.json"
+    profile_path.write_text('{"profiles": []}', encoding="utf-8")
+    config_path.write_text(
+        textwrap.dedent(
+            f"""
+            policy:
+              baseline:
+                algorithm: short_queue_runtime
+                runtime_profile_path: {profile_path}
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                instance_type: wan-video-tp2
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.policy.baseline.runtime_profile_path == str(profile_path)
+    assert config.instances[0].instance_type == "wan-video-tp2"
+
+
 def test_load_config_min_queue_length_algorithm(tmp_path):
     """min_queue_length should be accepted as a baseline algorithm."""
     config_path = tmp_path / "scheduler.yaml"

@@ -13,15 +13,22 @@ from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta, RouteDec
 class AlgorithmPolicyRouter(PolicyBase):
     """Policy router delegating baseline algorithms by config value."""
 
-    def __init__(self, algorithm: str, tie_breaker: str = "random") -> None:
+    def __init__(
+        self,
+        algorithm: str,
+        tie_breaker: str = "random",
+        estimator: RuntimeEstimator | None = None,
+    ) -> None:
         """Build router and instantiate selected baseline policy.
 
         Args:
             algorithm: Baseline algorithm name.
             tie_breaker: Strategy for equal-score candidates.
+            estimator: Optional runtime estimator shared by profiling-aware policies.
         """
         super().__init__(tie_breaker=tie_breaker)
         self._algorithm = algorithm
+        estimator = estimator or RuntimeEstimator()
         self._delegate: PolicyBase
         if algorithm == "fcfs":
             self._delegate = FirstComeFirstServedPolicy(tie_breaker=tie_breaker)
@@ -32,12 +39,12 @@ class AlgorithmPolicyRouter(PolicyBase):
         elif algorithm == "short_queue_runtime":
             self._delegate = ShortQueueRuntimePolicy(
                 tie_breaker=tie_breaker,
-                estimator=RuntimeEstimator(),
+                estimator=estimator,
             )
         elif algorithm == "estimated_completion_time":
             self._delegate = EstimatedCompletionTimePolicy(
                 tie_breaker=tie_breaker,
-                estimator=RuntimeEstimator(),
+                estimator=estimator,
             )
         else:
             raise ValueError(

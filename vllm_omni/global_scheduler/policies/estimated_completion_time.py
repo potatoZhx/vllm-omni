@@ -22,10 +22,16 @@ class EstimatedCompletionTimePolicy(PolicyBase):
         super().__init__(tie_breaker=tie_breaker)
         self._estimator = estimator
 
-    def _estimate_completion_time_s(self, request: RequestMeta, stats: RuntimeStats) -> float:
+    def _estimate_completion_time_s(
+        self,
+        request: RequestMeta,
+        instance: InstanceSpec,
+        stats: RuntimeStats,
+    ) -> float:
         service_time_s = self._estimator.estimate_runtime_s(
             request=request,
             ewma_fallback_s=stats.ewma_service_time_s,
+            instance_type=instance.instance_type,
         )
         queue_runtime_s = float(stats.queue_len) * service_time_s
         return queue_runtime_s + service_time_s
@@ -54,7 +60,7 @@ class EstimatedCompletionTimePolicy(PolicyBase):
             candidates = list(instances)
 
         scored = [
-            (instance, self._estimate_completion_time_s(request, runtime_stats[instance.id]))
+            (instance, self._estimate_completion_time_s(request, instance, runtime_stats[instance.id]))
             for instance in candidates
         ]
         min_score = min(score for _, score in scored)

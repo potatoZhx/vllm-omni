@@ -41,6 +41,7 @@ class BaselinePolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     algorithm: str = "fcfs"
+    runtime_profile_path: str | None = None
 
     @field_validator("algorithm")
     @classmethod
@@ -55,6 +56,15 @@ class BaselinePolicyConfig(BaseModel):
             raise ValueError(
                 "policy.baseline.algorithm must be one of: fcfs, min_queue_length, round_robin, short_queue_runtime, estimated_completion_time"
             )
+        return value
+
+    @field_validator("runtime_profile_path")
+    @classmethod
+    def validate_runtime_profile_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("policy.baseline.runtime_profile_path cannot be empty")
         return value
 
 
@@ -189,6 +199,7 @@ class InstanceConfig(BaseModel):
 
     id: str
     endpoint: str
+    instance_type: str | None = None
     launch: LaunchConfig | None = None
     stop: StopConfig | None = None
     launch: LaunchConfig | None = None
@@ -212,6 +223,15 @@ class InstanceConfig(BaseModel):
         if parsed.path not in {"", "/"}:
             raise ValueError("instances[].endpoint must not include path")
         return value.rstrip("/")
+
+    @field_validator("instance_type")
+    @classmethod
+    def validate_instance_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("instances[].instance_type cannot be empty")
+        return value
 
 
 class GlobalSchedulerConfig(BaseModel):

@@ -11,7 +11,8 @@ scheduler:
 
 policy:
   baseline:
-    algorithm: round_robin
+    algorithm: short_queue_runtime
+    runtime_profile_path: /home/tianzhu/vllm-omni/profile/instance_runtime_profile.sample.json
 
 benchmark:
   worker_ids: [worker-gpu0, worker-gpu1]
@@ -29,6 +30,7 @@ benchmark:
 instances:
   - id: worker-gpu0
     endpoint: http://127.0.0.1:8001
+    instance_type: qwen-image-tp1
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
@@ -50,6 +52,7 @@ instances:
 
   - id: worker-gpu1
     endpoint: http://127.0.0.1:8002
+    instance_type: qwen-image-tp1
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
