@@ -419,6 +419,8 @@ class OmniDiffusionConfig:
     instance_scheduler_slo_target_ms: float | None = None
     instance_scheduler_slo_floor_ms: float = 0.0
     instance_scheduler_aging_factor: float = 0.0
+    instance_runtime_profile_path: str | None = None
+    instance_runtime_profile_name: str | None = None
 
     # Stage verification
     enable_stage_verification: bool = True

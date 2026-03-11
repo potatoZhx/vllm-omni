@@ -4,6 +4,7 @@
 import queue
 import threading
 from collections import deque
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -42,7 +43,14 @@ def _mock_request(
     return req
 
 
-def _make_stage1_scheduler(*, policy: str = "fcfs", slo_target_ms: float | None = None, aging_factor: float = 0.0):
+def _make_stage1_scheduler(
+    *,
+    policy: str = "fcfs",
+    slo_target_ms: float | None = None,
+    aging_factor: float = 0.0,
+    profile_path: str | None = None,
+    profile_name: str | None = None,
+):
     sched = Stage1Scheduler()
     sched.num_workers = 1
     sched.od_config = SimpleNamespace(
@@ -51,13 +59,10 @@ def _make_stage1_scheduler(*, policy: str = "fcfs", slo_target_ms: float | None 
         instance_scheduler_slo_target_ms=slo_target_ms,
         instance_scheduler_slo_floor_ms=0.0,
         instance_scheduler_aging_factor=aging_factor,
+        instance_runtime_profile_path=profile_path,
+        instance_runtime_profile_name=profile_name,
     )
-    sched._lock = threading.Lock()
-    sched._queue_cv = threading.Condition()
-    sched._waiting_queue = deque()
-    sched._active_request = None
-    sched._active_started_at = None
-    sched._enqueue_seq = 0
+    sched.initialize(sched.od_config)
 
     req_q: queue.Queue = queue.Queue()
     res_q: queue.Queue = queue.Queue()
@@ -268,3 +273,81 @@ def test_stage1_scheduler_sjf_reorders_waiting_queue():
     assert results["short"].metrics["scheduler_policy"] == "sjf"
     assert results["short"].metrics["queue_reorder_count"] == 1
     assert results["short"].metrics["estimated_cost_s"] < results["long"].metrics["estimated_cost_s"]
+
+
+def test_stage1_scheduler_sjf_uses_profile_runtime_estimation(tmp_path):
+    profile_path = tmp_path / "runtime.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "instance_type": "profile-a",
+                        "task_type": "image",
+                        "width": 1024,
+                        "height": 1024,
+                        "steps": 10,
+                        "latency_s": 5.0,
+                    },
+                    {
+                        "instance_type": "profile-a",
+                        "task_type": "image",
+                        "width": 1024,
+                        "height": 1024,
+                        "steps": 50,
+                        "latency_s": 0.2,
+                    },
+                ]
+            }
+        )
+    )
+    sched, req_q, res_q = _make_stage1_scheduler(
+        policy="sjf",
+        profile_path=str(profile_path),
+        profile_name="profile-a",
+    )
+    enqueue_order: list[str] = []
+    release_first = threading.Event()
+    first_enqueued = threading.Event()
+    second_waiting = threading.Event()
+
+    def _worker():
+        first = req_q.get(timeout=5)
+        enqueue_order.append(first["args"][0].request_ids[0])
+        first_enqueued.set()
+        second_waiting.wait(timeout=5)
+        release_first.wait(timeout=5)
+        res_q.put(DiffusionOutput(output=torch.tensor([0]), request_id="active"))
+
+        for _ in range(2):
+            rpc_request = req_q.get(timeout=5)
+            request_id = rpc_request["args"][0].request_ids[0]
+            enqueue_order.append(request_id)
+            res_q.put(DiffusionOutput(output=torch.tensor([0]), request_id=request_id))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    active = threading.Thread(target=lambda: sched.add_req(_mock_request("active", num_inference_steps=1)), daemon=True)
+    short_profiled = threading.Thread(
+        target=lambda: sched.add_req(_mock_request("profile-short", num_inference_steps=50)),
+        daemon=True,
+    )
+    long_profiled = threading.Thread(
+        target=lambda: sched.add_req(_mock_request("profile-long", num_inference_steps=10)),
+        daemon=True,
+    )
+
+    active.start()
+    first_enqueued.wait(timeout=5)
+    long_profiled.start()
+    short_profiled.start()
+    second_waiting.set()
+    release_first.set()
+
+    active.join(5)
+    long_profiled.join(5)
+    short_profiled.join(5)
+    worker.join(5)
+
+    assert enqueue_order == ["active", "profile-short", "profile-long"]

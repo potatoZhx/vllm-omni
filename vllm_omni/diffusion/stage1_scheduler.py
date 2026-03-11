@@ -13,6 +13,7 @@ from vllm.logger import init_logger
 
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.request import OmniDiffusionRequest
+from vllm_omni.diffusion.runtime_profile import RuntimeProfileEstimator
 from vllm_omni.diffusion.scheduler import Scheduler
 
 logger = init_logger(__name__)
@@ -44,6 +45,10 @@ class Stage1Scheduler(Scheduler):
         self._active_request: _QueuedRequest | None = None
         self._active_started_at: float | None = None
         self._enqueue_seq = 0
+        self._runtime_estimator = RuntimeProfileEstimator.from_path(
+            getattr(od_config, "instance_runtime_profile_path", None),
+            instance_type=getattr(od_config, "instance_runtime_profile_name", None),
+        )
 
     @staticmethod
     def _request_label(request: OmniDiffusionRequest) -> str:
@@ -81,7 +86,20 @@ class Stage1Scheduler(Scheduler):
             area_scale = max((float(width) * float(height)) / float(1024 * 1024), 0.0)
         else:
             area_scale = max((float(resolution) * float(resolution)) / float(1024 * 1024), 0.0)
-        return max(float(num_steps * num_outputs * num_frames) * max(area_scale, 0.0625), 0.001)
+        heuristic_estimate = max(float(num_steps * num_outputs * num_frames) * max(area_scale, 0.0625), 0.001)
+
+        request_width = int(width or resolution)
+        request_height = int(height or resolution)
+        task_type = "video" if num_frames > 1 else "image"
+        profiled_estimate = self._runtime_estimator.estimate_runtime_s(
+            task_type=task_type,
+            width=request_width,
+            height=request_height,
+            num_frames=num_frames,
+            steps=num_steps,
+            fallback_s=heuristic_estimate,
+        )
+        return max(profiled_estimate * float(num_outputs), 0.001)
 
     def _deadline_ts(self, queued_request: _QueuedRequest) -> float:
         extra_args = getattr(queued_request.request.sampling_params, "extra_args", {}) or {}

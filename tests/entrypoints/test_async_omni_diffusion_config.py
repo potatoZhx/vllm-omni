@@ -26,6 +26,8 @@ def test_default_stage_config_includes_cache_backend():
         instance_scheduler_policy="slo_first",
         instance_scheduler_slo_target_ms=1800.0,
         instance_scheduler_aging_factor=0.25,
+        instance_runtime_profile_path="/profile/runtime.json",
+        instance_runtime_profile_name="img-a",
     )
 
     engine_args = stage_cfg["engine_args"]
@@ -37,6 +39,8 @@ def test_default_stage_config_includes_cache_backend():
     assert engine_args["instance_scheduler_policy"] == "slo_first"
     assert engine_args["instance_scheduler_slo_target_ms"] == 1800.0
     assert engine_args["instance_scheduler_aging_factor"] == 0.25
+    assert engine_args["instance_runtime_profile_path"] == "/profile/runtime.json"
+    assert engine_args["instance_runtime_profile_name"] == "img-a"
     parallel_config = engine_args["parallel_config"]
     ulysses_degree = getattr(parallel_config, "ulysses_degree", None)
     assert ulysses_degree == 2

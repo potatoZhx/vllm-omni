@@ -283,6 +283,19 @@ class OmniServeCommand(CLISubcommand):
             help="Aging factor used when ordering the delayed tail set in the instance-local 'slo_first' scheduler.",
         )
         omni_config_group.add_argument(
+            "--instance-runtime-profile-path",
+            type=str,
+            default=None,
+            help="Path to a JSON runtime profile file or a directory containing JSON profile files under /profile. "
+            "Used by instance-local scheduler cost estimation before falling back to heuristics.",
+        )
+        omni_config_group.add_argument(
+            "--instance-runtime-profile-name",
+            type=str,
+            default=None,
+            help="Optional instance/profile name used to filter records inside the runtime profile JSON.",
+        )
+        omni_config_group.add_argument(
             "--enable-cache-dit-summary",
             action="store_true",
             help="Enable cache-dit summary logging after diffusion forward passes.",

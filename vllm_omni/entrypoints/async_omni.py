@@ -188,6 +188,8 @@ class AsyncOmni(OmniBase):
                     "instance_scheduler_slo_target_ms": kwargs.get("instance_scheduler_slo_target_ms", None),
                     "instance_scheduler_slo_floor_ms": kwargs.get("instance_scheduler_slo_floor_ms", 0.0),
                     "instance_scheduler_aging_factor": kwargs.get("instance_scheduler_aging_factor", 0.0),
+                    "instance_runtime_profile_path": kwargs.get("instance_runtime_profile_path", None),
+                    "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
                     "enable_cache_dit_summary": kwargs.get("enable_cache_dit_summary", False),
                     "enable_cpu_offload": kwargs.get("enable_cpu_offload", False),
                     "enable_layerwise_offload": kwargs.get("enable_layerwise_offload", False),
