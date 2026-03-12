@@ -351,3 +351,18 @@ def test_stage1_scheduler_sjf_uses_profile_runtime_estimation(tmp_path):
     worker.join(5)
 
     assert enqueue_order == ["active", "profile-short", "profile-long"]
+
+
+def test_stage1_scheduler_estimate_cost_counts_num_outputs_once_without_profile():
+    sched, _, _ = _make_stage1_scheduler(policy="sjf")
+
+    single_output_cost = sched._estimate_cost_seconds(  # noqa: SLF001
+        _mock_request("single", num_inference_steps=10, num_outputs_per_prompt=1)
+    )
+    multi_output_cost = sched._estimate_cost_seconds(  # noqa: SLF001
+        _mock_request("multi", num_inference_steps=10, num_outputs_per_prompt=2)
+    )
+
+    assert single_output_cost == pytest.approx(10.0)
+    assert multi_output_cost == pytest.approx(20.0)
+    assert multi_output_cost == pytest.approx(single_output_cost * 2.0)

@@ -191,6 +191,6 @@ vllm serve Qwen/Qwen-Image --omni \
 
 仓库里提供了一份样例：
 
-- [instance_runtime_profile.sample.json](/home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json)
+- [instance_runtime_profile.sample.json](./instance_runtime_profile.sample.json)
 
 后续如果 profiling 脚本正式产出 JSON，建议直接对齐这份 README 的 schema。

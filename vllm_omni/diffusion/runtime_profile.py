@@ -75,7 +75,7 @@ class RuntimeProfileEstimator:
             if not isinstance(entry, dict):
                 continue
             entry_instance = entry.get("instance_type")
-            if instance_type and entry_instance not in (None, instance_type):
+            if instance_type and entry_instance != instance_type:
                 continue
 
             task_type = str(entry.get("task_type", "image")).lower()
@@ -92,6 +92,10 @@ class RuntimeProfileEstimator:
             steps = entry.get("steps", entry.get("num_inference_steps"))
             if steps is None:
                 continue
+            steps = int(steps)
+            if steps <= 0:
+                logger.warning("Skipping runtime profile entry with non-positive steps: %s", entry)
+                continue
 
             latency_ms = entry.get("latency_ms")
             latency_s = entry.get("latency_s")
@@ -106,7 +110,7 @@ class RuntimeProfileEstimator:
                     width=int(width),
                     height=int(height),
                     num_frames=num_frames,
-                    steps=int(steps),
+                    steps=steps,
                     latency_s=max(float(latency_s), 0.001),
                     instance_type=str(entry_instance) if entry_instance is not None else None,
                 )

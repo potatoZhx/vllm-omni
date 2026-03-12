@@ -86,7 +86,7 @@ class Stage1Scheduler(Scheduler):
             area_scale = max((float(width) * float(height)) / float(1024 * 1024), 0.0)
         else:
             area_scale = max((float(resolution) * float(resolution)) / float(1024 * 1024), 0.0)
-        heuristic_estimate = max(float(num_steps * num_outputs * num_frames) * max(area_scale, 0.0625), 0.001)
+        heuristic_estimate = max(float(num_steps * num_frames) * max(area_scale, 0.0625), 0.001)
 
         request_width = int(width or resolution)
         request_height = int(height or resolution)
