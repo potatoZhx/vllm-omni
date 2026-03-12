@@ -140,6 +140,7 @@ class AsyncOmni(OmniBase):
             ring_degree = kwargs.get("ring_degree") or 1
             sequence_parallel_size = kwargs.get("sequence_parallel_size")
             tensor_parallel_size = kwargs.get("tensor_parallel_size") or 1
+            vae_patch_parallel_size = kwargs.get("vae_patch_parallel_size") or 1
             cfg_parallel_size = kwargs.get("cfg_parallel_size") or 1
             use_hsdp = kwargs.get("use_hsdp", False)
             hsdp_shard_size = kwargs.get("hsdp_shard_size", -1)
@@ -163,6 +164,7 @@ class AsyncOmni(OmniBase):
                 tensor_parallel_size=tensor_parallel_size,
                 sequence_parallel_size=sequence_parallel_size,
                 ulysses_degree=ulysses_degree,
+                vae_patch_parallel_size=vae_patch_parallel_size,
                 ring_degree=ring_degree,
                 cfg_parallel_size=cfg_parallel_size,
                 use_hsdp=use_hsdp,
