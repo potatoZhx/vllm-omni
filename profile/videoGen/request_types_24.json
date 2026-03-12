@@ -1,8 +1,8 @@
 {
   "height_width": [
-    [768, 432],
-    [768, 1360]
+    [480, 854],
+    [720, 1280]
   ],
-  "num_frames": [17, 33, 65, 81],
-  "num_inference_steps": [30, 40, 50]
+  "num_frames": [80, 120],
+  "num_inference_steps": [3, 4, 6]
 }

@@ -29,11 +29,11 @@ MASTER_PORT="${MASTER_PORT:-29600}"
 NUM_DEVICES="${NUM_DEVICES:-8}"
 
 # Benchmark 参数。
-TASK="${TASK:-t2i}"
-DATASET="${DATASET:-trace}"
-DATASET_PATH="${DATASET_PATH:-/home/mumura/omni/dataset/trace/cogvideox_trace.txt/cogvideox_trace.txt}"
+TASK="${TASK:-t2v}"
+DATASET="${DATASET:-random}"
+DATASET_TYPE="${DATASET_TYPE:-C}"
 NUM_PROMPTS_DURATION_SECONDS="${NUM_PROMPTS_DURATION_SECONDS:-10}"
-RPS_LIST="${RPS_LIST:-[0.1, 1]}"
+RPS_LIST="${RPS_LIST:-[0.1]}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-200}"
 BACKEND="${BACKEND:-v1/videos}"
 # =======================================================================
@@ -54,7 +54,7 @@ echo "===== Model: ${MODEL} =====" | tee -a "$MASTER_LOG"
 echo "===== RPS list: ${RPS_LIST} =====" | tee -a "$MASTER_LOG"
 echo "===== Duration(seconds): ${NUM_PROMPTS_DURATION_SECONDS} =====" | tee -a "$MASTER_LOG"
 echo "===== Dataset: ${DATASET} =====" | tee -a "$MASTER_LOG"
-echo "===== Dataset path: ${DATASET_PATH} =====" | tee -a "$MASTER_LOG"
+echo "===== DatasetType: ${DATASET_TYPE} =====" | tee -a "$MASTER_LOG"
 echo "===== Device type: ${DEVICE_TYPE} =====" | tee -a "$MASTER_LOG"
 echo "===== Backend: ${BACKEND} =====" | tee -a "$MASTER_LOG"
 echo "===== Repo root: ${REPO_ROOT} =====" | tee -a "$MASTER_LOG"
@@ -72,11 +72,44 @@ if [ "$DEVICE_TYPE" != "gpu" ] && [ "$DEVICE_TYPE" != "npu" ]; then
   echo "Unsupported DEVICE_TYPE=${DEVICE_TYPE}, expected gpu or npu" | tee -a "$MASTER_LOG"
   exit 1
 fi
-if [ "$DATASET" = "trace" ] && [ -z "$DATASET_PATH" -o ! -f "$DATASET_PATH" ]; then
-  echo "trace dataset file not found: ${DATASET_PATH}" | tee -a "$MASTER_LOG"
-  echo "Please set DATASET_PATH to a local trace file path." | tee -a "$MASTER_LOG"
+if [ "$TASK" != "t2v" ]; then
+  echo "Unsupported TASK=${TASK}. wan_2_2_serving_performance defaults to t2v." | tee -a "$MASTER_LOG"
   exit 1
 fi
+if [ "$DATASET" != "random" ]; then
+  echo "Unsupported DATASET=${DATASET}. wan_2_2_serving_performance defaults to random." | tee -a "$MASTER_LOG"
+  exit 1
+fi
+
+build_random_request_config() {
+  case "$1" in
+    A|a)
+      cat <<'JSON'
+[{"width":854,"height":480,"num_inference_steps":3,"num_frames":80,"fps":16,"weight":1}]
+JSON
+      ;;
+    B|b)
+      cat <<'JSON'
+[{"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16,"weight":1}]
+JSON
+      ;;
+    C|c)
+      cat <<'JSON'
+[
+  {"width":854,"height":480,"num_inference_steps":3,"num_frames":80,"fps":16,"weight":0.15},
+  {"width":854,"height":480,"num_inference_steps":4,"num_frames":120,"fps":24,"weight":0.25},
+  {"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16,"weight":0.6}
+]
+JSON
+      ;;
+    *)
+      echo "Unsupported DATASET_TYPE=$1, expected A/B/C" >&2
+      return 1
+      ;;
+  esac
+}
+
+RANDOM_REQUEST_CONFIG=$(build_random_request_config "$DATASET_TYPE")
 
 cd "$REPO_ROOT"
 
@@ -184,10 +217,11 @@ for rps in $RPS_ITEMS; do
     --backend "$BACKEND" \
     --task "$TASK" \
     --dataset "$DATASET" \
-    --dataset-path "$DATASET_PATH" \
     --num-prompts "$num_prompts" \
     --request-rate "$rps" \
     --max-concurrency "$MAX_CONCURRENCY" \
+    --enable-negative-prompt \
+    --random-request-config "$RANDOM_REQUEST_CONFIG" \
     --output-file "$METRICS_FILE" \
     2>&1 | tee "$RUN_LOG"
 
