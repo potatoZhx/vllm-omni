@@ -21,10 +21,12 @@ MODEL="${MODEL:-/data2/group_谈海生/mumura/models/Wan2.2-T2V-A14B-Diffusers}"
 PORT="${PORT:-8091}"
 BASE_URL="http://localhost:${PORT}"
 
-# GPU/并行参数（sp4_cfg2_hsdp）。
-CUDA_VISIBLE_DEVICES_LIST="${CUDA_VISIBLE_DEVICES_LIST:-0,1,2,3,4,5,6,7}"
+# 设备与并行参数（sp4_cfg2_hsdp）。
+# DEVICE_TYPE 支持：gpu / npu
+DEVICE_TYPE="${DEVICE_TYPE:-gpu}"
 MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 MASTER_PORT="${MASTER_PORT:-29600}"
+NUM_DEVICES="${NUM_DEVICES:-8}"
 
 # Benchmark 参数。
 TASK="${TASK:-t2i}"
@@ -33,6 +35,7 @@ DATASET_PATH="${DATASET_PATH:-/home/mumura/omni/dataset/trace/cogvideox_trace.tx
 NUM_PROMPTS_DURATION_SECONDS="${NUM_PROMPTS_DURATION_SECONDS:-10}"
 RPS_LIST="${RPS_LIST:-[0.1, 1]}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-200}"
+BACKEND="${BACKEND:-v1/videos}"
 # =======================================================================
 
 # 结果目录：所有日志与 metrics 均写到该目录下。
@@ -43,7 +46,7 @@ mkdir -p "$RUN_DIR"
 
 SERVER_LOG="${RUN_DIR}/server.log"
 MASTER_LOG="${RUN_DIR}/benchmark_master.log"
-GPU_LOG="${RUN_DIR}/gpu.log"
+DEVICE_LOG="${RUN_DIR}/${DEVICE_TYPE}.log"
 SUMMARY_CSV="${RUN_DIR}/summary.csv"
 
 echo "===== Run dir: ${RUN_DIR} =====" | tee -a "$MASTER_LOG"
@@ -52,6 +55,8 @@ echo "===== RPS list: ${RPS_LIST} =====" | tee -a "$MASTER_LOG"
 echo "===== Duration(seconds): ${NUM_PROMPTS_DURATION_SECONDS} =====" | tee -a "$MASTER_LOG"
 echo "===== Dataset: ${DATASET} =====" | tee -a "$MASTER_LOG"
 echo "===== Dataset path: ${DATASET_PATH} =====" | tee -a "$MASTER_LOG"
+echo "===== Device type: ${DEVICE_TYPE} =====" | tee -a "$MASTER_LOG"
+echo "===== Backend: ${BACKEND} =====" | tee -a "$MASTER_LOG"
 echo "===== Repo root: ${REPO_ROOT} =====" | tee -a "$MASTER_LOG"
 
 # 前置校验：脚本假设当前环境已配置好 python3 / vllm。
@@ -63,6 +68,10 @@ if ! command -v vllm >/dev/null 2>&1; then
   echo "vllm command not found in PATH" | tee -a "$MASTER_LOG"
   exit 1
 fi
+if [ "$DEVICE_TYPE" != "gpu" ] && [ "$DEVICE_TYPE" != "npu" ]; then
+  echo "Unsupported DEVICE_TYPE=${DEVICE_TYPE}, expected gpu or npu" | tee -a "$MASTER_LOG"
+  exit 1
+fi
 if [ "$DATASET" = "trace" ] && [ -z "$DATASET_PATH" -o ! -f "$DATASET_PATH" ]; then
   echo "trace dataset file not found: ${DATASET_PATH}" | tee -a "$MASTER_LOG"
   echo "Please set DATASET_PATH to a local trace file path." | tee -a "$MASTER_LOG"
@@ -72,8 +81,8 @@ fi
 cd "$REPO_ROOT"
 
 cleanup() {
-  if [ -n "${GPU_PID:-}" ]; then
-    kill "$GPU_PID" 2>/dev/null || true
+  if [ -n "${DEVICE_MONITOR_PID:-}" ]; then
+    kill "$DEVICE_MONITOR_PID" 2>/dev/null || true
   fi
   if [ -n "${SERVER_PID:-}" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
@@ -82,14 +91,13 @@ cleanup() {
 trap cleanup EXIT
 
 echo "===== Starting single vLLM-Omni server: sp4_cfg2_hsdp =====" | tee -a "$MASTER_LOG"
-export CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES_LIST"
 export MASTER_ADDR
 export MASTER_PORT
 
 vllm serve "$MODEL" \
   --omni \
   --port "$PORT" \
-  --num-gpus 8 \
+  --num-gpus "$NUM_DEVICES" \
   --tensor-parallel-size 1 \
   --usp 4 \
   --ring 1 \
@@ -120,9 +128,19 @@ for t in $(seq 1 7200); do
   sleep 1
 done
 
-# 后台采样 GPU 使用，便于确认服务与压测阶段 GPU 负载。
-( while true; do echo "=== $(date -Iseconds) ==="; nvidia-smi; sleep 5; done ) >> "$GPU_LOG" 2>&1 &
-GPU_PID=$!
+# 后台采样设备使用，便于确认服务与压测阶段负载。
+MONITOR_CMD="nvidia-smi"
+if [ "$DEVICE_TYPE" = "npu" ]; then
+  MONITOR_CMD="npu-smi info"
+fi
+(
+  while true; do
+    echo "=== $(date -Iseconds) ==="
+    bash -lc "$MONITOR_CMD" || true
+    sleep 5
+  done
+) >> "$DEVICE_LOG" 2>&1 &
+DEVICE_MONITOR_PID=$!
 
 printf '%s\n' "timestamp,rps,duration_seconds,num_prompts,metrics_json,log_file" > "$SUMMARY_CSV"
 
@@ -163,6 +181,7 @@ for rps in $RPS_ITEMS; do
   python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
     --base-url "$BASE_URL" \
     --model "$MODEL" \
+    --backend "$BACKEND" \
     --task "$TASK" \
     --dataset "$DATASET" \
     --dataset-path "$DATASET_PATH" \
@@ -180,6 +199,6 @@ done
 echo "===== Done =====" | tee -a "$MASTER_LOG"
 echo "summary: ${SUMMARY_CSV}" | tee -a "$MASTER_LOG"
 echo "master log: ${MASTER_LOG}" | tee -a "$MASTER_LOG"
-echo "gpu log: ${GPU_LOG}" | tee -a "$MASTER_LOG"
+echo "device log: ${DEVICE_LOG}" | tee -a "$MASTER_LOG"
 
 exit 0
