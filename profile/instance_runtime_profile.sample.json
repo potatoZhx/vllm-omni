@@ -1,0 +1,58 @@
+{
+  "profiles": [
+    {
+      "instance_type": "qwen-image-tp1",
+      "task_type": "image",
+      "width": 1024,
+      "height": 1024,
+      "num_frames": 1,
+      "steps": 10,
+      "latency_ms": 420
+    },
+    {
+      "instance_type": "qwen-image-tp1",
+      "task_type": "image",
+      "width": 1024,
+      "height": 1024,
+      "num_frames": 1,
+      "steps": 30,
+      "latency_ms": 1180
+    },
+    {
+      "instance_type": "qwen-image-tp1",
+      "task_type": "image",
+      "width": 1024,
+      "height": 1024,
+      "num_frames": 1,
+      "steps": 50,
+      "latency_ms": 1910
+    },
+    {
+      "instance_type": "wan-video-tp2",
+      "task_type": "video",
+      "width": 1280,
+      "height": 720,
+      "num_frames": 16,
+      "steps": 10,
+      "latency_ms": 1680
+    },
+    {
+      "instance_type": "wan-video-tp2",
+      "task_type": "video",
+      "width": 1280,
+      "height": 720,
+      "num_frames": 16,
+      "steps": 30,
+      "latency_ms": 4960
+    },
+    {
+      "instance_type": "wan-video-tp2",
+      "task_type": "video",
+      "width": 1280,
+      "height": 720,
+      "num_frames": 16,
+      "steps": 50,
+      "latency_ms": 8210
+    }
+  ]
+}
