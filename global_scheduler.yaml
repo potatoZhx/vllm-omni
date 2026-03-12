@@ -11,8 +11,8 @@ scheduler:
 
 policy:
   baseline:
-    algorithm: short_queue_runtime
-    runtime_profile_path: /home/tianzhu/vllm-omni/profile/instance_runtime_profile.sample.json
+    algorithm: round_robin #short_queue_runtime
+    runtime_profile_path: ./profile/instance_runtime_profile.sample.json
 
 benchmark:
   worker_ids: [worker-gpu0, worker-gpu1]
@@ -22,7 +22,7 @@ benchmark:
   dataset: trace
   dataset_path: benchmarks/dataset/sd3_trace_redistributed.txt
   max_concurrency: 20
-  warmup_requests: 1
+  warmup_requests: 0
   warmup_num_inference_steps: 1
   output_file: logs/global_scheduler_benchmark_metrics.json
   auto_stop: true
