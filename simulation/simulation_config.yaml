@@ -1,0 +1,58 @@
+# 离散事件模拟器配置（所有全局参数仅在此文件，不写进代码）
+# 使用：python simulation/simulation.py simulation/simulation_config.yaml
+
+simulation:
+  t_end: 200.0              # 模拟时长（秒），每个 rps 下均在此时间内注入请求
+  rps: [0.1, 1.0, 3.0]    # 请求到达速率列表：对每个算法在每个 rps 下各跑一轮，得到曲线数据（横轴 rps，纵轴指标）
+  slo_scale: 3             # SLO 倍数，slo_ms = 预估执行时间(ms) * slo_scale，默认 3
+  profile_path: "profile_qwen.csv"   # 执行时间表，相对本 yaml 所在目录或绝对路径
+  # 请求 trace：设为 sd3_trace_redistributed.txt 时按 trace 到达时间注入；null 则用默认 size/steps 按 rps 均匀注入
+  # 路径相对本 yaml 所在目录。若 trace 在项目根（vllms/），可用 "../../sd3_trace_redistributed.txt"
+  # 从 simulation 目录起：实际文件在 benchmarks/dataset/；若从项目根运行可改为 "benchmarks/dataset/sd3_trace_redistributed.txt"
+  trace_path: "../benchmarks/dataset/sd3_trace_redistributed.txt"
+  output_dir: "output"     # 结果输出目录
+  output_merged: false     # true：多算法合并为一个 JSON；false：每算法一个 JSON 文件
+
+# 默认请求（trace_path 为 null 时使用）
+default_request:
+  size: "128x128"
+  steps: 5
+
+# Worker 配置：每个 worker 用三个整数 sp, cfg, tp，程序拼接为 config_id（如 sp1_cfg1_tp1）
+workers:
+  - { sp: 1, cfg: 1, tp: 1 }
+  - { sp: 1, cfg: 1, tp: 1 }
+  - { sp: 1, cfg: 1, tp: 1 }
+  - { sp: 1, cfg: 1, tp: 1 }
+  - { sp: 1, cfg: 1, tp: 2 }
+  - { sp: 1, cfg: 1, tp: 2 }
+
+# 调度算法（与 global_scheduler 一致，注释列出全部名称以防对不上）：
+#   round_robin   - 轮询
+#   fcfs          - 先到先服务
+#   short_queue_runtime - 最短队列预估时间
+#   estimated_completion_time - 预估完成时间最小
+scheduler:
+  algorithm: round_robin   # 单算法模式时的默认算法（当 algorithms_to_run 未配置时使用）
+  # algorithms_to_run：要参与测试的算法列表。对每个算法，在 rps 列表的每个取值下各跑一轮模拟，
+  # 得到 (算法, rps) 的指标点，用于画图：横轴 rps、纵轴为延迟/吞吐等，每算法一条曲线。
+  algorithms_to_run:
+    - round_robin
+    - fcfs
+    - short_queue_runtime
+    - estimated_completion_time
+
+# 跑完 simulation 后是否自动画图并保存
+plot:
+  after_run: true
+  # 默认画图指标（跑完即画）：可配置，与下方「输出指标字段」名称一致；每个指标单独一张图，每图内为各算法的曲线
+  metrics: [latency_p95, latency_mean]
+  output_dir: "output"      # 图保存目录（相对本 yaml 所在目录）
+  output_prefix: "compare"  # 图文件名前缀，得到 compare_latency_p95.png、compare_latency_mean.png 等（一指标一图）
+
+# 输出 JSON 与画图可用的指标字段（与 plot_results 及本程序输出一致，便于对号，避免写错）：
+#   延迟：latency_mean, latency_median, latency_p50, latency_p95, latency_p99
+#   等待/服务：waiting_time_mean, waiting_time_p95, waiting_time_p99, service_time_mean, service_time_p95, service_time_p99
+#   吞吐与量：throughput_qps, duration, completed_requests, failed_requests
+#   SLO：slo_attainment_rate
+# 画图时 metrics 从上述字段中选，如 [latency_p95, latency_mean]；多图按类型拆为 latency/throughput/slo 三组
