@@ -540,6 +540,41 @@ def test_server_startup_auto_starts_instances_with_launch_config(tmp_path):
     assert instance_view["last_operation"] == "start"
 
 
+def test_server_shutdown_stops_instances_with_stop_config(tmp_path):
+    """Server shutdown should best-effort stop managed instances."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+                stop:
+                  executable: pkill
+                  args:
+                    - -f
+                    - worker-0
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    controller = _FakeProcessController()
+    config = load_config(config_path)
+    app = create_app(config, process_controller=controller)
+
+    with TestClient(app) as client:
+        response = client.get("/instances")
+        assert response.status_code == 200
+
+    assert controller.calls == [("stop", "worker-0")]
+    instance_view = app.state.instance_lifecycle_manager.snapshot()["worker-0"]
+    assert instance_view.process_state == "stopped"
+    assert instance_view.last_operation == "stop"
+
+
 def test_lifecycle_start_is_idempotent_when_already_running(tmp_path):
     """Second start on running instance should be a no-op."""
     config_path = tmp_path / "scheduler.yaml"

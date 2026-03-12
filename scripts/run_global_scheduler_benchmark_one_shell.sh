@@ -10,6 +10,7 @@ SCHEDULER_READY_TIMEOUT_S="${SCHEDULER_READY_TIMEOUT_S:-60}"
 SCHEDULER_POLL_INTERVAL_S="${SCHEDULER_POLL_INTERVAL_S:-1}"
 SCHEDULER_PID=""
 SCHEDULER_URL=""
+_CLEANED_UP=0
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -69,6 +70,11 @@ wait_scheduler_ready() {
 }
 
 cleanup() {
+  if [[ "${_CLEANED_UP}" == "1" ]]; then
+    return 0
+  fi
+  _CLEANED_UP=1
+
   if [[ -n "${SCHEDULER_PID}" ]] && kill -0 "${SCHEDULER_PID}" >/dev/null 2>&1; then
     echo "[cleanup] stopping scheduler pid=${SCHEDULER_PID}"
     kill -TERM "${SCHEDULER_PID}" >/dev/null 2>&1 || true
@@ -106,6 +112,7 @@ main() {
 
   echo "[run] benchmark: ${BENCHMARK_SCRIPT}"
   CONFIG_FILE="${CONFIG_FILE}" "${BENCHMARK_SCRIPT}" "$@"
+  cleanup
 }
 
 main "$@"

@@ -90,7 +90,6 @@ values = {
     "WARMUP_REQUESTS": str(benchmark.warmup_requests),
     "WARMUP_NUM_INFERENCE_STEPS": str(benchmark.warmup_num_inference_steps),
     "OUTPUT_FILE": resolve_config_path(benchmark.output_file),
-    "AUTO_STOP": "1" if benchmark.auto_stop else "0",
 }
 
 for key, value in values.items():
@@ -198,13 +197,6 @@ else:
 PY
 }
 
-stop_workers() {
-  for wid in ${WORKER_IDS}; do
-    echo "[stop] ${wid}"
-    curl_local -fsS -X POST "${SCHEDULER_URL}/instances/${wid}/stop" >/dev/null || true
-  done
-}
-
 terminate_benchmark() {
   if [[ "${BENCH_RUNNING}" != "1" || -z "${BENCH_PID}" ]]; then
     return 0
@@ -306,9 +298,6 @@ cleanup() {
   _CLEANED_UP=1
 
   terminate_benchmark
-  if [[ "${AUTO_STOP}" == "1" ]]; then
-    stop_workers
-  fi
 }
 
 on_signal() {

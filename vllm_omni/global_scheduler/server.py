@@ -59,6 +59,37 @@ class UpstreamResult(BaseModel):
 _NO_PROXY_OPENER = urllib_request.build_opener(urllib_request.ProxyHandler({}))
 
 
+async def _stop_managed_instances_on_shutdown(app: FastAPI) -> None:
+    """Best-effort stop for instances managed through scheduler lifecycle."""
+    manager: InstanceLifecycleManager = app.state.instance_lifecycle_manager
+    controller: ProcessController = app.state.process_controller
+
+    for instance_id, status in manager.snapshot().items():
+        instance = status.instance
+        if instance.stop_executable is None or status.process_state == "stopped":
+            continue
+
+        manager.set_enabled(instance_id, enabled=False)
+        manager.set_process_state(instance_id, process_state="stopping", operation="stop", error=None)
+        try:
+            await asyncio.to_thread(controller.stop, instance)
+        except LifecycleUnsupportedError as exc:
+            manager.set_process_state(instance_id, process_state="error", operation="stop", error=str(exc))
+            logger.warning("shutdown.stop unsupported instance_id=%s error=%s", instance_id, exc)
+            continue
+        except LifecycleExecutionError as exc:
+            manager.set_process_state(instance_id, process_state="error", operation="stop", error=str(exc))
+            logger.warning("shutdown.stop failed instance_id=%s error=%s", instance_id, exc)
+            continue
+        except Exception as exc:
+            manager.set_process_state(instance_id, process_state="error", operation="stop", error=str(exc))
+            logger.exception("shutdown.stop unexpected_error instance_id=%s", instance_id)
+            continue
+
+        manager.mark_health(instance_id, healthy=False, error="stopped_on_shutdown")
+        manager.set_process_state(instance_id, process_state="stopped", operation="stop", error=None)
+
+
 def _build_error_payload(code: str, message: str, request_id: str) -> dict[str, Any]:
     """Build normalized error body following GS_* contract.
 
@@ -358,6 +389,7 @@ def create_app(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            await _stop_managed_instances_on_shutdown(app)
 
     app = FastAPI(title="vLLM-Omni Global Scheduler", version=__version__, lifespan=lifespan)
     app.state.global_scheduler_config = config
