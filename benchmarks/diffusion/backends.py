@@ -39,6 +39,32 @@ class RequestFuncOutput:
     slo_achieved: bool | None = None
 
 
+def _summarize_response_body(resp_json: dict[str, Any]) -> dict[str, Any]:
+    """Keep only small metadata needed for debugging and metrics.
+
+    Full generation payloads can contain large base64 images/videos and will
+    quickly exhaust RAM during long benchmark runs.
+    """
+    summary: dict[str, Any] = {}
+
+    if "peak_memory_mb" in resp_json:
+        summary["peak_memory_mb"] = resp_json["peak_memory_mb"]
+
+    usage = resp_json.get("usage")
+    if isinstance(usage, dict):
+        summary["usage"] = usage
+
+    data = resp_json.get("data")
+    if isinstance(data, list):
+        summary["data_count"] = len(data)
+
+    choices = resp_json.get("choices")
+    if isinstance(choices, list):
+        summary["choices_count"] = len(choices)
+
+    return summary
+
+
 def _guess_mime_type(path: str) -> str:
     mime, _ = mimetypes.guess_type(path)
     return mime or "application/octet-stream"
@@ -104,7 +130,7 @@ async def async_request_chat_completions(
         async with session.post(input.api_url, json=payload) as response:
             if response.status == 200:
                 resp_json = await response.json()
-                output.response_body = resp_json
+                output.response_body = _summarize_response_body(resp_json)
                 output.success = True
                 if "peak_memory_mb" in resp_json:
                     output.peak_memory_mb = resp_json["peak_memory_mb"]
@@ -170,7 +196,7 @@ async def async_request_openai_images(
         async with session.post(input.api_url, json=payload, headers=headers) as response:
             if response.status == 200:
                 resp_json = await response.json()
-                output.response_body = resp_json
+                output.response_body = _summarize_response_body(resp_json)
                 output.success = True
                 # Check for usage/memory info if available
                 if "usage" in resp_json and "peak_memory_mb" in resp_json.get("usage", {}):
@@ -234,7 +260,7 @@ async def async_request_v1_videos(
         async with session.post(input.api_url, data=form) as response:
             if response.status == 200:
                 resp_json = await response.json()
-                output.response_body = resp_json
+                output.response_body = _summarize_response_body(resp_json)
                 output.success = True
                 if "peak_memory_mb" in resp_json:
                     output.peak_memory_mb = resp_json["peak_memory_mb"]
