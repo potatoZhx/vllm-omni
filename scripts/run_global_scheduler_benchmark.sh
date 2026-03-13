@@ -310,27 +310,6 @@ on_exit() {
   cleanup
 }
 
-wait_workers_routable() {
-  local timeout_s="${1:-120}"
-  local start_ts
-  start_ts="$(date +%s)"
-  for wid in ${WORKER_IDS}; do
-    while true; do
-      local routable
-      routable="$(is_worker_routable "${wid}")"
-      if [[ "${routable}" == "1" ]]; then
-        echo "[ready] ${wid} routable=true"
-        break
-      fi
-      if (( $(date +%s) - start_ts > timeout_s )); then
-        echo "Timeout waiting for worker to become routable: ${wid}" >&2
-        return 1
-      fi
-      sleep 1
-    done
-  done
-}
-
 is_worker_api_ready() {
   local endpoint="$1"
   local models_json
@@ -363,7 +342,7 @@ else:
 PY
 }
 
-wait_workers_api_ready() {
+wait_workers_ready() {
   local timeout_s="${1:-600}"
 
   for wid in ${WORKER_IDS}; do
@@ -371,17 +350,19 @@ wait_workers_api_ready() {
     start_ts="$(date +%s)"
     while true; do
       local endpoint
+      local routable
       local ready
+      routable="$(is_worker_routable "${wid}")"
       endpoint="$(get_worker_endpoint "${wid}")"
       if [[ -n "${endpoint}" ]]; then
         ready="$(is_worker_api_ready "${endpoint}")"
-        if [[ "${ready}" == "1" ]]; then
-          echo "[ready] ${wid} api ready: ${endpoint%/}/v1/models"
+        if [[ "${routable}" == "1" && "${ready}" == "1" ]]; then
+          echo "[ready] ${wid} routable=true api_ready=true (${endpoint%/}/v1/models)"
           break
         fi
       fi
       if (( $(date +%s) - start_ts > timeout_s )); then
-        echo "Timeout waiting for worker API ready: ${wid}" >&2
+        echo "Timeout waiting for worker ready (routable + api): ${wid}" >&2
         return 1
       fi
       sleep 2
@@ -442,8 +423,7 @@ main() {
     exit 1
   fi
 
-  wait_workers_routable "${WORKER_READY_TIMEOUT_S}"
-  wait_workers_api_ready "${WORKER_READY_TIMEOUT_S}"
+  wait_workers_ready "${WORKER_READY_TIMEOUT_S}"
 
   local rate
   for rate in "${REQUEST_RATE_LIST[@]}"; do

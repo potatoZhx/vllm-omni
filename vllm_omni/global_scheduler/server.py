@@ -434,7 +434,12 @@ def create_app(
                     "last_operation_ts_s": lifecycle.last_operation_ts_s,
                     "last_operation_error": lifecycle.last_operation_error,
                     "log_path": get_instance_log_path(instance_id),
-                    "routable": lifecycle.enabled and lifecycle.healthy and not lifecycle.draining,
+                    "routable": (
+                        lifecycle.enabled
+                        and lifecycle.healthy
+                        and not lifecycle.draining
+                        and lifecycle.process_state == "running"
+                    ),
                     "queue_len": stats.queue_len if stats else 0,
                     "inflight": stats.inflight if stats else 0,
                     "ewma_service_time_s": stats.ewma_service_time_s if stats else None,
