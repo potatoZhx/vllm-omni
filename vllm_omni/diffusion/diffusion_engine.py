@@ -68,6 +68,7 @@ class DiffusionEngine:
 
     def step(self, request: OmniDiffusionRequest) -> list[OmniRequestOutput]:
         # Apply pre-processing if available
+        scheduler_metrics: dict[str, Any] = {}
         if self.pre_process_func is not None:
             preprocess_start_time = time.time()
             request = self.pre_process_func(request)
@@ -75,8 +76,11 @@ class DiffusionEngine:
             logger.info(f"Pre-processing completed in {preprocess_time:.4f} seconds")
 
         output = self.add_req_and_wait_for_response(request)
+        scheduler_metrics = dict(getattr(output, "metrics", {}) or {})
         if output.error:
-            raise Exception(f"{output.error}")
+            error_code = getattr(output, "error_code", None) or "REQUEST_EXEC_FAILED"
+            request_label = getattr(output, "request_id", None) or ",".join(getattr(request, "request_ids", []) or [])
+            raise RuntimeError(f"[{error_code}] request_id={request_label} {output.error}")
         logger.info("Generation completed successfully.")
 
         if output.output is None:
@@ -107,6 +111,7 @@ class DiffusionEngine:
             "resolution": int(request.sampling_params.resolution),
             "postprocess_time_ms": postprocess_time * 1000,
         }
+        metrics.update(scheduler_metrics)
         if self.pre_process_func is not None:
             metrics["preprocessing_time_ms"] = preprocess_time * 1000
 
@@ -193,6 +198,22 @@ class DiffusionEngine:
 
     def add_req_and_wait_for_response(self, request: OmniDiffusionRequest):
         return self.executor.add_req(request)
+
+    def estimate_waiting_queue_len(self) -> int:
+        scheduler = getattr(self.executor, "scheduler", None)
+        if scheduler is None or not hasattr(scheduler, "estimate_waiting_queue_len"):
+            return 0
+        return scheduler.estimate_waiting_queue_len()
+
+    def estimate_scheduler_load(self) -> dict[str, int]:
+        scheduler = getattr(self.executor, "scheduler", None)
+        if scheduler is None or not hasattr(scheduler, "estimate_scheduler_load"):
+            return {
+                "waiting_queue_len": 0,
+                "active_request_count": 0,
+                "paused_context_count": 0,
+            }
+        return scheduler.estimate_scheduler_load()
 
     def start_profile(self, trace_filename: str | None = None) -> None:
         """
@@ -376,6 +397,13 @@ class DiffusionEngine:
             self.executor.shutdown()
 
     def abort(self, request_id: str | Iterable[str]) -> None:
-        # TODO implement it
-        logger.warning("DiffusionEngine abort is not implemented yet")
-        pass
+        scheduler = getattr(self.executor, "scheduler", None)
+        if scheduler is None or not hasattr(scheduler, "abort_request"):
+            logger.warning("DiffusionEngine abort is not available on current executor")
+            return
+
+        request_ids = [request_id] if isinstance(request_id, str) else list(request_id)
+        for req_id in request_ids:
+            aborted = scheduler.abort_request(req_id)
+            if not aborted:
+                logger.info("REQUEST_ABORT request_id=%s status=not_found", req_id)

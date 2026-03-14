@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import time
 from dataclasses import dataclass, field
 
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniPromptType
@@ -25,6 +26,8 @@ class OmniDiffusionRequest:
     sampling_params: OmniDiffusionSamplingParams
 
     request_ids: list[str] = field(default_factory=list)
+    arrival_time: float = field(default_factory=time.monotonic)
+    request_state: str = "waiting"
 
     def __post_init__(self):
         """Initialize dependent fields after dataclass initialization."""

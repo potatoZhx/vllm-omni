@@ -255,6 +255,47 @@ class OmniServeCommand(CLISubcommand):
             help="JSON string of cache configuration (e.g., '{\"rel_l1_thresh\": 0.2}').",
         )
         omni_config_group.add_argument(
+            "--instance-scheduler-policy",
+            type=str,
+            default="fcfs",
+            choices=["fcfs", "sjf", "slo_first"],
+            help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
+            "'sjf' orders waiting requests by estimated cost, and 'slo_first' enables "
+            "deadline-feasible prefix reordering inside a single instance.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-slo-target-ms",
+            type=float,
+            default=None,
+            help="Static target SLO in milliseconds for the instance-local 'slo_first' scheduler. "
+            "If omitted, requests fall back to request-level overrides when present.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-slo-floor-ms",
+            type=float,
+            default=0.0,
+            help="Lower bound applied to the effective target SLO in milliseconds.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-aging-factor",
+            type=float,
+            default=0.0,
+            help="Aging factor used when ordering the delayed tail set in the instance-local 'slo_first' scheduler.",
+        )
+        omni_config_group.add_argument(
+            "--instance-runtime-profile-path",
+            type=str,
+            default=None,
+            help="Path to a JSON runtime profile file or a directory containing JSON profile files under /profile. "
+            "Used by instance-local scheduler cost estimation before falling back to heuristics.",
+        )
+        omni_config_group.add_argument(
+            "--instance-runtime-profile-name",
+            type=str,
+            default=None,
+            help="Optional instance/profile name used to filter records inside the runtime profile JSON.",
+        )
+        omni_config_group.add_argument(
             "--enable-cache-dit-summary",
             action="store_true",
             help="Enable cache-dit summary logging after diffusion forward passes.",
