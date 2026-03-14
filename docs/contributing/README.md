@@ -44,6 +44,21 @@ vLLM-Omni's `pre-commit` hooks will now run automatically every time you commit.
     pre-commit run --show-diff-on-failure --color=always --all-files  # runs on all files (short for --all-files)
     ```
 
+!!! tip
+    To bypass all pre-commit hooks for a single commit, add `--no-verify` to your `git commit` command:
+
+    ```bash
+    git commit --no-verify -m "your commit message"
+    ```
+
+    To skip only a specific hook, prefix your commit command with `SKIP=<hook-id>`:
+
+    ```bash
+    SKIP=ruff-check git commit -m "your commit message"
+    ```
+
+    Available hook IDs are: `check-yaml`, `debug-statements`, `end-of-file-fixer`, `mixed-line-ending`, `trailing-whitespace`, `ruff-check`, `ruff-format`, `typos`, `actionlint`, `signoff-commit`, `check-pickle-imports`.
+
 ### Documentation
 
 MkDocs is a fast, simple and downright gorgeous static site generator that's geared towards building project documentation. Documentation source files are written in Markdown, and configured with a single YAML configuration file, `mkdocs.yml`.
