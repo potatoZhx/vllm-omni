@@ -302,7 +302,7 @@ class Stage1Scheduler(Scheduler):
             metrics={"scheduler_policy": self._policy_name(), "queue_len": len(self._waiting_queue)},
         )
 
-    def enqueue_request(self, request: OmniDiffusionRequest) -> _QueuedRequest:
+    def _enqueue_request_locked(self, request: OmniDiffusionRequest) -> _QueuedRequest:
         enqueue_time = time.monotonic()
         setattr(request, "arrival_time", getattr(request, "arrival_time", enqueue_time) or enqueue_time)
         self._set_request_state(request, "waiting")
@@ -383,7 +383,7 @@ class Stage1Scheduler(Scheduler):
         request_label = self._request_label(request)
 
         with self._queue_cv:
-            queued_request = self.enqueue_request(request)
+            queued_request = self._enqueue_request_locked(request)
             while True:
                 if self._is_request_aborted(request):
                     return self._normalize_error_output(

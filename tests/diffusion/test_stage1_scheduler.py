@@ -382,8 +382,12 @@ def test_stage1_scheduler_caches_estimated_cost_for_waiting_plan():
     sched._estimate_cost_seconds = _counting_estimate  # type: ignore[method-assign]  # noqa: SLF001
 
     with sched._queue_cv:  # noqa: SLF001
-        sched.enqueue_request(_mock_request("req-1", num_inference_steps=2, extra_args={"slo_ms": 5000.0}))  # noqa: SLF001
-        sched.enqueue_request(_mock_request("req-2", num_inference_steps=3, extra_args={"slo_ms": 5000.0}))  # noqa: SLF001
+        sched._enqueue_request_locked(  # noqa: SLF001
+            _mock_request("req-1", num_inference_steps=2, extra_args={"slo_ms": 5000.0})
+        )
+        sched._enqueue_request_locked(  # noqa: SLF001
+            _mock_request("req-2", num_inference_steps=3, extra_args={"slo_ms": 5000.0})
+        )
         waiting_requests = list(sched._waiting_queue)  # noqa: SLF001
 
     sched._build_waiting_plan(waiting_requests, now=time.monotonic())  # noqa: SLF001
