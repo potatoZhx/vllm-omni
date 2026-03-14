@@ -643,6 +643,34 @@ def _populate_slo_ms_from_warmups(
     return updated
 
 
+def _inject_scheduler_slo_fields(
+    requests_list: list[RequestFuncInput],
+    args,
+) -> list[RequestFuncInput]:
+    """Optionally inject per-request scheduler fields into request payloads.
+
+    When enabled, the benchmark sends `slo_ms` to the server so instance-local
+    schedulers such as `slo_first` can use the same target that the client-side
+    SLO report uses. Existing explicit request values are preserved.
+    """
+
+    if not getattr(args, "inject_scheduler_slo", False):
+        return requests_list
+
+    updated: list[RequestFuncInput] = []
+    slo_scale = float(getattr(args, "slo_scale", 3.0))
+    for req in requests_list:
+        extra_body = dict(req.extra_body)
+        if req.slo_ms is not None:
+            extra_body.setdefault("slo_ms", req.slo_ms)
+            extra_body.setdefault("slo_target_ms", req.slo_ms)
+            if slo_scale > 0:
+                extra_body.setdefault("estimated_cost_s", float(req.slo_ms) / 1000.0 / slo_scale)
+        updated.append(replace(req, extra_body=extra_body))
+
+    return updated
+
+
 async def iter_requests(
     requests_list: list[RequestFuncInput],
     request_rate: float,
@@ -793,13 +821,15 @@ async def benchmark(args):
                 warm_out = await limited_request_func(warm_req, session, None)
                 warmup_pairs.append((warm_req, warm_out))
 
-        if args.slo:
+        if args.slo or args.inject_scheduler_slo:
             # Prefer trace-provided per-request slo_ms. Only populate when missing.
             requests_list = _populate_slo_ms_from_warmups(
                 requests_list=requests_list,
                 warmup_pairs=warmup_pairs,
                 args=args,
             )
+        if args.inject_scheduler_slo:
+            requests_list = _inject_scheduler_slo_fields(requests_list, args)
 
         start_time = time.perf_counter()
         tasks = []
@@ -971,6 +1001,15 @@ if __name__ == "__main__":
         type=float,
         default=3.0,
         help="SLO target multiplier: slo_ms = estimated_exec_time_ms * slo_scale (default: 3).",
+    )
+    parser.add_argument(
+        "--inject-scheduler-slo",
+        action="store_true",
+        help=(
+            "Inject per-request slo_ms into the server request payload for scheduler use. "
+            "When enabled, the benchmark reuses trace-provided slo_ms or populates missing "
+            "values as estimated_exec_time_ms * --slo-scale before sending requests."
+        ),
     )
     parser.add_argument("--disable-tqdm", action="store_true", help="Disable progress bar.")
 
