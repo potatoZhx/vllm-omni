@@ -25,6 +25,7 @@ class _QueuedRequest:
     enqueue_time: float
     sequence_id: int
     schedule_metrics: dict[str, Any] = field(default_factory=dict)
+    estimated_cost_s: float | None = None
 
 
 @dataclass
@@ -114,6 +115,11 @@ class Stage1Scheduler(Scheduler):
         )
         return max(profiled_estimate * float(num_outputs), 0.001)
 
+    def _queued_cost_seconds(self, queued_request: _QueuedRequest) -> float:
+        if queued_request.estimated_cost_s is None:
+            queued_request.estimated_cost_s = self._estimate_cost_seconds(queued_request.request)
+        return queued_request.estimated_cost_s
+
     def _deadline_ts(self, queued_request: _QueuedRequest) -> float:
         extra_args = getattr(queued_request.request.sampling_params, "extra_args", {}) or {}
         if extra_args.get("deadline_ts") is not None:
@@ -134,13 +140,13 @@ class Stage1Scheduler(Scheduler):
     def _tail_priority(self, queued_request: _QueuedRequest, now: float) -> float:
         aging_factor = float(getattr(self.od_config, "instance_scheduler_aging_factor", 0.0) or 0.0)
         wait_s = max(now - queued_request.enqueue_time, 0.0)
-        return self._estimate_cost_seconds(queued_request.request) / (1.0 + aging_factor * wait_s)
+        return self._queued_cost_seconds(queued_request) / (1.0 + aging_factor * wait_s)
 
     def _availability_ts(self, now: float) -> float:
         if self._active_request is None or self._active_started_at is None:
             return now
         elapsed = max(now - self._active_started_at, 0.0)
-        remaining = max(self._estimate_cost_seconds(self._active_request.request) - elapsed, 0.0)
+        remaining = max(self._queued_cost_seconds(self._active_request) - elapsed, 0.0)
         return now + remaining
 
     def _build_waiting_plan(self, waiting_requests: list[_QueuedRequest], now: float) -> _WaitingPlan:
@@ -158,14 +164,14 @@ class Stage1Scheduler(Scheduler):
         regret_drop_count = 0
         for queued in deadline_sorted:
             prefix.append(queued)
-            work += self._estimate_cost_seconds(queued.request)
+            work += self._queued_cost_seconds(queued)
             if availability_ts + work > self._deadline_ts(queued):
                 longest = max(
                     prefix,
-                    key=lambda candidate: (self._estimate_cost_seconds(candidate.request), candidate.sequence_id),
+                    key=lambda candidate: (self._queued_cost_seconds(candidate), candidate.sequence_id),
                 )
                 prefix.remove(longest)
-                work -= self._estimate_cost_seconds(longest.request)
+                work -= self._queued_cost_seconds(longest)
                 regret_drop_count += 1
 
         feasible_ids = {queued.sequence_id for queued in prefix}
@@ -183,7 +189,7 @@ class Stage1Scheduler(Scheduler):
         completion_ts: dict[int, float] = {}
         cursor = availability_ts
         for queued in ordered_queue:
-            cursor += self._estimate_cost_seconds(queued.request)
+            cursor += self._queued_cost_seconds(queued)
             completion_ts[queued.sequence_id] = cursor
 
         return _WaitingPlan(
@@ -198,7 +204,7 @@ class Stage1Scheduler(Scheduler):
         return sorted(
             waiting_requests,
             key=lambda queued: (
-                self._estimate_cost_seconds(queued.request),
+                self._queued_cost_seconds(queued),
                 queued.enqueue_time,
                 queued.sequence_id,
             ),
@@ -215,7 +221,7 @@ class Stage1Scheduler(Scheduler):
                 {
                     "scheduler_policy": "sjf",
                     "queue_reorder_count": 1,
-                    "estimated_cost_s": self._estimate_cost_seconds(new_request.request),
+                    "estimated_cost_s": self._queued_cost_seconds(new_request),
                 }
             )
             logger.info(
@@ -343,14 +349,16 @@ class Stage1Scheduler(Scheduler):
             }
 
     def finish_request(self, request: OmniDiffusionRequest) -> None:
-        for request_id in self._request_ids(request):
-            self._aborted_request_ids.discard(request_id)
-        self._set_request_state(request, "finished")
+        with self._queue_cv:
+            for request_id in self._request_ids(request):
+                self._aborted_request_ids.discard(request_id)
+            self._set_request_state(request, "finished")
 
     def fail_request(self, request: OmniDiffusionRequest) -> None:
-        for request_id in self._request_ids(request):
-            self._aborted_request_ids.discard(request_id)
-        self._set_request_state(request, "failed")
+        with self._queue_cv:
+            for request_id in self._request_ids(request):
+                self._aborted_request_ids.discard(request_id)
+            self._set_request_state(request, "failed")
 
     def abort_request(self, request_id: str) -> bool:
         with self._queue_cv:

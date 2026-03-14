@@ -369,6 +369,52 @@ def test_stage1_scheduler_estimate_cost_counts_num_outputs_once_without_profile(
     assert multi_output_cost == pytest.approx(single_output_cost * 2.0)
 
 
+def test_stage1_scheduler_caches_estimated_cost_for_waiting_plan():
+    sched, _, _ = _make_stage1_scheduler(policy="slo_first", slo_target_ms=5000.0)
+    original_estimate = sched._estimate_cost_seconds  # noqa: SLF001
+    call_count = 0
+
+    def _counting_estimate(request):
+        nonlocal call_count
+        call_count += 1
+        return original_estimate(request)
+
+    sched._estimate_cost_seconds = _counting_estimate  # type: ignore[method-assign]  # noqa: SLF001
+
+    with sched._queue_cv:  # noqa: SLF001
+        sched.enqueue_request(_mock_request("req-1", num_inference_steps=2, extra_args={"slo_ms": 5000.0}))  # noqa: SLF001
+        sched.enqueue_request(_mock_request("req-2", num_inference_steps=3, extra_args={"slo_ms": 5000.0}))  # noqa: SLF001
+        waiting_requests = list(sched._waiting_queue)  # noqa: SLF001
+
+    sched._build_waiting_plan(waiting_requests, now=time.monotonic())  # noqa: SLF001
+    assert call_count == 2
+
+    sched._build_waiting_plan(waiting_requests, now=time.monotonic())  # noqa: SLF001
+    sched._build_sjf_queue(waiting_requests, now=time.monotonic())  # noqa: SLF001
+    assert call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("method_name", "expected_state"),
+    [("finish_request", "finished"), ("fail_request", "failed")],
+)
+def test_stage1_scheduler_request_terminal_state_updates_hold_queue_lock(method_name: str, expected_state: str):
+    sched, _, _ = _make_stage1_scheduler()
+    req = _mock_request("req-terminal")
+    finished = threading.Event()
+
+    with sched._queue_cv:  # noqa: SLF001
+        worker = threading.Thread(target=lambda: (getattr(sched, method_name)(req), finished.set()), daemon=True)
+        worker.start()
+        time.sleep(0.05)
+        assert finished.is_set() is False
+
+    worker.join(5)
+
+    assert finished.is_set() is True
+    assert getattr(req, "request_state") == expected_state
+
+
 def test_stage1_scheduler_reports_waiting_queue_len_and_load():
     sched, req_q, res_q = _make_stage1_scheduler()
     release_first = threading.Event()
