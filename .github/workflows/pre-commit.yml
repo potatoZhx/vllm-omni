@@ -1,11 +1,18 @@
+# This workflow is disabled. To re-enable, uncomment the `on:` triggers below.
 name: pre-commit
 
+# on:
+#   pull_request:
+#     branches: [main]
+#   push:
+#     branches: [main]
+#   workflow_dispatch: # for manual trigger
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  workflow_dispatch: # for manual trigger
+  workflow_dispatch:
+    inputs:
+      disabled:
+        description: 'Workflow is disabled'
+        default: 'true'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

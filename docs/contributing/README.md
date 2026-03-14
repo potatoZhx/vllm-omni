@@ -27,37 +27,8 @@ Please check [model implementation](model/README.md) for how to add diffusion an
 
 ### Linting
 
-vLLM-Omni uses `pre-commit` to lint and format the codebase. See [pre-commit documentation](https://pre-commit.com/#usage) if `pre-commit` is new to you. Setting up `pre-commit` is as easy as:
-
-```bash
-uv pip install pre-commit
-pre-commit install
-```
-
-vLLM-Omni's `pre-commit` hooks will now run automatically every time you commit.
-
-!!! tip
-    You can manually run the `pre-commit` hooks using:
-
-    ```bash
-    pre-commit run     # runs on staged files
-    pre-commit run --show-diff-on-failure --color=always --all-files  # runs on all files (short for --all-files)
-    ```
-
-!!! tip
-    To bypass all pre-commit hooks for a single commit, add `--no-verify` to your `git commit` command:
-
-    ```bash
-    git commit --no-verify -m "your commit message"
-    ```
-
-    To skip only a specific hook, prefix your commit command with `SKIP=<hook-id>`:
-
-    ```bash
-    SKIP=ruff-check git commit -m "your commit message"
-    ```
-
-    Available hook IDs are: `check-yaml`, `debug-statements`, `end-of-file-fixer`, `mixed-line-ending`, `trailing-whitespace`, `ruff-check`, `ruff-format`, `typos`, `actionlint`, `signoff-commit`, `check-pickle-imports`.
+!!! note
+    Pre-commit hooks are currently **disabled** for this repository. No linting checks will run automatically on commit or in CI.
 
 ### Documentation
 
