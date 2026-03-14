@@ -6,9 +6,10 @@ set -euo pipefail
 #    python3 -m vllm_omni.global_scheduler.server --config ./global_scheduler.yaml
 # 2) Lifecycle config exists in global_scheduler.yaml for worker ids below.
 
-NUM_PROMPTS="${NUM_PROMPTS:-20}"
+NUM_PROMPTS="${NUM_PROMPTS:-10}"
 REQUEST_RATE="${REQUEST_RATE:-0.5}"
 RPS_LIST="${RPS_LIST:-}"
+BACKEND="${BACKEND:-vllm-omni}"
 STARTED_WORKERS=0
 BENCH_RUNNING=0
 BENCH_PID=""
@@ -83,6 +84,7 @@ values = {
     "WORKER_IDS": " ".join(worker_ids),
     "WORKER_READY_TIMEOUT_S": str(benchmark.worker_ready_timeout_s),
     "MODEL": model,
+    "BACKEND": benchmark.backend,
     "TASK": benchmark.task,
     "DATASET": benchmark.dataset,
     "DATASET_PATH": resolve_config_path(benchmark.dataset_path),
@@ -197,23 +199,6 @@ else:
 PY
 }
 
-<<<<<<< Updated upstream
-=======
-start_workers() {
-  for wid in ${WORKER_IDS}; do
-    echo "[start] ${wid}"
-    curl_local -fsS -X POST "${SCHEDULER_URL}/instances/${wid}/start" >/dev/null
-  done
-}
-
-stop_workers() {
-  for wid in ${WORKER_IDS}; do
-    echo "[stop] ${wid}"
-    curl_local -fsS -X POST "${SCHEDULER_URL}/instances/${wid}/stop" >/dev/null || true
-  done
-}
-
->>>>>>> Stashed changes
 terminate_benchmark() {
   if [[ "${BENCH_RUNNING}" != "1" || -z "${BENCH_PID}" ]]; then
     return 0
@@ -233,12 +218,6 @@ cleanup() {
   _CLEANED_UP=1
 
   terminate_benchmark
-<<<<<<< Updated upstream
-=======
-  if [[ "${AUTO_STOP}" == "1" && "${STARTED_WORKERS}" == "1" ]]; then
-    stop_workers
-  fi
->>>>>>> Stashed changes
 }
 
 on_signal() {
@@ -253,6 +232,23 @@ on_exit() {
 
 is_worker_api_ready() {
   local endpoint="$1"
+  local probe_status
+
+  # For non-chat backends, use lightweight health probe to avoid calling
+  # unrelated generation APIs during readiness checks.
+  if [[ "${BACKEND}" != "vllm-omni" ]]; then
+    probe_status="$(
+      curl_local -sS --max-time 10 -o /dev/null -w "%{http_code}" \
+        "${endpoint%/}/health" || true
+    )"
+    if [[ "${probe_status}" == "200" ]]; then
+      echo "1"
+    else
+      echo "0"
+    fi
+    return 0
+  fi
+
   local tmp_body
   local status
   local payload
@@ -296,13 +292,12 @@ wait_workers_ready() {
       endpoint="$(get_worker_endpoint "${wid}")"
       if [[ -n "${endpoint}" ]]; then
         ready="$(is_worker_api_ready "${endpoint}")"
-<<<<<<< Updated upstream
         if [[ "${routable}" == "1" && "${ready}" == "1" ]]; then
-          echo "[ready] ${wid} routable=true api_ready=true (${endpoint%/}/v1/models)"
-=======
-        if [[ "${ready}" == "1" ]]; then
-          echo "[ready] ${wid} api ready: ${endpoint%/}/v1/chat/completions"
->>>>>>> Stashed changes
+          if [[ "${BACKEND}" == "vllm-omni" ]]; then
+            echo "[ready] ${wid} routable=true api_ready=true (${endpoint%/}/v1/chat/completions)"
+          else
+            echo "[ready] ${wid} routable=true api_ready=true (${endpoint%/}/health, backend=${BACKEND})"
+          fi
           break
         fi
         if [[ "${ready}" == "MODEL_NOT_FOUND" ]]; then
@@ -334,14 +329,12 @@ main() {
     exit 1
   fi
 
-<<<<<<< Updated upstream
+  if [[ "${BACKEND}" != "vllm-omni" && "${BACKEND}" != "openai" && "${BACKEND}" != "v1/videos" ]]; then
+    echo "Invalid BACKEND: ${BACKEND}. Expected one of: vllm-omni, openai, v1/videos" >&2
+    exit 1
+  fi
+
   wait_workers_ready "${WORKER_READY_TIMEOUT_S}"
-=======
-  start_workers
-  STARTED_WORKERS=1
-  wait_workers_routable "${WORKER_READY_TIMEOUT_S}"
-  wait_workers_api_ready "${WORKER_READY_TIMEOUT_S}"
->>>>>>> Stashed changes
 
   local effective_rps_list
   if [[ -n "${RPS_LIST}" ]]; then
@@ -378,6 +371,7 @@ main() {
       python3 "${BENCH_SCRIPT}"
       --base-url "${SCHEDULER_URL}"
       --model "${MODEL}"
+      --backend "${BACKEND}"
       --task "${TASK}"
       --dataset "${DATASET}"
       --num-prompts "${NUM_PROMPTS}"

@@ -2,6 +2,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+SUPPORTED_BACKENDS = ("vllm-omni", "openai", "v1/videos")
+
+
 @dataclass(slots=True)
 class RequestMeta:
     """Metadata extracted from an incoming routed request.
@@ -38,6 +41,7 @@ class InstanceSpec:
     launch_env: dict[str, str] = field(default_factory=dict)
     stop_executable: str | None = None
     stop_args: list[str] = field(default_factory=list)
+    backends: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

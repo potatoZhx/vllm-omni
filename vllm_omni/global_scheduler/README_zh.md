@@ -1,7 +1,7 @@
 # Global Scheduler 使用指南（中文）
 
 本目录提供 vLLM-Omni 的 global scheduler 代理服务。  
-它提供单一 OpenAI 兼容入口，并把请求路由到多个上游 vLLM 实例。
+它提供 OpenAI 兼容入口，并把请求路由到多个上游 vLLM 实例。
 
 主模块：
 
@@ -32,6 +32,7 @@ policy:
 instances:
   - id: worker-0
     endpoint: http://127.0.0.1:9001
+    backends: [vllm-omni, openai]
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
@@ -43,6 +44,7 @@ instances:
       args: ["-f", "vllm serve Qwen/Qwen-Image --port 9001"]
   - id: worker-1
     endpoint: http://127.0.0.1:9002
+    backends: [v1/videos]
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
@@ -109,6 +111,16 @@ curl -sS http://127.0.0.1:8089/v1/chat/completions \
 ### 2.1 请求入口
 
 - `POST /v1/chat/completions`
+- `POST /v1/images/generations`
+- `POST /v1/videos`
+
+后端路由说明：
+
+- `/v1/chat/completions` 对应 backend `vllm-omni`
+- `/v1/images/generations` 对应 backend `openai`
+- `/v1/videos` 对应 backend `v1/videos`
+- 通过 `instances[].backends` 控制实例可接收的 backend。
+- 若省略或留空 `instances[].backends`，实例默认兼容全部 backend。
 
 响应头包含：
 

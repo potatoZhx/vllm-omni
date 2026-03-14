@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from .types import SUPPORTED_BACKENDS
+
 
 class ServerConfig(BaseModel):
     """Top-level scheduler server settings."""
@@ -84,6 +86,7 @@ class BenchmarkConfig(BaseModel):
     worker_ids: list[str] = Field(default_factory=list)
     worker_ready_timeout_s: int = Field(default=600, ge=1)
     model: str | None = None
+    backend: str = "vllm-omni"
     task: str = "t2i"
     dataset: str = "trace"
     dataset_path: str | None = None
@@ -108,6 +111,13 @@ class BenchmarkConfig(BaseModel):
             return value
         if not value.strip():
             raise ValueError("benchmark.model cannot be empty")
+        return value
+
+    @field_validator("backend")
+    @classmethod
+    def validate_backend(cls, value: str) -> str:
+        if value not in SUPPORTED_BACKENDS:
+            raise ValueError("benchmark.backend must be one of: " + ", ".join(SUPPORTED_BACKENDS))
         return value
 
     @field_validator("task")
@@ -200,8 +210,7 @@ class InstanceConfig(BaseModel):
     id: str
     endpoint: str
     instance_type: str | None = None
-    launch: LaunchConfig | None = None
-    stop: StopConfig | None = None
+    backends: list[str] = Field(default_factory=list)
     launch: LaunchConfig | None = None
     stop: StopConfig | None = None
 
@@ -232,6 +241,21 @@ class InstanceConfig(BaseModel):
         if not value.strip():
             raise ValueError("instances[].instance_type cannot be empty")
         return value
+
+    @field_validator("backends")
+    @classmethod
+    def validate_backends(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for backend in value:
+            backend_name = backend.strip()
+            if not backend_name:
+                raise ValueError("instances[].backends cannot include empty items")
+            if backend_name not in SUPPORTED_BACKENDS:
+                raise ValueError(
+                    "instances[].backends must be one of: " + ", ".join(SUPPORTED_BACKENDS)
+                )
+            normalized.append(backend_name)
+        return normalized
 
 
 class GlobalSchedulerConfig(BaseModel):

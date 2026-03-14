@@ -37,7 +37,7 @@ from .process_controller import (
 )
 from .router import build_policy
 from .state import RuntimeStateStore
-from .types import InstanceSpec, RequestMeta
+from .types import InstanceSpec, RequestMeta, SUPPORTED_BACKENDS
 
 logger = logging.getLogger("vllm_omni.global_scheduler.server")
 
@@ -110,6 +110,15 @@ def _build_error_payload(code: str, message: str, request_id: str) -> dict[str, 
             "request_id": request_id,
         }
     }
+
+
+def _select_candidates_for_backend(
+    all_candidates: list[InstanceSpec],
+    backend: str,
+) -> list[InstanceSpec]:
+    if backend not in SUPPORTED_BACKENDS:
+        return []
+    return [instance for instance in all_candidates if not instance.backends or backend in instance.backends]
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -409,6 +418,7 @@ def _to_instance_specs(config: GlobalSchedulerConfig) -> list[InstanceSpec]:
             launch_env=dict(instance.launch.env) if instance.launch is not None else {},
             stop_executable=instance.stop.executable if instance.stop is not None else None,
             stop_args=list(instance.stop.args) if instance.stop is not None else [],
+            backends=list(instance.backends),
         )
         for instance in config.instances
     ]
@@ -533,6 +543,7 @@ def create_app(
                 {
                     "id": instance_id,
                     "endpoint": lifecycle.instance.endpoint,
+                    "backends": lifecycle.instance.backends,
                     "enabled": lifecycle.enabled,
                     "healthy": lifecycle.healthy,
                     "draining": lifecycle.draining,
@@ -787,13 +798,16 @@ def create_app(
         request_id = request.headers.get("x-request-id") or payload.get("request_id") or str(uuid.uuid4())
         request_meta = _extract_request_meta_from_payload(payload, request_id=request_id)
         runtime_snapshot = app.state.runtime_state_store.snapshot()
-        candidates = app.state.instance_lifecycle_manager.get_routable_instances()
+        candidates = _select_candidates_for_backend(
+            app.state.instance_lifecycle_manager.get_routable_instances(),
+            backend="vllm-omni",
+        )
         if not candidates:
             return JSONResponse(
                 status_code=503,
                 content=_build_error_payload(
                     code="GS_NO_ROUTABLE_INSTANCE",
-                    message="No routable instance is available",
+                    message="No routable instance is available for backend vllm-omni",
                     request_id=request_id,
                 ),
             )
@@ -1066,13 +1080,16 @@ def create_app(
         request_id = request.headers.get("x-request-id") or payload.get("request_id") or str(uuid.uuid4())
         request_meta = _extract_request_meta_from_payload(payload, request_id=request_id)
         runtime_snapshot = app.state.runtime_state_store.snapshot()
-        candidates = app.state.instance_lifecycle_manager.get_routable_instances()
+        candidates = _select_candidates_for_backend(
+            app.state.instance_lifecycle_manager.get_routable_instances(),
+            backend="openai",
+        )
         if not candidates:
             return JSONResponse(
                 status_code=503,
                 content=_build_error_payload(
                     code="GS_NO_ROUTABLE_INSTANCE",
-                    message="No routable instance is available",
+                    message="No routable instance is available for backend openai",
                     request_id=request_id,
                 ),
             )
@@ -1179,13 +1196,16 @@ def create_app(
         request_meta = _extract_request_meta_from_form_fields(form_fields, request_id=request_id)
 
         runtime_snapshot = app.state.runtime_state_store.snapshot()
-        candidates = app.state.instance_lifecycle_manager.get_routable_instances()
+        candidates = _select_candidates_for_backend(
+            app.state.instance_lifecycle_manager.get_routable_instances(),
+            backend="v1/videos",
+        )
         if not candidates:
             return JSONResponse(
                 status_code=503,
                 content=_build_error_payload(
                     code="GS_NO_ROUTABLE_INSTANCE",
-                    message="No routable instance is available",
+                    message="No routable instance is available for backend v1/videos",
                     request_id=request_id,
                 ),
             )

@@ -16,8 +16,9 @@ policy:
 
 benchmark:
   worker_ids: [worker0]
-  worker_ready_timeout_s: 600
+  worker_ready_timeout_s: 1200
   model: /data2/group_谈海生/mumura/models/Wan2.2-T2V-A14B-Diffusers
+  backend: v1/videos
   task: t2v
   dataset: trace
   dataset_path: /home/mumura/omni/vllm-omni/benchmarks/dataset/cogvideox_trace_steps_30_40_50.txt

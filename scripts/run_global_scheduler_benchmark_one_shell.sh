@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
-python3 -m vllm_omni.global_scheduler.server --config /home/mumura/omni/vllm-omni/global_scheduler.yaml \
-  >> "/home/mumura/omni/vllm-omni/scripts/logs/server.log" 2>&1 &
-SERVER_PID=$!
-sleep 10
-
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${CONFIG_FILE:-${REPO_ROOT}/global_scheduler.yaml}"
 BENCHMARK_SCRIPT="${REPO_ROOT}/scripts/run_global_scheduler_benchmark.sh"
