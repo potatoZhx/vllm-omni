@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import json
 import socket
 import time
 from dataclasses import dataclass
 from threading import RLock
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from urllib.parse import urlparse
 
 from .types import InstanceSpec, RuntimeStats
 
 PROCESS_STATES = {"running", "stopped", "stopping", "starting", "restarting", "error"}
+_READY_PATH = "/v1/models"
+_NO_PROXY_OPENER = urllib_request.build_opener(urllib_request.ProxyHandler({}))
 
 
 @dataclass(slots=True)
@@ -145,7 +150,7 @@ class InstanceLifecycleManager:
         for status in statuses:
             if not status.enabled:
                 continue
-            healthy, error = _probe_tcp_alive(status.instance.endpoint, timeout_s)
+            healthy, error = _probe_http_ready(status.instance.endpoint, timeout_s)
             self.mark_health(status.instance.id, healthy=healthy, error=error)
 
     def sync_instances(self, instances: list[InstanceSpec], runtime_snapshot: dict[str, RuntimeStats]) -> None:
@@ -234,12 +239,12 @@ class InstanceLifecycleManager:
         )
 
 
-def _probe_tcp_alive(endpoint: str, timeout_s: float) -> tuple[bool, str | None]:
-    """Probe endpoint TCP connectivity for health-checking.
+def _probe_http_ready(endpoint: str, timeout_s: float) -> tuple[bool, str | None]:
+    """Probe endpoint HTTP readiness for health-checking.
 
     Args:
         endpoint: Upstream endpoint in `http://host:port` format.
-        timeout_s: TCP dial timeout in seconds.
+        timeout_s: HTTP readiness timeout in seconds.
 
     Returns:
         Tuple `(healthy, error_message)` where error is `None` on success.
@@ -248,7 +253,21 @@ def _probe_tcp_alive(endpoint: str, timeout_s: float) -> tuple[bool, str | None]
         parsed = urlparse(endpoint)
         if parsed.hostname is None or parsed.port is None:
             return False, "invalid_endpoint"
-        with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout_s):
+        request = urllib_request.Request(url=f"{endpoint.rstrip('/')}{_READY_PATH}", method="GET")
+        with _NO_PROXY_OPENER.open(request, timeout=timeout_s) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+        models = payload.get("data")
+        if isinstance(models, list) and len(models) > 0:
             return True, None
+        return False, "ready_probe_empty_models"
+    except urllib_error.HTTPError as exc:
+        return False, f"http_{exc.code}"
+    except urllib_error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return False, "ready_probe_timeout"
+        return False, str(reason)
+    except json.JSONDecodeError:
+        return False, "ready_probe_invalid_json"
     except OSError as exc:
         return False, str(exc)

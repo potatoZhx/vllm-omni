@@ -618,8 +618,8 @@ def test_instance_lifecycle_ops_endpoints_update_process_state(tmp_path):
     assert instance_view["log_path"].endswith("worker-0.log")
 
 
-def test_server_startup_auto_starts_instances_with_launch_config(tmp_path):
-    """Server startup should auto-start instances that define launch config."""
+def test_server_startup_auto_starts_instances_with_launch_config(tmp_path, monkeypatch):
+    """Server startup should auto-start instances and wait for HTTP readiness."""
     config_path = tmp_path / "scheduler.yaml"
     config_path.write_text(
         textwrap.dedent(
@@ -642,6 +642,10 @@ def test_server_startup_auto_starts_instances_with_launch_config(tmp_path):
     controller = _FakeProcessController()
     config = load_config(config_path)
     app = create_app(config, process_controller=controller)
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_ready",
+        lambda endpoint, timeout_s: (False, "ready_probe_timeout"),
+    )
 
     with TestClient(app) as client:
         response = client.get("/instances")
@@ -651,6 +655,8 @@ def test_server_startup_auto_starts_instances_with_launch_config(tmp_path):
     instance_view = response.json()["instances"][0]
     assert instance_view["process_state"] == "running"
     assert instance_view["last_operation"] == "start"
+    assert instance_view["healthy"] is False
+    assert instance_view["routable"] is False
 
 
 def test_server_shutdown_stops_instances_with_stop_config(tmp_path):

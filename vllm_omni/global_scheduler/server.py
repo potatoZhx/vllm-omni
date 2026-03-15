@@ -463,7 +463,7 @@ async def _auto_start_configured_instances(app: FastAPI) -> None:
             raise RuntimeError(f"auto-start failed for {instance_id}: {exc}") from exc
 
         manager.set_enabled(instance_id, enabled=True)
-        manager.mark_health(instance_id, healthy=False, error="awaiting_probe_after_start")
+        manager.mark_health(instance_id, healthy=False, error="awaiting_http_ready_after_start")
         manager.set_process_state(instance_id, process_state="running", operation="start", error=None)
 
 

@@ -1,10 +1,6 @@
-"""Lifecycle manager health, draining, and reload behavior tests."""
-
-"""Lifecycle manager health, draining, and reload behavior tests."""
-
 import pytest
 
-from vllm_omni.global_scheduler.lifecycle import InstanceLifecycleManager
+from vllm_omni.global_scheduler.lifecycle import InstanceLifecycleManager, _probe_http_ready
 from vllm_omni.global_scheduler.state import RuntimeStateStore
 from vllm_omni.global_scheduler.types import InstanceSpec
 
@@ -125,3 +121,51 @@ def test_non_running_process_state_is_excluded_from_routable_set():
     assert snapshot["worker-0"].process_state == "restarting"
     assert snapshot["worker-0"].last_operation == "restart"
     assert snapshot["worker-0"].last_operation_ts_s is not None
+
+
+def test_probe_http_ready_reports_success_for_non_empty_models(monkeypatch):
+    """HTTP readiness probe should succeed only when models are returned."""
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"data":[{"id":"demo"}]}'
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._NO_PROXY_OPENER.open",
+        lambda request, timeout: _Response(),
+    )
+
+    healthy, error = _probe_http_ready("http://127.0.0.1:9001", 0.5)
+
+    assert healthy is True
+    assert error is None
+
+
+def test_probe_http_ready_reports_empty_models_as_unhealthy(monkeypatch):
+    """HTTP readiness probe should reject empty model lists."""
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"data":[]}'
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._NO_PROXY_OPENER.open",
+        lambda request, timeout: _Response(),
+    )
+
+    healthy, error = _probe_http_ready("http://127.0.0.1:9001", 0.5)
+
+    assert healthy is False
+    assert error == "ready_probe_empty_models"
