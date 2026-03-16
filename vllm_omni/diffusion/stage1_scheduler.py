@@ -354,6 +354,10 @@ class Stage1Scheduler(Scheduler):
                 self._aborted_request_ids.discard(request_id)
             self._set_request_state(request, "finished")
 
+    def mark_request_unfinished(self, request: OmniDiffusionRequest) -> None:
+        with self._queue_cv:
+            self._set_request_state(request, "running")
+
     def fail_request(self, request: OmniDiffusionRequest) -> None:
         with self._queue_cv:
             for request_id in self._request_ids(request):
@@ -445,6 +449,17 @@ class Stage1Scheduler(Scheduler):
                 output.metrics.get("scheduler_latency_ms", -1.0),
                 output.error_code,
                 output.error,
+            )
+            return output
+
+        if not getattr(output, "finished", True):
+            self.mark_request_unfinished(request)
+            logger.info(
+                "REQUEST_CHUNK_DONE request_id=%s queue_len=%d latency_ms=%.2f executed_steps=%s",
+                output.request_id,
+                output.metrics.get("queue_len", -1),
+                output.metrics.get("scheduler_latency_ms", -1.0),
+                output.metrics.get("executed_steps"),
             )
             return output
 

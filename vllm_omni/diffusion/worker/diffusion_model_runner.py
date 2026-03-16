@@ -266,6 +266,18 @@ class DiffusionModelRunner:
         if len(req.prompts) == 0:
             raise ValueError("Cannot execute model with empty request list")
 
+        if getattr(self.od_config, "diffusion_enable_step_chunk", False):
+            missing_hooks = [
+                hook_name
+                for hook_name in ("prepare_generation", "step_generation", "finalize_generation")
+                if not callable(getattr(self.pipeline, hook_name, None))
+            ]
+            if missing_hooks:
+                raise NotImplementedError(
+                    "Step-chunk execution is only supported for step-aware pipelines. "
+                    f"Missing hooks: {', '.join(missing_hooks)}"
+                )
+
         # Use no_grad() for HSDP compatibility, inference_mode() otherwise for better perf
         use_hsdp = self.od_config.parallel_config.use_hsdp
         grad_context = torch.no_grad() if use_hsdp else torch.inference_mode()
@@ -295,8 +307,34 @@ class DiffusionModelRunner:
                 self.cache_backend.refresh(self.pipeline, req.sampling_params.num_inference_steps)
 
             with set_forward_context(vllm_config=self.vllm_config, omni_diffusion_config=self.od_config):
-                with record_function("pipeline_forward"):
-                    output = self.pipeline.forward(req)
+                if getattr(self.od_config, "diffusion_enable_step_chunk", False):
+                    with record_function("pipeline_step_chunk"):
+                        request_id = req.primary_request_id
+                        ctx = self.active_contexts.get(request_id)
+                        if ctx is None:
+                            ctx = self.prepare_generation(req)
+
+                        req.dispatch_epoch += 1
+                        remaining_steps = max(ctx.num_inference_steps - ctx.current_step, 0)
+                        steps_this_turn = req.max_steps_this_turn if req.max_steps_this_turn is not None else remaining_steps
+                        if steps_this_turn <= 0:
+                            steps_this_turn = remaining_steps
+
+                        ctx, finished = self.step_generation(ctx, steps_this_turn)
+                        req.executed_steps = ctx.current_step
+
+                        if finished:
+                            output = self.finalize_generation(ctx)
+                        else:
+                            output = DiffusionOutput(
+                                output=None,
+                                request_id=ctx.request_id,
+                                finished=False,
+                                metrics={"executed_steps": ctx.current_step},
+                            )
+                else:
+                    with record_function("pipeline_forward"):
+                        output = self.pipeline.forward(req)
 
             # NOTE:
             if (

@@ -17,6 +17,7 @@ from torch import nn
 from transformers import AutoTokenizer, UMT5EncoderModel
 from vllm.model_executor.models.utils import AutoWeightsLoader
 
+from vllm_omni.diffusion.context import DiffusionRequestContext
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.cfg_parallel import CFGParallelMixin
 from vllm_omni.diffusion.distributed.utils import get_local_device
@@ -324,7 +325,7 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
     def current_timestep(self):
         return self._current_timestep
 
-    def forward(
+    def prepare_generation(
         self,
         req: OmniDiffusionRequest,
         prompt: str | None = None,
@@ -340,14 +341,14 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
         negative_prompt_embeds: torch.Tensor | None = None,
         attention_kwargs: dict | None = None,
         **kwargs,
-    ) -> DiffusionOutput:
-        # Get parameters from request or arguments
+    ) -> DiffusionRequestContext:
+        del kwargs
         if len(req.prompts) > 1:
             raise ValueError(
                 """This model only supports a single prompt, not a batched request.""",
                 """Please pass in a single prompt object or string, or a single-item list.""",
             )
-        if len(req.prompts) == 1:  # If req.prompt is empty, default to prompt & neg_prompt in param list
+        if len(req.prompts) == 1:
             prompt = req.prompts[0] if isinstance(req.prompts[0], str) else req.prompts[0].get("prompt")
             negative_prompt = None if isinstance(req.prompts[0], str) else req.prompts[0].get("negative_prompt")
         if prompt is None and prompt_embeds is None:
@@ -357,15 +358,12 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
         width = req.sampling_params.width or width
         num_frames = req.sampling_params.num_frames if req.sampling_params.num_frames else frame_num
 
-        # Ensure dimensions are compatible with VAE and patch size
-        # For expand_timesteps mode, we need latent dims to be even (divisible by patch_size)
         patch_size = self.transformer_config.patch_size
-        mod_value = self.vae_scale_factor_spatial * patch_size[1]  # 16*2=32 for TI2V, 8*2=16 for I2V
+        mod_value = self.vae_scale_factor_spatial * patch_size[1]
         height = (height // mod_value) * mod_value
         width = (width // mod_value) * mod_value
         num_steps = req.sampling_params.num_inference_steps or num_inference_steps
 
-        # Respect per-request guidance_scale when explicitly provided.
         if req.sampling_params.guidance_scale_provided:
             guidance_scale = req.sampling_params.guidance_scale
 
@@ -379,19 +377,14 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
                 else guidance_low
             )
         )
-
-        # record guidance for properties
         self._guidance_scale = guidance_low
         self._guidance_scale_2 = guidance_high
 
-        # Prefer engine-configured boundary_ratio, but allow per-request fallback.
         boundary_ratio = self.boundary_ratio if self.boundary_ratio is not None else req.sampling_params.boundary_ratio
-
         if boundary_ratio is None:
             boundary_ratio = 0.875
             logger.warning("boundary_ratio is required for T2V generation. using default value 0.875")
 
-        # validate shapes
         self.check_inputs(
             prompt=prompt,
             negative_prompt=negative_prompt,
@@ -408,22 +401,18 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
         num_frames = max(num_frames, 1)
 
         device = self.device
-        # Get dtype from whichever transformer is loaded
         if self.transformer is not None:
             dtype = self.transformer.dtype
         elif self.transformer_2 is not None:
             dtype = self.transformer_2.dtype
         else:
-            # Fallback to text_encoder dtype if no transformer loaded
             dtype = self.text_encoder.dtype
 
-        # Seed / generator
         if generator is None:
             generator = req.sampling_params.generator
         if generator is None and req.sampling_params.seed is not None:
             generator = torch.Generator(device=device).manual_seed(req.sampling_params.seed)
 
-        # Encode prompts
         if prompt_embeds is None:
             prompt_embeds, negative_prompt_embeds = self.encode_prompt(
                 prompt=prompt,
@@ -443,7 +432,6 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
                     "negative_prompt_embeds must be provided when prompt_embeds are given and guidance > 1."
                 )
 
-        # Timesteps
         self.scheduler.set_timesteps(num_steps, device=device)
         timesteps = self.scheduler.timesteps
         self._num_timesteps = len(timesteps)
@@ -451,7 +439,6 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
         if boundary_ratio is not None:
             boundary_timestep = boundary_ratio * self.scheduler.config.num_train_timesteps
 
-        # Handle I2V mode when expand_timesteps=True and image is provided
         multi_modal_data = req.prompts[0].get("multi_modal_data", {}) if not isinstance(req.prompts[0], str) else None
         raw_image = multi_modal_data.get("image", None) if multi_modal_data is not None else None
         if isinstance(raw_image, list):
@@ -470,25 +457,18 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
 
         latent_condition = None
         first_frame_mask = None
-
         if self.expand_timesteps and image is not None:
-            # I2V mode: encode image and prepare condition
             from diffusers.video_processor import VideoProcessor
 
             video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
-
-            # Preprocess image
             if isinstance(image, PIL.Image.Image):
                 image = image.resize((width, height), PIL.Image.Resampling.LANCZOS)
                 image_tensor = video_processor.preprocess(image, height=height, width=width)
             else:
                 image_tensor = image
 
-            # Use out_channels for noise latents (not in_channels which includes condition)
             num_channels_latents = self.transformer_config.out_channels
             batch_size = prompt_embeds.shape[0]
-
-            # Prepare noise latents
             latents = self.prepare_latents(
                 batch_size=batch_size,
                 num_channels_latents=num_channels_latents,
@@ -501,17 +481,14 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
                 latents=req.sampling_params.latents,
             )
 
-            # Encode image condition
             num_latent_frames = latents.shape[2]
             latent_height = latents.shape[3]
             latent_width = latents.shape[4]
-
-            image_tensor = image_tensor.unsqueeze(2)  # [B, C, 1, H, W]
+            image_tensor = image_tensor.unsqueeze(2)
             image_tensor = image_tensor.to(device=device, dtype=self.vae.dtype)
             latent_condition = retrieve_latents(self.vae.encode(image_tensor), sample_mode="argmax")
             latent_condition = latent_condition.repeat(batch_size, 1, 1, 1, 1)
 
-            # Normalize condition latents
             latents_mean = (
                 torch.tensor(self.vae.config.latents_mean)
                 .view(1, self.vae.config.z_dim, 1, 1, 1)
@@ -523,13 +500,11 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
             latent_condition = (latent_condition - latents_mean) * latents_std
             latent_condition = latent_condition.to(torch.float32)
 
-            # Create mask: 0 for first frame (condition), 1 for rest (to denoise)
             first_frame_mask = torch.ones(
                 1, 1, num_latent_frames, latent_height, latent_width, dtype=torch.float32, device=device
             )
             first_frame_mask[:, :, 0] = 0
         else:
-            # T2V mode: standard latent preparation
             num_channels_latents = self.transformer_config.in_channels
             latents = self.prepare_latents(
                 batch_size=prompt_embeds.shape[0],
@@ -546,57 +521,85 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
         if attention_kwargs is None:
             attention_kwargs = {}
 
-        # Denoising
-        for t in timesteps:
-            self._current_timestep = t
+        ctx = DiffusionRequestContext.from_request(req)
+        ctx.current_step = 0
+        ctx.num_inference_steps = len(timesteps)
+        ctx.extra_model_state = {
+            "height": height,
+            "width": width,
+            "output_type": output_type,
+            "boundary_timestep": boundary_timestep,
+            "guidance_low": guidance_low,
+            "guidance_high": guidance_high,
+            "prompt_embeds": prompt_embeds,
+            "negative_prompt_embeds": negative_prompt_embeds,
+            "timesteps": timesteps,
+            "latents": latents,
+            "latent_condition": latent_condition,
+            "first_frame_mask": first_frame_mask,
+            "attention_kwargs": attention_kwargs,
+        }
+        return ctx
 
-            # Select model based on timestep and boundary_ratio
-            # High noise stage (t >= boundary_timestep): use transformer
-            # Low noise stage (t < boundary_timestep): use transformer_2
+    def step_generation(
+        self,
+        ctx: DiffusionRequestContext,
+        steps: int,
+    ) -> tuple[DiffusionRequestContext, bool]:
+        state = ctx.extra_model_state
+        timesteps = state["timesteps"]
+        start = ctx.current_step
+        end = min(start + steps, len(timesteps))
+        if start >= end:
+            ctx.finished = ctx.current_step >= len(timesteps)
+            return ctx, ctx.finished
+
+        latents = state["latents"]
+        latent_condition = state["latent_condition"]
+        first_frame_mask = state["first_frame_mask"]
+        attention_kwargs = state["attention_kwargs"]
+        prompt_embeds = state["prompt_embeds"]
+        negative_prompt_embeds = state["negative_prompt_embeds"]
+
+        for t in timesteps[start:end]:
+            self._current_timestep = t
+            boundary_timestep = state["boundary_timestep"]
             if boundary_timestep is not None and t < boundary_timestep:
-                # Low noise stage - always use guidance_high for this stage
-                current_guidance_scale = guidance_high
+                current_guidance_scale = state["guidance_high"]
                 if self.transformer_2 is not None:
                     current_model = self.transformer_2
                 elif self.transformer is not None:
-                    # Fallback to transformer if transformer_2 not loaded
                     current_model = self.transformer
                 else:
                     raise RuntimeError("No transformer available for low-noise stage")
             else:
-                # High noise stage - always use guidance_low for this stage
-                current_guidance_scale = guidance_low
+                current_guidance_scale = state["guidance_low"]
                 if self.transformer is not None:
                     current_model = self.transformer
                 elif self.transformer_2 is not None:
-                    # Fallback to transformer_2 if transformer not loaded
                     current_model = self.transformer_2
                 else:
                     raise RuntimeError("No transformer available for high-noise stage")
 
             if self.expand_timesteps and latent_condition is not None:
-                # I2V mode: blend condition with latents using mask
                 latent_model_input = (1 - first_frame_mask) * latent_condition + first_frame_mask * latents
-                latent_model_input = latent_model_input.to(dtype)
-
-                # Expand timesteps per patch - use floor division to match patch embedding
+                latent_model_input = latent_model_input.to(
+                    self.transformer.dtype if self.transformer is not None else self.transformer_2.dtype
+                )
                 patch_size = self.transformer_config.patch_size
-                num_latent_frames = latents.shape[2]
                 patch_height = latents.shape[3] // patch_size[1]
                 patch_width = latents.shape[4] // patch_size[2]
-
-                # Create mask at patch resolution (same as hidden states sequence length)
                 patch_mask = first_frame_mask[:, :, :, :: patch_size[1], :: patch_size[2]]
-                patch_mask = patch_mask[:, :, :, :patch_height, :patch_width]  # Ensure correct dimensions
+                patch_mask = patch_mask[:, :, :, :patch_height, :patch_width]
                 temp_ts = (patch_mask[0][0] * t).flatten()
                 timestep = temp_ts.unsqueeze(0).expand(latents.shape[0], -1)
             else:
-                # T2V mode: standard forward
-                latent_model_input = latents.to(dtype)
+                latent_model_input = latents.to(
+                    self.transformer.dtype if self.transformer is not None else self.transformer_2.dtype
+                )
                 timestep = t.expand(latents.shape[0])
 
             do_true_cfg = current_guidance_scale > 1.0 and negative_prompt_embeds is not None
-            # Prepare kwargs for positive and negative predictions
             positive_kwargs = {
                 "hidden_states": latent_model_input,
                 "timestep": timestep,
@@ -605,6 +608,7 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
                 "return_dict": False,
                 "current_model": current_model,
             }
+            negative_kwargs = None
             if do_true_cfg:
                 negative_kwargs = {
                     "hidden_states": latent_model_input,
@@ -614,10 +618,7 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
                     "return_dict": False,
                     "current_model": current_model,
                 }
-            else:
-                negative_kwargs = None
 
-            # Predict noise with automatic CFG parallel handling
             noise_pred = self.predict_noise_maybe_with_cfg(
                 do_true_cfg=do_true_cfg,
                 true_cfg_scale=current_guidance_scale,
@@ -625,22 +626,25 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
                 negative_kwargs=negative_kwargs,
                 cfg_normalize=False,
             )
-
-            # Compute the previous noisy sample x_t -> x_t-1 with automatic CFG sync
             latents = self.scheduler_step_maybe_with_cfg(noise_pred, t, latents, do_true_cfg)
 
-        # Wan2.2 is prone to out of memory errors when predicting large videos
-        # so we empty the cache here to avoid OOM before vae decoding.
+        state["latents"] = latents
+        ctx.current_step = end
+        ctx.finished = ctx.current_step >= len(timesteps)
+        return ctx, ctx.finished
+
+    def finalize_generation(self, ctx: DiffusionRequestContext) -> DiffusionOutput:
+        state = ctx.extra_model_state
+        latents = state["latents"]
+
         if current_omni_platform.is_available():
             current_omni_platform.empty_cache()
         self._current_timestep = None
 
-        # For I2V mode: blend final latents with condition
-        if self.expand_timesteps and latent_condition is not None:
-            latents = (1 - first_frame_mask) * latent_condition + first_frame_mask * latents
+        if self.expand_timesteps and state["latent_condition"] is not None:
+            latents = (1 - state["first_frame_mask"]) * state["latent_condition"] + state["first_frame_mask"] * latents
 
-        # Decode
-        if output_type == "latent":
+        if state["output_type"] == "latent":
             output = latents
         else:
             latents = latents.to(self.vae.dtype)
@@ -655,7 +659,48 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
             latents = latents / latents_std + latents_mean
             output = self.vae.decode(latents, return_dict=False)[0]
 
-        return DiffusionOutput(output=output)
+        return DiffusionOutput(output=output, request_id=ctx.request_id, finished=True)
+
+    def forward(
+        self,
+        req: OmniDiffusionRequest,
+        prompt: str | None = None,
+        negative_prompt: str | None = None,
+        height: int = 480,
+        width: int = 832,
+        num_inference_steps: int = 40,
+        guidance_scale: float | tuple[float, float] = 4.0,
+        frame_num: int = 81,
+        output_type: str | None = "np",
+        generator: torch.Generator | list[torch.Generator] | None = None,
+        prompt_embeds: torch.Tensor | None = None,
+        negative_prompt_embeds: torch.Tensor | None = None,
+        attention_kwargs: dict | None = None,
+        **kwargs,
+    ) -> DiffusionOutput:
+        ctx = self.prepare_generation(
+            req,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            height=height,
+            width=width,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            frame_num=frame_num,
+            output_type=output_type,
+            generator=generator,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            attention_kwargs=attention_kwargs,
+            **kwargs,
+        )
+        if getattr(self.od_config, "diffusion_enable_step_chunk", False):
+            ctx, _ = self.step_generation(ctx, ctx.num_inference_steps)
+            return self.finalize_generation(ctx)
+
+        # Preserve the original run-to-completion behavior when step-chunk is disabled.
+        ctx, _ = self.step_generation(ctx, ctx.num_inference_steps)
+        return self.finalize_generation(ctx)
 
     def predict_noise(self, current_model: nn.Module | None = None, **kwargs: Any) -> torch.Tensor:
         """

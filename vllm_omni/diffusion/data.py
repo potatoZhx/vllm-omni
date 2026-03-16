@@ -643,6 +643,7 @@ class DiffusionOutput:
     error: str | None = None
     error_code: str | None = None
     request_id: str | None = None
+    finished: bool = True
     metrics: dict[str, Any] = field(default_factory=dict)
 
     post_process_func: Callable[..., Any] | None = None

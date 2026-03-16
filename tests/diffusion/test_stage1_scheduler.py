@@ -153,6 +153,24 @@ def test_stage1_scheduler_preserves_fcfs_order():
     assert outputs["req-2"].request_id == "req-2"
 
 
+def test_stage1_scheduler_keeps_request_running_for_unfinished_output():
+    sched, req_q, res_q = _make_stage1_scheduler()
+    req = _mock_request("req-chunk")
+
+    def _worker():
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=None, finished=False, metrics={"executed_steps": 2}))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    output = sched.add_req(req)
+    worker.join(5)
+
+    assert output.finished is False
+    assert req.request_state == "running"
+
+
 def test_stage1_scheduler_slo_first_reorders_waiting_queue():
     sched, req_q, res_q = _make_stage1_scheduler(policy="slo_first", slo_target_ms=5000.0)
     enqueue_order: list[str] = []

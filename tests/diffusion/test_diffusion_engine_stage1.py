@@ -96,3 +96,22 @@ def test_engine_abort_delegates_to_scheduler():
     engine.abort(["req-1", "req-2"])
 
     assert aborted == ["req-1", "req-2"]
+
+
+def test_step_returns_unfinished_placeholder_output():
+    engine = object.__new__(DiffusionEngine)
+    engine.pre_process_func = None
+    engine.post_process_func = None
+    engine.od_config = SimpleNamespace(model_class_name="FakeImagePipeline")
+    engine.add_req_and_wait_for_response = lambda req: DiffusionOutput(
+        output=None,
+        finished=False,
+        request_id="req-1",
+        metrics={"executed_steps": 2, "scheduler_policy": "fcfs"},
+    )
+
+    outputs = engine.step(_make_request())
+
+    assert len(outputs) == 1
+    assert outputs[0].metrics["unfinished"] is True
+    assert outputs[0].metrics["executed_steps"] == 2

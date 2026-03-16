@@ -83,6 +83,23 @@ class DiffusionEngine:
             raise RuntimeError(f"[{error_code}] request_id={request_label} {output.error}")
         logger.info("Generation completed successfully.")
 
+        if not getattr(output, "finished", True):
+            logger.info(
+                "Generation unfinished for request_id=%s executed_steps=%s",
+                getattr(output, "request_id", None) or ",".join(getattr(request, "request_ids", []) or []),
+                scheduler_metrics.get("executed_steps"),
+            )
+            return [
+                OmniRequestOutput.from_diffusion(
+                    request_id=request.request_ids[i] if i < len(request.request_ids) else "",
+                    images=[],
+                    prompt=prompt,
+                    metrics={**scheduler_metrics, "unfinished": True},
+                    latents=None,
+                )
+                for i, prompt in enumerate(request.prompts)
+            ]
+
         if output.output is None:
             logger.warning("Output is None, returning empty OmniRequestOutput")
             return [
@@ -90,7 +107,7 @@ class DiffusionEngine:
                     request_id=request.request_ids[i] if i < len(request.request_ids) else "",
                     images=[],
                     prompt=prompt,
-                    metrics={},
+                    metrics=scheduler_metrics,
                     latents=None,
                 )
                 for i, prompt in enumerate(request.prompts)
