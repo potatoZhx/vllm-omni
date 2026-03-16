@@ -192,6 +192,8 @@ class AsyncOmni(OmniBase):
                     "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
                     "diffusion_enable_step_chunk": kwargs.get("diffusion_enable_step_chunk", False),
                     "diffusion_enable_chunk_preemption": kwargs.get("diffusion_enable_chunk_preemption", False),
+                    "diffusion_chunk_budget_steps": kwargs.get("diffusion_chunk_budget_steps", 4),
+                    "diffusion_small_request_threshold": kwargs.get("diffusion_small_request_threshold", 4),
                     "enable_cache_dit_summary": kwargs.get("enable_cache_dit_summary", False),
                     "enable_cpu_offload": kwargs.get("enable_cpu_offload", False),
                     "enable_layerwise_offload": kwargs.get("enable_layerwise_offload", False),

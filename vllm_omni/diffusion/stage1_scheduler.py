@@ -77,6 +77,27 @@ class Stage1Scheduler(Scheduler):
     def _request_ids(request: OmniDiffusionRequest) -> list[str]:
         return list(getattr(request, "request_ids", None) or [])
 
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
+
+    @classmethod
+    def _safe_optional_int(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float, bool, str)):
+            return cls._safe_int(value)
+        return None
+
     def _is_request_aborted(self, request: OmniDiffusionRequest) -> bool:
         request_ids = self._request_ids(request)
         return any(request_id in self._aborted_request_ids for request_id in request_ids)
@@ -90,9 +111,11 @@ class Stage1Scheduler(Scheduler):
         if extra_args.get("estimated_cost_s") is not None:
             return max(float(extra_args["estimated_cost_s"]), 0.0)
 
-        num_steps = max(int(getattr(sampling_params, "num_inference_steps", 1) or 1), 1)
-        num_outputs = max(int(getattr(sampling_params, "num_outputs_per_prompt", 1) or 1), 1)
-        num_frames = max(int(getattr(sampling_params, "num_frames", 1) or 1), 1)
+        total_steps = max(self._safe_int(getattr(sampling_params, "num_inference_steps", 1), 1), 1)
+        executed_steps = max(self._safe_int(getattr(request, "executed_steps", 0), 0), 0)
+        num_steps = max(total_steps - executed_steps, 1)
+        num_outputs = max(self._safe_int(getattr(sampling_params, "num_outputs_per_prompt", 1), 1), 1)
+        num_frames = max(self._safe_int(getattr(sampling_params, "num_frames", 1), 1), 1)
         width = getattr(sampling_params, "width", None)
         height = getattr(sampling_params, "height", None)
         resolution = getattr(sampling_params, "resolution", None) or 1024
@@ -286,6 +309,14 @@ class Stage1Scheduler(Scheduler):
                 "scheduler_execute_ms": execute_latency_ms,
                 "scheduler_latency_ms": queue_wait_ms + execute_latency_ms,
                 "queue_len": len(self._waiting_queue),
+                "dispatch_epoch": self._safe_int(getattr(request, "dispatch_epoch", 0), 0),
+                "executed_steps": self._safe_int(getattr(request, "executed_steps", 0), 0),
+                "remaining_steps": max(
+                    self._safe_int(getattr(request.sampling_params, "num_inference_steps", 0), 0)
+                    - self._safe_int(getattr(request, "executed_steps", 0), 0),
+                    0,
+                ),
+                "chunk_budget_steps": self._safe_optional_int(getattr(request, "max_steps_this_turn", None)),
             }
         )
         metrics.update(queued_metrics)

@@ -75,30 +75,46 @@ class DiffusionEngine:
             preprocess_time = time.time() - preprocess_start_time
             logger.info(f"Pre-processing completed in {preprocess_time:.4f} seconds")
 
-        output = self.add_req_and_wait_for_response(request)
-        scheduler_metrics = dict(getattr(output, "metrics", {}) or {})
-        if output.error:
-            error_code = getattr(output, "error_code", None) or "REQUEST_EXEC_FAILED"
-            request_label = getattr(output, "request_id", None) or ",".join(getattr(request, "request_ids", []) or [])
-            raise RuntimeError(f"[{error_code}] request_id={request_label} {output.error}")
-        logger.info("Generation completed successfully.")
+        aggregated_chunk_metrics: dict[str, Any] = {}
+        output = None
+        while True:
+            if getattr(self.od_config, "diffusion_enable_step_chunk", False):
+                request.max_steps_this_turn = self._plan_chunk_budget(request)
 
-        if not getattr(output, "finished", True):
-            logger.info(
-                "Generation unfinished for request_id=%s executed_steps=%s",
-                getattr(output, "request_id", None) or ",".join(getattr(request, "request_ids", []) or []),
-                scheduler_metrics.get("executed_steps"),
-            )
-            return [
-                OmniRequestOutput.from_diffusion(
-                    request_id=request.request_ids[i] if i < len(request.request_ids) else "",
-                    images=[],
-                    prompt=prompt,
-                    metrics={**scheduler_metrics, "unfinished": True},
-                    latents=None,
+            output = self.add_req_and_wait_for_response(request)
+            scheduler_metrics = dict(getattr(output, "metrics", {}) or {})
+            self._accumulate_chunk_metrics(aggregated_chunk_metrics, scheduler_metrics)
+
+            if output.error:
+                error_code = getattr(output, "error_code", None) or "REQUEST_EXEC_FAILED"
+                request_label = getattr(output, "request_id", None) or ",".join(getattr(request, "request_ids", []) or [])
+                raise RuntimeError(f"[{error_code}] request_id={request_label} {output.error}")
+
+            if getattr(output, "finished", True):
+                output.metrics = {**aggregated_chunk_metrics, **scheduler_metrics}
+                logger.info("Generation completed successfully.")
+                break
+
+            if not getattr(self.od_config, "diffusion_enable_step_chunk", False):
+                logger.info(
+                    "Generation unfinished for request_id=%s executed_steps=%s",
+                    getattr(output, "request_id", None) or ",".join(getattr(request, "request_ids", []) or []),
+                    scheduler_metrics.get("executed_steps"),
                 )
-                for i, prompt in enumerate(request.prompts)
-            ]
+                return [
+                    OmniRequestOutput.from_diffusion(
+                        request_id=request.request_ids[i] if i < len(request.request_ids) else "",
+                        images=[],
+                        prompt=prompt,
+                        metrics={**aggregated_chunk_metrics, **scheduler_metrics, "unfinished": True},
+                        latents=None,
+                    )
+                    for i, prompt in enumerate(request.prompts)
+                ]
+
+        assert output is not None
+        scheduler_metrics = dict(getattr(output, "metrics", {}) or {})
+        request.max_steps_this_turn = None
 
         if output.output is None:
             logger.warning("Output is None, returning empty OmniRequestOutput")
@@ -200,6 +216,41 @@ class DiffusionEngine:
                     )
 
             return results
+
+    def _plan_chunk_budget(self, request: OmniDiffusionRequest) -> int:
+        total_steps = max(int(getattr(request.sampling_params, "num_inference_steps", 1) or 1), 1)
+        executed_steps = max(int(getattr(request, "executed_steps", 0) or 0), 0)
+        remaining_steps = max(total_steps - executed_steps, 0)
+        if remaining_steps == 0:
+            return 1
+
+        small_threshold = max(int(getattr(self.od_config, "diffusion_small_request_threshold", 4) or 4), 1)
+        if remaining_steps <= small_threshold:
+            return remaining_steps
+
+        if not getattr(self.od_config, "diffusion_enable_chunk_preemption", False):
+            return remaining_steps
+
+        return min(
+            remaining_steps,
+            max(int(getattr(self.od_config, "diffusion_chunk_budget_steps", 4) or 4), 1),
+        )
+
+    @staticmethod
+    def _accumulate_chunk_metrics(aggregate: dict[str, Any], chunk_metrics: dict[str, Any]) -> None:
+        aggregate["chunk_count"] = int(aggregate.get("chunk_count", 0)) + 1
+        for key in ("queue_wait_ms", "scheduler_execute_ms", "scheduler_latency_ms"):
+            aggregate[key] = float(aggregate.get(key, 0.0)) + float(chunk_metrics.get(key, 0.0) or 0.0)
+        for key in (
+            "scheduler_policy",
+            "dispatch_epoch",
+            "executed_steps",
+            "remaining_steps",
+            "chunk_budget_steps",
+            "queue_len",
+        ):
+            if key in chunk_metrics:
+                aggregate[key] = chunk_metrics[key]
 
     @staticmethod
     def make_engine(config: OmniDiffusionConfig) -> "DiffusionEngine":

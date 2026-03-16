@@ -30,6 +30,8 @@ def test_default_stage_config_includes_cache_backend():
         instance_runtime_profile_name="img-a",
         diffusion_enable_step_chunk=True,
         diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=6,
+        diffusion_small_request_threshold=3,
     )
 
     engine_args = stage_cfg["engine_args"]
@@ -45,6 +47,8 @@ def test_default_stage_config_includes_cache_backend():
     assert engine_args["instance_runtime_profile_name"] == "img-a"
     assert engine_args["diffusion_enable_step_chunk"] is True
     assert engine_args["diffusion_enable_chunk_preemption"] is True
+    assert engine_args["diffusion_chunk_budget_steps"] == 6
+    assert engine_args["diffusion_small_request_threshold"] == 3
     parallel_config = engine_args["parallel_config"]
     ulysses_degree = getattr(parallel_config, "ulysses_degree", None)
     assert ulysses_degree == 2

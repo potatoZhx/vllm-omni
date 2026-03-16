@@ -115,3 +115,34 @@ def test_step_returns_unfinished_placeholder_output():
     assert len(outputs) == 1
     assert outputs[0].metrics["unfinished"] is True
     assert outputs[0].metrics["executed_steps"] == 2
+
+
+def test_step_loops_until_finished_when_step_chunk_enabled():
+    engine = object.__new__(DiffusionEngine)
+    engine.pre_process_func = None
+    engine.post_process_func = None
+    engine.od_config = SimpleNamespace(
+        model_class_name="FakeImagePipeline",
+        diffusion_enable_step_chunk=True,
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=2,
+        diffusion_small_request_threshold=1,
+    )
+    outputs_seen = iter(
+        [
+            DiffusionOutput(output=None, finished=False, request_id="req-1", metrics={"executed_steps": 2}),
+            DiffusionOutput(output=torch.tensor([1]), finished=True, request_id="req-1", metrics={"executed_steps": 4}),
+        ]
+    )
+    engine.add_req_and_wait_for_response = lambda req: next(outputs_seen)
+
+    request = _make_request()
+    request.sampling_params.num_inference_steps = 4
+    request.executed_steps = 0
+    request.max_steps_this_turn = None
+
+    outputs = engine.step(request)
+
+    assert len(outputs) == 1
+    assert outputs[0].metrics["chunk_count"] == 2
+    assert outputs[0].metrics["executed_steps"] == 4

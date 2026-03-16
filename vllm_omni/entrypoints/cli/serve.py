@@ -300,6 +300,28 @@ class OmniServeCommand(CLISubcommand):
             action="store_true",
             help="Enable cache-dit summary logging after diffusion forward passes.",
         )
+        omni_config_group.add_argument(
+            "--diffusion-enable-step-chunk",
+            action="store_true",
+            help="Enable diffusion step-chunk execution and context resume support.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-enable-chunk-preemption",
+            action="store_true",
+            help="Enable chunk-boundary re-scheduling for unfinished diffusion requests.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-chunk-budget-steps",
+            type=int,
+            default=4,
+            help="Chunk budget in diffusion steps when chunk-boundary re-scheduling is enabled.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-small-request-threshold",
+            type=int,
+            default=4,
+            help="Remaining-step threshold below which diffusion requests run through without forced re-chunking.",
+        )
 
         # VAE memory optimization parameters
         omni_config_group.add_argument(

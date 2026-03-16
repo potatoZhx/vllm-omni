@@ -237,6 +237,21 @@ def test_stage1_scheduler_slo_first_reorders_waiting_queue():
     assert results["urgent"].metrics["queue_reorder_count"] == 1
 
 
+def test_stage1_scheduler_sjf_uses_remaining_steps():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf")
+    long_req = _mock_request("long", num_inference_steps=10)
+    short_remaining_req = _mock_request("short-remaining", num_inference_steps=10)
+    short_remaining_req.executed_steps = 8
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(long_req)
+        sched._enqueue_request_locked(short_remaining_req)
+
+        ordered = [queued.request.request_ids[0] for queued in sched._waiting_queue]
+
+    assert ordered == ["short-remaining", "long"]
+
+
 def test_stage1_scheduler_sjf_reorders_waiting_queue():
     sched, req_q, res_q = _make_stage1_scheduler(policy="sjf")
     enqueue_order: list[str] = []
