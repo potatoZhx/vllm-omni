@@ -109,6 +109,55 @@ router = APIRouter()
 profiler_router = APIRouter()
 
 
+def _resolve_request_id(raw_request: Request, payload_request_id: str | None = None, prefix: str = "req") -> str:
+    request_id = raw_request.headers.get("x-request-id") or payload_request_id
+    if request_id:
+        return request_id
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _log_request_arrival(
+    *,
+    raw_request: Request,
+    request_id: str,
+    model: str | None = None,
+    stream: bool | None = None,
+) -> float:
+    arrival_time_s = time.time()
+    logger.info(
+        "serve.request.arrival request_id=%s method=%s path=%s model=%s stream=%s arrival_time_s=%.6f",
+        request_id,
+        raw_request.method,
+        raw_request.url.path,
+        model,
+        stream,
+        arrival_time_s,
+    )
+    return arrival_time_s
+
+
+def _log_request_finish_direct(
+    *,
+    raw_request: Request,
+    request_id: str,
+    arrival_time_s: float,
+    status_code: int,
+    ok: bool,
+) -> None:
+    finish_time_s = time.time()
+    logger.info(
+        "serve.request.finish_direct request_id=%s method=%s path=%s status_code=%s ok=%s arrival_time_s=%.6f finish_time_s=%.6f duration_s=%.6f",
+        request_id,
+        raw_request.method,
+        raw_request.url.path,
+        status_code,
+        ok,
+        arrival_time_s,
+        finish_time_s,
+        finish_time_s - arrival_time_s,
+    )
+
+
 def _should_enable_profiler_endpoints(args: Namespace) -> bool:
     # Check upstream vLLM's profiler_config
     profiler_config = getattr(args, "profiler_config", None)
@@ -770,6 +819,13 @@ def Omnispeech(request: Request) -> OmniOpenAIServingSpeech | None:
 @load_aware_call
 async def create_chat_completion(request: ChatCompletionRequest, raw_request: Request):
     metrics_header_format = raw_request.headers.get(ENDPOINT_LOAD_METRICS_FORMAT_HEADER_LABEL, "")
+    request_id = _resolve_request_id(raw_request, getattr(request, "request_id", None), prefix="chatcmpl")
+    arrival_time_s = _log_request_arrival(
+        raw_request=raw_request,
+        request_id=request_id,
+        model=getattr(request, "model", None),
+        stream=bool(getattr(request, "stream", False)),
+    )
     handler = Omnichat(raw_request)
     if handler is None:
         base_server = getattr(raw_request.app.state, "openai_serving_tokenization", None)
@@ -786,10 +842,18 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
 
     if isinstance(generator, ErrorResponse):
-        return JSONResponse(
+        response = JSONResponse(
             content=generator.model_dump(),
             status_code=generator.error.code if generator.error else 400,
         )
+        _log_request_finish_direct(
+            raw_request=raw_request,
+            request_id=request_id,
+            arrival_time_s=arrival_time_s,
+            status_code=response.status_code,
+            ok=False,
+        )
+        return response
 
     elif isinstance(generator, ChatCompletionResponse):
         # Completely bypass Pydantic serialization warnings for multimodal content
@@ -804,27 +868,51 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             try:
                 # Use serialize_as_any=True to bypass type checking
                 response_dict = generator.model_dump(mode="json", serialize_as_any=True, warnings="none")
-                return JSONResponse(
+                response = JSONResponse(
                     content=response_dict,
                     headers=metrics_header(metrics_header_format),
                 )
+                _log_request_finish_direct(
+                    raw_request=raw_request,
+                    request_id=request_id,
+                    arrival_time_s=arrival_time_s,
+                    status_code=response.status_code,
+                    ok=True,
+                )
+                return response
             except Exception:
                 # Fallback: convert to JSON string and parse back to avoid any serialization issues
                 try:
                     response_json = generator.model_dump_json(warnings="none", serialize_as_any=True)
                     response_dict = json_lib.loads(response_json)
-                    return JSONResponse(
+                    response = JSONResponse(
                         content=response_dict,
                         headers=metrics_header(metrics_header_format),
                     )
+                    _log_request_finish_direct(
+                        raw_request=raw_request,
+                        request_id=request_id,
+                        arrival_time_s=arrival_time_s,
+                        status_code=response.status_code,
+                        ok=True,
+                    )
+                    return response
                 except Exception:
                     # Last resort: regular dump with warnings suppressed
                     with warnings_module.catch_warnings():
                         warnings_module.filterwarnings("ignore", category=UserWarning)
-                        return JSONResponse(
+                        response = JSONResponse(
                             content=generator.model_dump(mode="json", warnings="none"),
                             headers=metrics_header(metrics_header_format),
                         )
+                        _log_request_finish_direct(
+                            raw_request=raw_request,
+                            request_id=request_id,
+                            arrival_time_s=arrival_time_s,
+                            status_code=response.status_code,
+                            ok=True,
+                        )
+                        return response
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
@@ -988,6 +1076,13 @@ async def generate_images(request: ImageGenerationRequest, raw_request: Request)
     Raises:
         HTTPException: For validation errors, missing engine, or generation failures
     """
+    request_id = _resolve_request_id(raw_request, prefix="imggen")
+    arrival_time_s = _log_request_arrival(
+        raw_request=raw_request,
+        request_id=request_id,
+        model=request.model,
+        stream=False,
+    )
     # Get engine client (AsyncOmni) from app state
     engine_client, model_name, stage_types = _get_engine_and_model(raw_request)
 
@@ -1033,7 +1128,7 @@ async def generate_images(request: ImageGenerationRequest, raw_request: Request)
         )
         _update_if_not_none(gen_params, "generator_device", request.generator_device)
 
-        request_id = f"img_gen_{uuid.uuid4().hex}"
+        request_id = request_id
 
         logger.info(f"Generating {request.n} image(s) {size_str}")
 
@@ -1060,10 +1155,18 @@ async def generate_images(request: ImageGenerationRequest, raw_request: Request)
         # Encode images to base64
         image_data = [ImageData(b64_json=encode_image_base64(img), revised_prompt=None) for img in images]
 
-        return ImageGenerationResponse(
+        response = ImageGenerationResponse(
             created=int(time.time()),
             data=image_data,
         )
+        _log_request_finish_direct(
+            raw_request=raw_request,
+            request_id=request_id,
+            arrival_time_s=arrival_time_s,
+            status_code=HTTPStatus.OK.value,
+            ok=True,
+        )
+        return response
 
     except HTTPException:
         # Re-raise HTTPExceptions as-is
@@ -1576,6 +1679,13 @@ async def _run_video_generation(
     *,
     input_reference_bytes: bytes | None = None,
 ) -> VideoGenerationResponse:
+    request_id = _resolve_request_id(raw_request, prefix="vidgen")
+    arrival_time_s = _log_request_arrival(
+        raw_request=raw_request,
+        request_id=request_id,
+        model=request.model,
+        stream=False,
+    )
     handler = Omnivideo(raw_request)
     if handler is None:
         raise HTTPException(
@@ -1584,7 +1694,15 @@ async def _run_video_generation(
         )
     logger.info("Video generation handler: %s", type(handler).__name__)
     try:
-        return await handler.generate_videos(request, raw_request, input_reference_bytes=input_reference_bytes)
+        response = await handler.generate_videos(request, raw_request, input_reference_bytes=input_reference_bytes)
+        _log_request_finish_direct(
+            raw_request=raw_request,
+            request_id=request_id,
+            arrival_time_s=arrival_time_s,
+            status_code=HTTPStatus.OK.value,
+            ok=True,
+        )
+        return response
     except HTTPException:
         raise
     except Exception as e:
