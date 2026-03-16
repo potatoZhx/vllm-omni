@@ -8,8 +8,8 @@ set -euo pipefail
 
 NUM_PROMPTS="${NUM_PROMPTS:-20}"
 REQUEST_RATE="${REQUEST_RATE:-0.1}"
-REQUEST_RATES="${REQUEST_RATES:-1}"
-REQUEST_DURATION_S="${REQUEST_DURATION_S:-180}"
+REQUEST_RATES="${REQUEST_RATES:-0.2,0.4,0.6,0.8,1.0}"
+REQUEST_DURATION_S="${REQUEST_DURATION_S:-600}"
 BACKEND="${BACKEND:-vllm-omni}"
 BENCH_RUNNING=0
 BENCH_PID=""
@@ -346,27 +346,44 @@ PY
 
 wait_workers_ready() {
   local timeout_s="${1:-600}"
+  local log_interval=60  # 每60秒打印一次等待时间
 
   for wid in ${WORKER_IDS}; do
     local start_ts
     start_ts="$(date +%s)"
+    local last_log_ts="${start_ts}"
+
     while true; do
-      local endpoint
-      local routable
-      local ready
-      routable="$(is_worker_routable "${wid}")"
-      endpoint="$(get_worker_endpoint "${wid}")"
+      local endpoint routable ready
+      # 屏蔽所有 curl 错误输出
+      routable="$(is_worker_routable "${wid}" 2>/dev/null)"
+      endpoint="$(get_worker_endpoint "${wid}" 2>/dev/null)"
+      
       if [[ -n "${endpoint}" ]]; then
-        ready="$(is_worker_api_ready "${endpoint}")"
+        ready="$(is_worker_api_ready "${endpoint}" 2>/dev/null)"
         if [[ "${routable}" == "1" && "${ready}" == "1" ]]; then
           echo "[ready] ${wid} routable=true api_ready=true (${endpoint%/}/v1/models)"
           break
         fi
       fi
-      if (( $(date +%s) - start_ts > timeout_s )); then
-        echo "Timeout waiting for worker ready (routable + api): ${wid}" >&2
+
+      # 计算已等待时间
+      local now elapsed
+      now="$(date +%s)"
+      elapsed=$((now - start_ts))
+
+      # 超时判断
+      if (( elapsed > timeout_s )); then
+        echo "Timeout waiting for worker ready (${wid}) after ${elapsed}s" >&2
         return 1
       fi
+
+      # 每 60s 输出一次等待时间（不刷屏）
+      if (( now - last_log_ts >= log_interval )); then
+        echo "[waiting] ${wid} has been waiting for ${elapsed}s ..."
+        last_log_ts="${now}"
+      fi
+
       sleep 2
     done
   done
@@ -392,6 +409,7 @@ run_benchmark_for_rate() {
     --request-rate "${rate}"
     --warmup-requests "${WARMUP_REQUESTS}"
     --warmup-num-inference-steps "${WARMUP_NUM_INFERENCE_STEPS}"
+    --random-request-config '[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},{"width":768,"height":768,"num_inference_steps":20,"weight":0.25},{"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},{"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}]'
   )
   if [[ -n "${DATASET_PATH}" ]]; then
     cmd+=(--dataset-path "${DATASET_PATH}")
