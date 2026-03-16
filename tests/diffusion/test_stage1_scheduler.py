@@ -99,6 +99,13 @@ def test_stage1_scheduler_attaches_metrics_on_success():
     assert output.metrics["scheduler_latency_ms"] >= 0
     assert output.metrics["queue_wait_ms"] >= 0
     assert output.metrics["scheduler_execute_ms"] >= 0
+    assert output.metrics["width"] == 1024
+    assert output.metrics["height"] == 1024
+    assert output.metrics["total_steps"] == 1
+    assert output.metrics["remaining_steps"] == 1
+    assert req.first_enqueue_time is not None
+    assert req.first_dispatch_time is not None
+    assert req.completion_time is not None
 
 
 def test_stage1_scheduler_normalizes_worker_error_dict():
@@ -169,6 +176,7 @@ def test_stage1_scheduler_keeps_request_running_for_unfinished_output():
 
     assert output.finished is False
     assert req.request_state == "running"
+    assert req.last_preempted_time is not None
 
 
 def test_stage1_scheduler_slo_first_reorders_waiting_queue():
@@ -250,6 +258,17 @@ def test_stage1_scheduler_sjf_uses_remaining_steps():
         ordered = [queued.request.request_ids[0] for queued in sched._waiting_queue]
 
     assert ordered == ["short-remaining", "long"]
+
+
+def test_stage1_scheduler_deadline_uses_request_arrival_time():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="slo_first", slo_target_ms=5000.0)
+    req = _mock_request("req-deadline", num_inference_steps=10, extra_args={"slo_ms": 2000.0})
+    req.arrival_time = 100.0
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(req)
+
+    assert sched._deadline_ts(queued) == pytest.approx(102.0)
 
 
 def test_stage1_scheduler_sjf_reorders_waiting_queue():

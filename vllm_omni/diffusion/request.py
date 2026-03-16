@@ -27,6 +27,13 @@ class OmniDiffusionRequest:
 
     request_ids: list[str] = field(default_factory=list)
     arrival_time: float = field(default_factory=time.monotonic)
+    first_enqueue_time: float | None = None
+    first_dispatch_time: float | None = None
+    last_dispatch_time: float | None = None
+    last_preempted_time: float | None = None
+    completion_time: float | None = None
+    failure_time: float | None = None
+    aborted_time: float | None = None
     request_state: str = "waiting"
     executed_steps: int = 0
     max_steps_this_turn: int | None = None

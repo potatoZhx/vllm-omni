@@ -80,6 +80,22 @@ class DiffusionEngine:
         while True:
             if getattr(self.od_config, "diffusion_enable_step_chunk", False):
                 request.max_steps_this_turn = self._plan_chunk_budget(request)
+                total_steps = max(int(getattr(request.sampling_params, "num_inference_steps", 1) or 1), 1)
+                width = int(getattr(request.sampling_params, "width", None) or getattr(request.sampling_params, "resolution", 1024) or 1024)
+                height = int(
+                    getattr(request.sampling_params, "height", None) or getattr(request.sampling_params, "resolution", 1024) or 1024
+                )
+                logger.info(
+                    "STEP_CHUNK_PLAN request_id=%s width=%d height=%d total_steps=%d executed_steps=%d remaining_steps=%d chunk_budget_steps=%d preemption_enabled=%s",
+                    ",".join(getattr(request, "request_ids", []) or []) or "<missing-request-id>",
+                    width,
+                    height,
+                    total_steps,
+                    int(getattr(request, "executed_steps", 0) or 0),
+                    max(total_steps - int(getattr(request, "executed_steps", 0) or 0), 0),
+                    int(request.max_steps_this_turn or 0),
+                    bool(getattr(self.od_config, "diffusion_enable_chunk_preemption", False)),
+                )
 
             output = self.add_req_and_wait_for_response(request)
             scheduler_metrics = dict(getattr(output, "metrics", {}) or {})

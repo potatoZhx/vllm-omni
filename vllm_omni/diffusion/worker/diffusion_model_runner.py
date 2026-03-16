@@ -319,6 +319,27 @@ class DiffusionModelRunner:
                         steps_this_turn = req.max_steps_this_turn if req.max_steps_this_turn is not None else remaining_steps
                         if steps_this_turn <= 0:
                             steps_this_turn = remaining_steps
+                        width = int(
+                            getattr(req.sampling_params, "width", None)
+                            or getattr(req.sampling_params, "resolution", 1024)
+                            or 1024
+                        )
+                        height = int(
+                            getattr(req.sampling_params, "height", None)
+                            or getattr(req.sampling_params, "resolution", 1024)
+                            or 1024
+                        )
+                        logger.info(
+                            "STEP_CHUNK_EXEC request_id=%s dispatch_epoch=%d width=%d height=%d total_steps=%d executed_steps=%d remaining_steps=%d steps_this_turn=%d",
+                            request_id or "<missing-request-id>",
+                            req.dispatch_epoch,
+                            width,
+                            height,
+                            ctx.num_inference_steps,
+                            ctx.current_step,
+                            remaining_steps,
+                            steps_this_turn,
+                        )
 
                         ctx, finished = self.step_generation(ctx, steps_this_turn)
                         req.executed_steps = ctx.current_step
