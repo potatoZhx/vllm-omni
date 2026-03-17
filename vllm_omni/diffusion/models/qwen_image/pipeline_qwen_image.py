@@ -537,6 +537,25 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
     def interrupt(self):
         return self._interrupt
 
+    def _capture_scheduler_state(self) -> dict[str, Any]:
+        return {
+            "timesteps": self.scheduler.timesteps.detach().clone(),
+            "sigmas": self.scheduler.sigmas.detach().clone(),
+            "num_inference_steps": getattr(self.scheduler, "num_inference_steps", None),
+            "step_index": getattr(self.scheduler, "_step_index", None),
+            "begin_index": getattr(self.scheduler, "_begin_index", None),
+        }
+
+    def _restore_scheduler_state(self, scheduler_state: dict[str, Any] | None) -> None:
+        if not scheduler_state:
+            return
+
+        self.scheduler.timesteps = scheduler_state["timesteps"].detach().clone()
+        self.scheduler.sigmas = scheduler_state["sigmas"].detach().clone()
+        self.scheduler.num_inference_steps = scheduler_state.get("num_inference_steps")
+        self.scheduler._step_index = scheduler_state.get("step_index")
+        self.scheduler._begin_index = scheduler_state.get("begin_index")
+
     def prepare_generation(
         self,
         req: OmniDiffusionRequest,
@@ -664,6 +683,7 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
         ctx = DiffusionRequestContext.from_request(req)
         ctx.current_step = 0
         ctx.num_inference_steps = len(timesteps)
+        ctx.scheduler_state = self._capture_scheduler_state()
         ctx.extra_model_state = {
             "height": height,
             "width": width,
@@ -698,6 +718,7 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
     ) -> tuple[DiffusionRequestContext, bool]:
         state = ctx.extra_model_state
         timesteps = state["timesteps"]
+        self._restore_scheduler_state(ctx.scheduler_state)
         start = ctx.current_step
         end = min(start + steps, len(timesteps))
         if start >= end:
@@ -720,7 +741,9 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
             image_latents=None,
             cfg_normalize=True,
             additional_transformer_kwargs=state["additional_transformer_kwargs"],
+            begin_index=start,
         )
+        ctx.scheduler_state = self._capture_scheduler_state()
         ctx.current_step = end
         ctx.finished = ctx.current_step >= len(timesteps)
         if ctx.finished:

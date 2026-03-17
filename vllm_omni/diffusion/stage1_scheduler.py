@@ -420,6 +420,28 @@ class Stage1Scheduler(Scheduler):
         output.request_id = output.request_id or request_label
         return output
 
+    def _sync_request_progress_from_output(self, request: OmniDiffusionRequest, output: DiffusionOutput) -> None:
+        metrics = dict(getattr(output, "metrics", {}) or {})
+        total_steps = max(self._safe_int(getattr(request.sampling_params, "num_inference_steps", 0), 0), 0)
+        current_steps = max(self._safe_int(getattr(request, "executed_steps", 0), 0), 0)
+
+        if "executed_steps" in metrics:
+            executed_steps = self._safe_int(metrics["executed_steps"], current_steps)
+        elif getattr(output, "finished", True) and not output.error:
+            executed_steps = total_steps
+        else:
+            executed_steps = current_steps
+
+        if total_steps > 0:
+            executed_steps = min(max(executed_steps, 0), total_steps)
+        else:
+            executed_steps = max(executed_steps, 0)
+
+        request.executed_steps = executed_steps
+        metrics["executed_steps"] = executed_steps
+        metrics["remaining_steps"] = max(total_steps - executed_steps, 0)
+        output.metrics = metrics
+
     def _normalize_error_output(self, request: OmniDiffusionRequest, error: str, error_code: str) -> DiffusionOutput:
         request_label = self._request_label(request)
         return DiffusionOutput(
@@ -621,6 +643,7 @@ class Stage1Scheduler(Scheduler):
                 self._queue_cv.notify_all()
 
         execute_latency_ms = (time.monotonic() - execute_start) * 1000
+        self._sync_request_progress_from_output(request, output)
         output = self._annotate_output(output, queued_request, request, queue_wait_ms, execute_latency_ms)
 
         if output.error:

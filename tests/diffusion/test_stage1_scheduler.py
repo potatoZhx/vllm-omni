@@ -102,7 +102,8 @@ def test_stage1_scheduler_attaches_metrics_on_success():
     assert output.metrics["width"] == 1024
     assert output.metrics["height"] == 1024
     assert output.metrics["total_steps"] == 1
-    assert output.metrics["remaining_steps"] == 1
+    assert output.metrics["executed_steps"] == 1
+    assert output.metrics["remaining_steps"] == 0
     assert req.first_enqueue_time is not None
     assert req.first_dispatch_time is not None
     assert req.completion_time is not None
@@ -162,7 +163,7 @@ def test_stage1_scheduler_preserves_fcfs_order():
 
 def test_stage1_scheduler_keeps_request_running_for_unfinished_output():
     sched, req_q, res_q = _make_stage1_scheduler()
-    req = _mock_request("req-chunk")
+    req = _mock_request("req-chunk", num_inference_steps=4)
 
     def _worker():
         req_q.get(timeout=5)
@@ -176,7 +177,31 @@ def test_stage1_scheduler_keeps_request_running_for_unfinished_output():
 
     assert output.finished is False
     assert req.request_state == "running"
+    assert req.executed_steps == 2
+    assert output.metrics["executed_steps"] == 2
+    assert output.metrics["remaining_steps"] == 2
     assert req.last_preempted_time is not None
+
+
+def test_stage1_scheduler_marks_finished_request_as_fully_executed_without_worker_metric():
+    sched, req_q, res_q = _make_stage1_scheduler()
+    req = _mock_request("req-finished", num_inference_steps=4)
+
+    def _worker():
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    output = sched.add_req(req)
+    worker.join(5)
+
+    assert output.finished is True
+    assert req.request_state == "finished"
+    assert req.executed_steps == 4
+    assert output.metrics["executed_steps"] == 4
+    assert output.metrics["remaining_steps"] == 0
 
 
 def test_stage1_scheduler_slo_first_reorders_waiting_queue():
