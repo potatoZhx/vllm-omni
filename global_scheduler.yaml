@@ -1,9 +1,9 @@
 server:
   host: 0.0.0.0
   port: 8089
-  request_timeout_s: 600
-  instance_health_check_interval_s: 5.0
-  instance_health_check_timeout_s: 1.0
+  request_timeout_s: 600000000
+  instance_health_check_interval_s: 10.0
+  instance_health_check_timeout_s: 10.0
 
 scheduler:
   tie_breaker: random
@@ -11,60 +11,293 @@ scheduler:
 
 policy:
   baseline:
-    algorithm: round_robin
+    algorithm: min_queue_length
+    runtime_profile_path: ./profile/instance_runtime_profile.sample.json
 
 benchmark:
-  worker_ids: [worker-gpu0, worker-gpu1]
-  worker_ready_timeout_s: 600
-  model: Qwen/Qwen-Image
+  worker_ids: [worker0, worker1, worker2, worker3, worker4, worker5, worker6, worker7]
+  worker_ready_timeout_s: 1200
+  model: /home/wtz2333/Qwen/Qwen-Image
   task: t2i
-  dataset: trace
-  dataset_path: benchmarks/dataset/sd3_trace_redistributed.txt
-  max_concurrency: 20
-  warmup_requests: 1
+  dataset: random
+  # random_request_config: '[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},{"width":768,"height":768,"num_inference_steps":20,"weight":0.25},{"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},{"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}]'
+  max_concurrency: 20000000
+  warmup_requests: 5
   warmup_num_inference_steps: 1
   output_file: logs/global_scheduler_benchmark_metrics.json
   auto_stop: true
 
 instances:
-  - id: worker-gpu0
+  - id: worker0
     endpoint: http://127.0.0.1:8001
+    instance_type: qwen-image-tp1
+    numa_node: 0
     launch:
       executable: vllm
-      model: Qwen/Qwen-Image
+      model: /home/wtz2333/Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
-        - "100"
         - --ulysses-degree
         - "1"
         - --cfg-parallel-size
         - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads
+        - "4"
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
       env:
         CUDA_VISIBLE_DEVICES: "0"
     stop:
       executable: pkill
       args:
         - -f
-        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
-
-  - id: worker-gpu1
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+  - id: worker1
     endpoint: http://127.0.0.1:8002
+    instance_type: qwen-image-tp1
+    numa_node: 0
     launch:
       executable: vllm
-      model: Qwen/Qwen-Image
+      model: /home/wtz2333/Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
-        - "100"
         - --ulysses-degree
         - "1"
         - --cfg-parallel-size
         - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads
+        - "4"
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
       env:
         CUDA_VISIBLE_DEVICES: "1"
     stop:
       executable: pkill
       args:
         - -f
-        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+  - id: worker2
+    endpoint: http://127.0.0.1:8003
+    instance_type: qwen-image-tp1
+    numa_node: 0
+    launch:
+      executable: vllm
+      model: /home/wtz2333/Qwen/Qwen-Image
+      args:
+        - --omni
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads
+        - "4"
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
+      env:
+        CUDA_VISIBLE_DEVICES: "2"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+  - id: worker3
+    endpoint: http://127.0.0.1:8004
+    instance_type: qwen-image-tp1
+    numa_node: 0
+    launch:
+      executable: vllm
+      model: /home/wtz2333/Qwen/Qwen-Image
+      args:
+        - --omni
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads
+        - "4"
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
+      env:
+        CUDA_VISIBLE_DEVICES: "3"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+  - id: worker4
+    endpoint: http://127.0.0.1:8005
+    instance_type: qwen-image-tp1
+    numa_node: 1
+    launch:
+      executable: vllm
+      model: /home/wtz2333/Qwen/Qwen-Image
+      args:
+        - --omni
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads 
+        - "4"
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
+      env:
+        CUDA_VISIBLE_DEVICES: "4"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+  - id: worker5
+    endpoint: http://127.0.0.1:8006
+    instance_type: qwen-image-tp1
+    numa_node: 1
+    launch:
+      executable: vllm
+      model: /home/wtz2333/Qwen/Qwen-Image
+      args:
+        - --omni
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads
+        - "4"
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
+      env:
+        CUDA_VISIBLE_DEVICES: "5"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+  - id: worker6
+    endpoint: http://127.0.0.1:8007
+    instance_type: qwen-image-tp1
+    numa_node: 1
+    launch:
+      executable: vllm
+      model: /home/wtz2333/Qwen/Qwen-Image
+      args:
+        - --omni
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads
+        - "4"  
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
+      env:
+        CUDA_VISIBLE_DEVICES: "6"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+  - id: worker7
+    endpoint: http://127.0.0.1:8008
+    instance_type: qwen-image-tp1
+    numa_node: 1
+    launch:
+      executable: vllm
+      model: /home/wtz2333/Qwen/Qwen-Image
+      args:
+        - --omni
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae_use_slicing
+        - --vae_use_tiling
+        - --num-weight-load-threads 
+        - "4"
+        - --instance-runtime-profile-path
+        - /home/tianzhu/vllm-omni-wtz/profile/instance_runtime_profile.sample.json
+        - --instance-runtime-profile-name
+        - qwen-image-tp1
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-image-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "18000"
+      env:
+        CUDA_VISIBLE_DEVICES: "7"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /home/wtz2333/Qwen/Qwen-Image --port {endpoint_port}"
+ 

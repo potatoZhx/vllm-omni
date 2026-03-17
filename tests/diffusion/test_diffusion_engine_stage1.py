@@ -9,6 +9,7 @@ import torch
 import vllm_omni.diffusion.diffusion_engine as diffusion_engine_module
 from vllm_omni.diffusion.data import DiffusionOutput
 from vllm_omni.diffusion.diffusion_engine import DiffusionEngine
+from vllm_omni.diffusion.runtime_profile import RuntimeProfileEstimator, RuntimeProfileRecord
 
 pytestmark = [pytest.mark.diffusion, pytest.mark.cpu]
 
@@ -126,8 +127,11 @@ def test_step_loops_until_finished_when_step_chunk_enabled():
         diffusion_enable_step_chunk=True,
         diffusion_enable_chunk_preemption=True,
         diffusion_chunk_budget_steps=2,
-        diffusion_small_request_threshold=1,
+        diffusion_small_request_latency_threshold_ms=None,
+        diffusion_image_chunk_budget_steps=None,
+        diffusion_video_chunk_budget_steps=None,
     )
+    engine.runtime_estimator = RuntimeProfileEstimator()
     outputs_seen = iter(
         [
             DiffusionOutput(output=None, finished=False, request_id="req-1", metrics={"executed_steps": 2}),
@@ -146,3 +150,128 @@ def test_step_loops_until_finished_when_step_chunk_enabled():
     assert len(outputs) == 1
     assert outputs[0].metrics["chunk_count"] == 2
     assert outputs[0].metrics["executed_steps"] == 4
+
+
+def test_plan_chunk_budget_uses_latency_threshold_for_small_request():
+    engine = object.__new__(DiffusionEngine)
+    engine.od_config = SimpleNamespace(
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=4,
+        diffusion_image_chunk_budget_steps=4,
+        diffusion_video_chunk_budget_steps=2,
+        diffusion_small_request_latency_threshold_ms=15000.0,
+    )
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="image",
+                width=512,
+                height=512,
+                num_frames=1,
+                steps=20,
+                latency_s=12.0,
+            )
+        ]
+    )
+    request = _make_request()
+    request.sampling_params.width = 512
+    request.sampling_params.height = 512
+    request.sampling_params.num_inference_steps = 20
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 0
+
+    assert engine._plan_chunk_budget(request) == 20
+
+
+def test_plan_chunk_budget_uses_video_specific_budget_for_large_video_request():
+    engine = object.__new__(DiffusionEngine)
+    engine.od_config = SimpleNamespace(
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=4,
+        diffusion_image_chunk_budget_steps=4,
+        diffusion_video_chunk_budget_steps=1,
+        diffusion_small_request_latency_threshold_ms=1000.0,
+    )
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="video",
+                width=854,
+                height=480,
+                num_frames=80,
+                steps=4,
+                latency_s=8.0,
+            )
+        ]
+    )
+    request = _make_request()
+    request.sampling_params.width = 854
+    request.sampling_params.height = 480
+    request.sampling_params.num_inference_steps = 4
+    request.sampling_params.num_frames = 80
+    request.sampling_params.fps = 16
+    request.executed_steps = 0
+
+    assert engine._plan_chunk_budget(request) == 1
+
+
+def test_plan_chunk_budget_uses_image_specific_budget_for_large_image_request():
+    engine = object.__new__(DiffusionEngine)
+    engine.od_config = SimpleNamespace(
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=4,
+        diffusion_image_chunk_budget_steps=3,
+        diffusion_video_chunk_budget_steps=1,
+        diffusion_small_request_latency_threshold_ms=1000.0,
+    )
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="image",
+                width=1024,
+                height=1024,
+                num_frames=1,
+                steps=20,
+                latency_s=20.0,
+            )
+        ]
+    )
+    request = _make_request()
+    request.sampling_params.width = 1024
+    request.sampling_params.height = 1024
+    request.sampling_params.num_inference_steps = 20
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 0
+
+    assert engine._plan_chunk_budget(request) == 3
+
+
+def test_plan_chunk_budget_falls_back_to_global_budget_when_modality_budget_missing():
+    engine = object.__new__(DiffusionEngine)
+    engine.od_config = SimpleNamespace(
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=4,
+        diffusion_image_chunk_budget_steps=None,
+        diffusion_video_chunk_budget_steps=None,
+        diffusion_small_request_latency_threshold_ms=1000.0,
+    )
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="image",
+                width=1024,
+                height=1024,
+                num_frames=1,
+                steps=20,
+                latency_s=20.0,
+            )
+        ]
+    )
+    request = _make_request()
+    request.sampling_params.width = 1024
+    request.sampling_params.height = 1024
+    request.sampling_params.num_inference_steps = 20
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 0
+
+    assert engine._plan_chunk_budget(request) == 4

@@ -31,7 +31,9 @@ def test_default_stage_config_includes_cache_backend():
         diffusion_enable_step_chunk=True,
         diffusion_enable_chunk_preemption=True,
         diffusion_chunk_budget_steps=6,
-        diffusion_small_request_threshold=3,
+        diffusion_image_chunk_budget_steps=5,
+        diffusion_video_chunk_budget_steps=2,
+        diffusion_small_request_latency_threshold_ms=15000.0,
     )
 
     engine_args = stage_cfg["engine_args"]
@@ -48,7 +50,9 @@ def test_default_stage_config_includes_cache_backend():
     assert engine_args["diffusion_enable_step_chunk"] is True
     assert engine_args["diffusion_enable_chunk_preemption"] is True
     assert engine_args["diffusion_chunk_budget_steps"] == 6
-    assert engine_args["diffusion_small_request_threshold"] == 3
+    assert engine_args["diffusion_image_chunk_budget_steps"] == 5
+    assert engine_args["diffusion_video_chunk_budget_steps"] == 2
+    assert engine_args["diffusion_small_request_latency_threshold_ms"] == 15000.0
     parallel_config = engine_args["parallel_config"]
     ulysses_degree = getattr(parallel_config, "ulysses_degree", None)
     assert ulysses_degree == 2
@@ -59,6 +63,13 @@ def test_chunk_preemption_requires_step_chunk():
 
     with pytest.raises(ValueError, match="diffusion_enable_chunk_preemption requires diffusion_enable_step_chunk=True"):
         OmniDiffusionConfig(diffusion_enable_step_chunk=False, diffusion_enable_chunk_preemption=True)
+
+
+def test_small_request_latency_threshold_must_be_positive():
+    from vllm_omni.diffusion.data import OmniDiffusionConfig
+
+    with pytest.raises(ValueError, match="diffusion_small_request_latency_threshold_ms must be > 0"):
+        OmniDiffusionConfig(diffusion_small_request_latency_threshold_ms=0.0)
 
 
 def test_default_cache_config_used_when_missing():

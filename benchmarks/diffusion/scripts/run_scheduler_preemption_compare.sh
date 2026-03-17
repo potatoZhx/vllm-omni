@@ -16,7 +16,6 @@ WARMUP_REQUESTS="${WARMUP_REQUESTS:-5}"
 DATASET_PATH="${DATASET_PATH:-${ROOT_DIR}/benchmarks/dataset/sd3_trace_redistributed.txt}"
 SLO_SCALE="${SLO_SCALE:-3}"
 CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS:-4}"
-SMALL_REQUEST_THRESHOLD="${SMALL_REQUEST_THRESHOLD:-4}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUT_DIR="${OUT_DIR:-/tmp/scheduler_preemption_compare_${RUN_TAG}}"
 
@@ -53,7 +52,6 @@ run_case() {
     ENABLE_STEP_CHUNK="${enable_step_chunk}" \
     ENABLE_CHUNK_PREEMPTION="${enable_chunk_preemption}" \
     CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS}" \
-    SMALL_REQUEST_THRESHOLD="${SMALL_REQUEST_THRESHOLD}" \
     NUM_PROMPTS="${NUM_PROMPTS}" \
     MAX_CONCURRENCY="${MAX_CONCURRENCY}" \
     REQUEST_RATE="${REQUEST_RATE}" \

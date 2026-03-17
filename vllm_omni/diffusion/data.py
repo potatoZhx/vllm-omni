@@ -425,7 +425,9 @@ class OmniDiffusionConfig:
     diffusion_enable_step_chunk: bool = False
     diffusion_enable_chunk_preemption: bool = False
     diffusion_chunk_budget_steps: int = 4
-    diffusion_small_request_threshold: int = 4
+    diffusion_image_chunk_budget_steps: int | None = None
+    diffusion_video_chunk_budget_steps: int | None = None
+    diffusion_small_request_latency_threshold_ms: float | None = None
 
     # Stage verification
     enable_stage_verification: bool = True
@@ -607,8 +609,15 @@ class OmniDiffusionConfig:
             raise ValueError("diffusion_enable_chunk_preemption requires diffusion_enable_step_chunk=True")
         if self.diffusion_chunk_budget_steps < 1:
             raise ValueError("diffusion_chunk_budget_steps must be >= 1")
-        if self.diffusion_small_request_threshold < 1:
-            raise ValueError("diffusion_small_request_threshold must be >= 1")
+        if self.diffusion_image_chunk_budget_steps is not None and self.diffusion_image_chunk_budget_steps < 1:
+            raise ValueError("diffusion_image_chunk_budget_steps must be >= 1")
+        if self.diffusion_video_chunk_budget_steps is not None and self.diffusion_video_chunk_budget_steps < 1:
+            raise ValueError("diffusion_video_chunk_budget_steps must be >= 1")
+        if (
+            self.diffusion_small_request_latency_threshold_ms is not None
+            and self.diffusion_small_request_latency_threshold_ms <= 0
+        ):
+            raise ValueError("diffusion_small_request_latency_threshold_ms must be > 0")
 
     def update_multimodal_support(self) -> None:
         self.supports_multimodal_inputs = self.model_class_name in {"QwenImageEditPlusPipeline"}

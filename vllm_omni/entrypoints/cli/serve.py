@@ -317,10 +317,22 @@ class OmniServeCommand(CLISubcommand):
             help="Chunk budget in diffusion steps when chunk-boundary re-scheduling is enabled.",
         )
         omni_config_group.add_argument(
-            "--diffusion-small-request-threshold",
+            "--diffusion-image-chunk-budget-steps",
             type=int,
-            default=4,
-            help="Remaining-step threshold below which diffusion requests run through without forced re-chunking.",
+            default=None,
+            help="Image-specific chunk budget in diffusion steps. Falls back to --diffusion-chunk-budget-steps.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-video-chunk-budget-steps",
+            type=int,
+            default=None,
+            help="Video-specific chunk budget in diffusion steps. Falls back to --diffusion-chunk-budget-steps.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-small-request-latency-threshold-ms",
+            type=float,
+            default=None,
+            help="Requests with estimated remaining latency below this threshold run to completion without re-chunking.",
         )
 
         # VAE memory optimization parameters
