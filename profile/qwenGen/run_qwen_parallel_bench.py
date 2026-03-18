@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 # python profile/qwenGen/run_qwen_parallel_bench.py --request-types-config /home/mumura/omni/vllm-omni/profile/qwenGen/request_types_18.json --card-counts 1,2,4,8 --gpu-device-ids 0,1,2,3,4,5,6,7 --warmup-iters 1 --repeats 1 --request-timeout-seconds 200 --warmup-timeout-seconds 300 --timeout-grace-seconds 20
-# python profile/qwenGen/run_qwen_parallel_bench.py --card-counts 1,2,4,8 --gpu-device-ids 0,1,2,3,4,5,6,7 --warmup-iters 1 --repeats 3 --request-timeout-seconds 450 --warmup-timeout-seconds 600 --timeout-grace-seconds 20
+# python profile/qwenGen/run_qwen_parallel_bench.py --card-counts 1,4 --gpu-device-ids 0,1,2,3,4,5,6,7 --warmup-iters 1 --repeats 2 --request-timeout-seconds 450 --warmup-timeout-seconds 600 --timeout-grace-seconds 20
 
 
 DEFAULT_MODEL = "/data2/group_谈海生/mumura/models/Qwen-Image"
@@ -37,11 +37,12 @@ class RequestType:
 class ParallelConfig:
     num_gpus: int
     name: str
-    vae_patch_parallel_size: int
     tensor_parallel_size: int
     ulysses_degree: int
     ring_degree: int
     cfg_parallel_size: int
+    vae_use_slicing: bool = True
+    vae_use_tiling: bool = True
     use_hsdp: bool = False
     hsdp_shard_size: int = -1
     hsdp_replicate_size: int = 1
@@ -65,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--request-types-config",
-        default="profile/qwenGen/request_types_18.json",
+        default="profile/qwenGen/random_dataset_c_request.json",
     )
     parser.add_argument(
         "--parallel-matrix-config",
@@ -102,6 +103,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--enable-cpu-offload", action="store_true")
     parser.add_argument("--enable-layerwise-offload", action="store_true")
+    parser.add_argument(
+        "--num-weight-load-threads",
+        type=int,
+        default=8,
+        help="Number of threads used for model weight loading.",
+    )
     parser.add_argument(
         "--request-timeout-seconds",
         type=int,
@@ -159,6 +166,44 @@ def parse_args() -> argparse.Namespace:
 
 def load_request_types(path: Path) -> list[RequestType]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+
+    # RandomDataset-like config:
+    # {
+    #   "request_profiles": [
+    #       {"width": 512, "height": 512, "num_inference_steps": 20, ...},
+    #       ...
+    #   ]
+    # }
+    if isinstance(payload, dict) and "request_profiles" in payload:
+        request_types: list[RequestType] = []
+        for idx, profile in enumerate(payload["request_profiles"]):
+            if not isinstance(profile, dict):
+                raise ValueError(f"Invalid request profile at index {idx}: expected object")
+
+            try:
+                width = int(profile["width"])
+                height = int(profile["height"])
+                num_steps = int(profile["num_inference_steps"])
+            except KeyError as exc:
+                raise ValueError(
+                    f"Invalid request profile at index {idx}: missing key {exc!s}"
+                ) from exc
+
+            # Align with RandomDataset behavior: profile can override defaults.
+            # For Qwen-Image t2i, num_frames typically resolves to 1.
+            frames = int(profile.get("num_frames", 1))
+
+            request_types.append(
+                RequestType(
+                    height=height,
+                    width=width,
+                    num_frames=frames,
+                    num_inference_steps=num_steps,
+                )
+            )
+        return request_types
+
+    # Backward-compatible legacy request-type matrix format.
     height_width = payload["height_width"]
     num_frames = payload["num_frames"]
     num_steps = payload["num_inference_steps"]
@@ -191,11 +236,12 @@ def load_parallel_configs(path: Path, selected_cards: set[int]) -> list[Parallel
             item = ParallelConfig(
                 num_gpus=num_gpus,
                 name=str(cfg["name"]),
-                vae_patch_parallel_size=int(cfg["vae_patch_parallel_size"]),
                 tensor_parallel_size=int(cfg["tensor_parallel_size"]),
                 ulysses_degree=int(cfg["ulysses_degree"]),
                 ring_degree=int(cfg["ring_degree"]),
                 cfg_parallel_size=int(cfg["cfg_parallel_size"]),
+                vae_use_slicing=bool(cfg.get("vae_use_slicing", True)),
+                vae_use_tiling=bool(cfg.get("vae_use_tiling", True)),
                 use_hsdp=bool(cfg.get("use_hsdp", False)),
                 hsdp_shard_size=int(cfg.get("hsdp_shard_size", -1)),
                 hsdp_replicate_size=int(cfg.get("hsdp_replicate_size", 1)),
@@ -257,11 +303,6 @@ def load_parallel_configs(path: Path, selected_cards: set[int]) -> list[Parallel
                 raise ValueError(
                     f"Invalid config {item.name}: world_size={expected_world_size}, expected {num_gpus}."
                 )
-            if item.vae_patch_parallel_size not in (1, num_gpus):
-                raise ValueError(
-                    f"Invalid config {item.name}: vae_patch_parallel_size={item.vae_patch_parallel_size}, "
-                    f"expected 1 or {num_gpus}."
-                )
             configs.append(item)
     configs.sort(key=lambda x: (x.num_gpus, x.name))
     return configs
@@ -309,17 +350,19 @@ def build_worker_cmd(
         str(cfg.cfg_parallel_size),
         "--tensor-parallel-size",
         str(cfg.tensor_parallel_size),
-        "--vae-patch-parallel-size",
-        str(cfg.vae_patch_parallel_size),
     ]
-    cmd.append("--vae-use-slicing")
-    cmd.append("--vae-use-tiling")
+    if cfg.vae_use_slicing or args.vae_use_slicing:
+        cmd.append("--vae-use-slicing")
+    if cfg.vae_use_tiling or args.vae_use_tiling:
+        cmd.append("--vae-use-tiling")
     if args.enforce_eager:
         cmd.append("--enforce-eager")
     if args.enable_cpu_offload:
         cmd.append("--enable-cpu-offload")
     if args.enable_layerwise_offload:
         cmd.append("--enable-layerwise-offload")
+    if args.num_weight_load_threads > 0:
+        cmd.extend(["--num-weight-load-threads", str(args.num_weight_load_threads)])
     if args.request_timeout_seconds > 0:
         cmd.extend(["--request-timeout-seconds", str(args.request_timeout_seconds)])
     if args.warmup_timeout_seconds > 0:
@@ -347,7 +390,8 @@ def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
         "num_gpus",
         "gpu_ids",
         "parallel_name",
-        "vae_patch_parallel_size",
+        "vae_use_slicing",
+        "vae_use_tiling",
         "tensor_parallel_size",
         "ulysses_degree",
         "ring_degree",
@@ -422,6 +466,7 @@ def main() -> None:
         "timeout_grace_seconds": args.timeout_grace_seconds,
         "resume": args.resume,
         "request_fail_fast": args.request_fail_fast,
+        "num_weight_load_threads": args.num_weight_load_threads,
         "worker_timeout_seconds": args.worker_timeout_seconds,
         "total_runs": total_runs,
         "request_types_config": str(request_types_path),
@@ -519,7 +564,8 @@ def main() -> None:
                             "num_gpus": cfg.num_gpus,
                             "gpu_ids": cuda_visible_devices,
                             "parallel_name": cfg.name,
-                            "vae_patch_parallel_size": cfg.vae_patch_parallel_size,
+                            "vae_use_slicing": cfg.vae_use_slicing,
+                            "vae_use_tiling": cfg.vae_use_tiling,
                             "tensor_parallel_size": cfg.tensor_parallel_size,
                             "ulysses_degree": cfg.ulysses_degree,
                             "ring_degree": cfg.ring_degree,
@@ -560,7 +606,8 @@ def main() -> None:
                     "num_gpus": cfg.num_gpus,
                     "gpu_ids": cuda_visible_devices,
                     "parallel_name": cfg.name,
-                    "vae_patch_parallel_size": cfg.vae_patch_parallel_size,
+                    "vae_use_slicing": cfg.vae_use_slicing,
+                    "vae_use_tiling": cfg.vae_use_tiling,
                     "tensor_parallel_size": cfg.tensor_parallel_size,
                     "ulysses_degree": cfg.ulysses_degree,
                     "ring_degree": cfg.ring_degree,

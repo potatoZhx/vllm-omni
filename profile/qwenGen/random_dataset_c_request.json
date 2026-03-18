@@ -1,0 +1,25 @@
+{
+  "name": "random_dataset_c",
+  "request_profiles": [
+    {
+      "width": 512,
+      "height": 512,
+      "num_inference_steps": 20
+    },
+    {
+      "width": 768,
+      "height": 768,
+      "num_inference_steps": 20
+    },
+    {
+      "width": 1024,
+      "height": 1024,
+      "num_inference_steps": 25
+    },
+    {
+      "width": 1536,
+      "height": 1536,
+      "num_inference_steps": 35
+    }
+  ]
+}
