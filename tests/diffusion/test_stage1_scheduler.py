@@ -176,11 +176,101 @@ def test_stage1_scheduler_keeps_request_running_for_unfinished_output():
     worker.join(5)
 
     assert output.finished is False
-    assert req.request_state == "running"
+    assert req.request_state == "waiting"
     assert req.executed_steps == 2
     assert output.metrics["executed_steps"] == 2
     assert output.metrics["remaining_steps"] == 2
     assert req.last_preempted_time is not None
+    with sched._queue_cv:
+        assert len(sched._waiting_queue) == 1
+        assert sched._waiting_queue[0].request is req
+
+
+def test_stage1_scheduler_reuses_waiting_entry_for_resumed_request():
+    sched, req_q, res_q = _make_stage1_scheduler()
+    req = _mock_request("req-resume", num_inference_steps=4)
+
+    def _worker():
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=None, finished=False, metrics={"executed_steps": 2}))
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True, metrics={"executed_steps": 4}))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    first_output = sched.add_req(req)
+    assert first_output.finished is False
+
+    enqueue_calls: list[str] = []
+    original_enqueue = sched._enqueue_request_locked
+
+    def _record_enqueue(request):
+        enqueue_calls.append(request.request_ids[0])
+        return original_enqueue(request)
+
+    sched._enqueue_request_locked = _record_enqueue
+    second_output = sched.add_req(req)
+    worker.join(5)
+
+    assert second_output.finished is True
+    assert enqueue_calls == []
+
+
+def test_stage1_scheduler_sjf_prioritizes_requeued_shorter_request_over_new_longer_request():
+    sched, req_q, res_q = _make_stage1_scheduler(policy="sjf")
+    req1 = _mock_request("req-1", num_inference_steps=41, extra_args={"estimated_cost_s": 2.0})
+    req2 = _mock_request("req-2", num_inference_steps=28, extra_args={"estimated_cost_s": 10.0})
+    dispatch_order: list[str] = []
+    req1_requeued = threading.Event()
+    allow_req1_resume = threading.Event()
+
+    def _worker():
+        first = req_q.get(timeout=5)
+        dispatch_order.append(first["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=None, finished=False, request_id="req-1", metrics={"executed_steps": 30}))
+
+        second = req_q.get(timeout=5)
+        dispatch_order.append(second["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True, request_id="req-1", metrics={"executed_steps": 41}))
+
+        third = req_q.get(timeout=5)
+        dispatch_order.append(third["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True, request_id="req-2", metrics={"executed_steps": 28}))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    results: dict[str, DiffusionOutput] = {}
+
+    def _run_req1():
+        first_output = sched.add_req(req1)
+        results["req-1-first"] = first_output
+        req1_requeued.set()
+        allow_req1_resume.wait(timeout=5)
+        results["req-1-second"] = sched.add_req(req1)
+
+    req1_thread = threading.Thread(target=_run_req1, daemon=True)
+    req1_thread.start()
+    assert req1_requeued.wait(timeout=5)
+
+    req2_thread = threading.Thread(
+        target=lambda: results.setdefault("req-2", sched.add_req(req2)),
+        daemon=True,
+    )
+    req2_thread.start()
+
+    time.sleep(0.1)
+    allow_req1_resume.set()
+
+    req1_thread.join(5)
+    req2_thread.join(5)
+    worker.join(5)
+
+    assert dispatch_order == ["req-1", "req-1", "req-2"]
+    assert results["req-1-first"].finished is False
+    assert results["req-1-second"].finished is True
+    assert results["req-2"].finished is True
 
 
 def test_stage1_scheduler_marks_finished_request_as_fully_executed_without_worker_metric():

@@ -187,6 +187,16 @@ class Stage1Scheduler(Scheduler):
         request_ids = self._request_ids(request)
         return any(request_id in self._aborted_request_ids for request_id in request_ids)
 
+    def _find_waiting_request_locked(self, request: OmniDiffusionRequest) -> _QueuedRequest | None:
+        request_ids = set(self._request_ids(request))
+        for queued_request in self._waiting_queue:
+            if queued_request.request is request:
+                return queued_request
+            queued_request_ids = set(self._request_ids(queued_request.request))
+            if request_ids and queued_request_ids and request_ids & queued_request_ids:
+                return queued_request
+        return None
+
     def _policy_name(self) -> str:
         return getattr(self.od_config, "instance_scheduler_policy", "fcfs")
 
@@ -512,9 +522,12 @@ class Stage1Scheduler(Scheduler):
             metrics={"scheduler_policy": self._policy_name(), "queue_len": len(self._waiting_queue)},
         )
 
-    def _enqueue_request_locked(self, request: OmniDiffusionRequest) -> _QueuedRequest:
+    def _queue_request_locked(self, request: OmniDiffusionRequest, *, is_new_arrival: bool) -> _QueuedRequest:
         enqueue_time = time.monotonic()
-        setattr(request, "arrival_time", getattr(request, "arrival_time", enqueue_time) or enqueue_time)
+        if is_new_arrival:
+            setattr(request, "arrival_time", getattr(request, "arrival_time", enqueue_time) or enqueue_time)
+        elif getattr(request, "arrival_time", None) is None:
+            setattr(request, "arrival_time", enqueue_time)
         if getattr(request, "first_enqueue_time", None) is None:
             setattr(request, "first_enqueue_time", enqueue_time)
         self._set_request_state(request, "waiting")
@@ -535,7 +548,7 @@ class Stage1Scheduler(Scheduler):
             queue_len=len(self._waiting_queue),
             scheduler_policy=self._policy_name(),
         )
-        if enqueue_time == getattr(request, "first_enqueue_time", None):
+        if is_new_arrival:
             self._log_request_event(
                 "REQUEST_ARRIVED",
                 request,
@@ -544,6 +557,12 @@ class Stage1Scheduler(Scheduler):
             )
         self._queue_cv.notify_all()
         return queued_request
+
+    def _enqueue_request_locked(self, request: OmniDiffusionRequest) -> _QueuedRequest:
+        return self._queue_request_locked(request, is_new_arrival=True)
+
+    def _requeue_request_locked(self, request: OmniDiffusionRequest) -> _QueuedRequest:
+        return self._queue_request_locked(request, is_new_arrival=False)
 
     def pop_next_request(self) -> OmniDiffusionRequest | None:
         with self._queue_cv:
@@ -591,7 +610,7 @@ class Stage1Scheduler(Scheduler):
 
     def mark_request_unfinished(self, request: OmniDiffusionRequest) -> None:
         with self._queue_cv:
-            self._set_request_state(request, "running")
+            self._set_request_state(request, "waiting")
 
     def fail_request(self, request: OmniDiffusionRequest) -> None:
         with self._queue_cv:
@@ -634,7 +653,9 @@ class Stage1Scheduler(Scheduler):
         request_label = self._request_label(request)
 
         with self._queue_cv:
-            queued_request = self._enqueue_request_locked(request)
+            queued_request = self._find_waiting_request_locked(request)
+            if queued_request is None:
+                queued_request = self._enqueue_request_locked(request)
             while True:
                 if self._is_request_aborted(request):
                     return self._normalize_error_output(
@@ -697,11 +718,6 @@ class Stage1Scheduler(Scheduler):
             )
             logger.error("REQUEST_FAIL request_id=%s error_code=SCHEDULER_TIMEOUT", request_label)
             raise TimeoutError("Scheduler did not respond in time.") from exc
-        finally:
-            with self._queue_cv:
-                self._active_request = None
-                self._active_started_at = None
-                self._queue_cv.notify_all()
 
         execute_latency_ms = (time.monotonic() - execute_start) * 1000
         self._sync_request_progress_from_output(request, output)
@@ -732,11 +748,10 @@ class Stage1Scheduler(Scheduler):
                 output.metrics.get("executed_steps"),
                 output.metrics.get("remaining_steps"),
             )
-            return output
-
-        if not getattr(output, "finished", True):
-            self.mark_request_unfinished(request)
-            setattr(request, "last_preempted_time", time.monotonic())
+        elif not getattr(output, "finished", True):
+            with self._queue_cv:
+                setattr(request, "last_preempted_time", time.monotonic())
+                self._requeue_request_locked(request)
             self._log_request_event(
                 "REQUEST_PREEMPTED",
                 request,
@@ -757,27 +772,32 @@ class Stage1Scheduler(Scheduler):
                 output.metrics.get("chunk_budget_steps"),
                 output.metrics.get("dispatch_epoch"),
             )
-            return output
+        else:
+            self.finish_request(request)
+            setattr(request, "completion_time", time.monotonic())
+            self._log_request_event(
+                "REQUEST_COMPLETED",
+                request,
+                queue_len=output.metrics.get("queue_len", -1),
+                latency_ms=output.metrics.get("scheduler_latency_ms", -1.0),
+                scheduler_policy=output.metrics.get("scheduler_policy"),
+            )
+            logger.info(
+                "REQUEST_DONE request_id=%s queue_len=%d latency_ms=%.2f width=%s height=%s total_steps=%s executed_steps=%s remaining_steps=%s dispatch_epoch=%s",
+                output.request_id,
+                output.metrics.get("queue_len", -1),
+                output.metrics.get("scheduler_latency_ms", -1.0),
+                output.metrics.get("width"),
+                output.metrics.get("height"),
+                output.metrics.get("total_steps"),
+                output.metrics.get("executed_steps"),
+                output.metrics.get("remaining_steps"),
+                output.metrics.get("dispatch_epoch"),
+            )
 
-        self.finish_request(request)
-        setattr(request, "completion_time", time.monotonic())
-        self._log_request_event(
-            "REQUEST_COMPLETED",
-            request,
-            queue_len=output.metrics.get("queue_len", -1),
-            latency_ms=output.metrics.get("scheduler_latency_ms", -1.0),
-            scheduler_policy=output.metrics.get("scheduler_policy"),
-        )
-        logger.info(
-            "REQUEST_DONE request_id=%s queue_len=%d latency_ms=%.2f width=%s height=%s total_steps=%s executed_steps=%s remaining_steps=%s dispatch_epoch=%s",
-            output.request_id,
-            output.metrics.get("queue_len", -1),
-            output.metrics.get("scheduler_latency_ms", -1.0),
-            output.metrics.get("width"),
-            output.metrics.get("height"),
-            output.metrics.get("total_steps"),
-            output.metrics.get("executed_steps"),
-            output.metrics.get("remaining_steps"),
-            output.metrics.get("dispatch_epoch"),
-        )
+        with self._queue_cv:
+            self._active_request = None
+            self._active_started_at = None
+            self._queue_cv.notify_all()
+
         return output
