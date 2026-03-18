@@ -24,6 +24,7 @@ from torch import nn
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer
 from vllm.model_executor.models.utils import AutoWeightsLoader
 
+from vllm_omni.diffusion.context import DiffusionRequestContext
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
@@ -136,6 +137,23 @@ def retrieve_timesteps(
         scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
         timesteps = scheduler.timesteps
     return timesteps, num_inference_steps
+
+
+def set_single_step_warmup_timestep(
+    scheduler,
+    *,
+    device: str | torch.device | None = None,
+    sigma: float = 1.0,
+) -> tuple[torch.Tensor, int]:
+    """Install a 1-step warmup schedule without invoking sigma stretching."""
+    sigma_tensor = torch.tensor([float(sigma)], dtype=torch.float32, device=device)
+    timesteps = sigma_tensor * float(scheduler.config.num_train_timesteps)
+    scheduler.num_inference_steps = 1
+    scheduler.timesteps = timesteps
+    scheduler.sigmas = torch.cat([sigma_tensor, torch.zeros(1, dtype=torch.float32, device=device)])
+    scheduler._step_index = None
+    scheduler._begin_index = None
+    return timesteps, 1
 
 
 def get_timestep_embedding(
@@ -499,6 +517,10 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
         return latents
 
     def prepare_timesteps(self, num_inference_steps, sigmas, image_seq_len):
+        if num_inference_steps == 1:
+            sigma = float(sigmas[0]) if sigmas is not None else 1.0
+            return set_single_step_warmup_timestep(self.scheduler, sigma=sigma)
+
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
         # image_seq_len = latents.shape[1]
         mu = calculate_shift(
@@ -536,7 +558,26 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
     def interrupt(self):
         return self._interrupt
 
-    def forward(
+    def _capture_scheduler_state(self) -> dict[str, Any]:
+        return {
+            "timesteps": self.scheduler.timesteps.detach().clone(),
+            "sigmas": self.scheduler.sigmas.detach().clone(),
+            "num_inference_steps": getattr(self.scheduler, "num_inference_steps", None),
+            "step_index": getattr(self.scheduler, "_step_index", None),
+            "begin_index": getattr(self.scheduler, "_begin_index", None),
+        }
+
+    def _restore_scheduler_state(self, scheduler_state: dict[str, Any] | None) -> None:
+        if not scheduler_state:
+            return
+
+        self.scheduler.timesteps = scheduler_state["timesteps"].detach().clone()
+        self.scheduler.sigmas = scheduler_state["sigmas"].detach().clone()
+        self.scheduler.num_inference_steps = scheduler_state.get("num_inference_steps")
+        self.scheduler._step_index = scheduler_state.get("step_index")
+        self.scheduler._begin_index = scheduler_state.get("begin_index")
+
+    def prepare_generation(
         self,
         req: OmniDiffusionRequest,
         prompt: str | list[str] | None = None,
@@ -558,9 +599,7 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
         attention_kwargs: dict[str, Any] | None = None,
         callback_on_step_end_tensor_inputs: list[str] = ["latents"],
         max_sequence_length: int = 512,
-    ) -> DiffusionOutput:
-        # TODO: In online mode, sometimes it receives [{"negative_prompt": None}, {...}], so cannot use .get("...", "")
-        # TODO: May be some data formatting operations on the API side. Hack for now.
+    ) -> DiffusionRequestContext:
         prompt = [p if isinstance(p, str) else (p.get("prompt") or "") for p in req.prompts] or prompt
         if all(isinstance(p, str) or p.get("negative_prompt") is None for p in req.prompts):
             negative_prompt = None
@@ -581,12 +620,7 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
             if req.sampling_params.num_outputs_per_prompt > 0
             else num_images_per_prompt
         )
-        # 1. check inputs
-        # 2. encode prompts
-        # 3. prepare latents and timesteps
-        # 4. diffusion process
-        # 5. decode latents
-        # 6. post-process outputs
+
         self.check_inputs(
             prompt,
             height,
@@ -615,7 +649,6 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
         )
-
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
         self.check_cfg_parallel_validity(true_cfg_scale, has_neg_prompt)
 
@@ -656,11 +689,9 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
             ]
         ] * batch_size
 
-        timesteps, num_inference_steps = self.prepare_timesteps(num_inference_steps, sigmas, latents.shape[1])
-        # num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+        timesteps, _ = self.prepare_timesteps(num_inference_steps, sigmas, latents.shape[1])
         self._num_timesteps = len(timesteps)
 
-        # handle guidance
         if self.transformer.guidance_embeds:
             guidance = torch.full([1], guidance_scale, dtype=torch.float32)
             guidance = guidance.expand(latents.shape[0])
@@ -670,38 +701,83 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
         if self.attention_kwargs is None:
             self._attention_kwargs = {}
 
-        txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist() if prompt_embeds_mask is not None else None
-        negative_txt_seq_lens = (
-            negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
-        )
-        # print inputp params
-
-        latents = self.diffuse(
-            prompt_embeds,
-            prompt_embeds_mask,
-            negative_prompt_embeds,
-            negative_prompt_embeds_mask,
-            latents,
-            img_shapes,
-            txt_seq_lens,
-            negative_txt_seq_lens,
-            timesteps,
-            do_true_cfg,
-            guidance,
-            true_cfg_scale,
-            image_latents=None,
-            cfg_normalize=True,
-            additional_transformer_kwargs={
+        ctx = DiffusionRequestContext.from_request(req)
+        ctx.current_step = 0
+        ctx.num_inference_steps = len(timesteps)
+        ctx.scheduler_state = self._capture_scheduler_state()
+        ctx.extra_model_state = {
+            "height": height,
+            "width": width,
+            "output_type": output_type,
+            "prompt_embeds": prompt_embeds,
+            "prompt_embeds_mask": prompt_embeds_mask,
+            "negative_prompt_embeds": negative_prompt_embeds,
+            "negative_prompt_embeds_mask": negative_prompt_embeds_mask,
+            "latents": latents,
+            "img_shapes": img_shapes,
+            "txt_seq_lens": prompt_embeds_mask.sum(dim=1).tolist() if prompt_embeds_mask is not None else None,
+            "negative_txt_seq_lens": (
+                negative_prompt_embeds_mask.sum(dim=1).tolist()
+                if negative_prompt_embeds_mask is not None
+                else None
+            ),
+            "timesteps": timesteps,
+            "do_true_cfg": do_true_cfg,
+            "guidance": guidance,
+            "true_cfg_scale": true_cfg_scale,
+            "additional_transformer_kwargs": {
                 "return_dict": False,
                 "attention_kwargs": self.attention_kwargs,
             },
-        )
+        }
+        return ctx
 
-        self._current_timestep = None
-        if output_type == "latent":
+    def step_generation(
+        self,
+        ctx: DiffusionRequestContext,
+        steps: int,
+    ) -> tuple[DiffusionRequestContext, bool]:
+        state = ctx.extra_model_state
+        timesteps = state["timesteps"]
+        self._restore_scheduler_state(ctx.scheduler_state)
+        start = ctx.current_step
+        end = min(start + steps, len(timesteps))
+        if start >= end:
+            ctx.finished = ctx.current_step >= len(timesteps)
+            return ctx, ctx.finished
+
+        state["latents"] = self.diffuse(
+            state["prompt_embeds"],
+            state["prompt_embeds_mask"],
+            state["negative_prompt_embeds"],
+            state["negative_prompt_embeds_mask"],
+            state["latents"],
+            state["img_shapes"],
+            state["txt_seq_lens"],
+            state["negative_txt_seq_lens"],
+            timesteps[start:end],
+            state["do_true_cfg"],
+            state["guidance"],
+            state["true_cfg_scale"],
+            image_latents=None,
+            cfg_normalize=True,
+            additional_transformer_kwargs=state["additional_transformer_kwargs"],
+            begin_index=start,
+        )
+        ctx.scheduler_state = self._capture_scheduler_state()
+        ctx.current_step = end
+        ctx.finished = ctx.current_step >= len(timesteps)
+        if ctx.finished:
+            self._current_timestep = None
+        return ctx, ctx.finished
+
+    def finalize_generation(self, ctx: DiffusionRequestContext) -> DiffusionOutput:
+        state = ctx.extra_model_state
+        latents = state["latents"]
+        if state["output_type"] == "latent":
             image = latents
         else:
-            latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+            latents = self._unpack_latents(latents, state["height"], state["width"], self.vae_scale_factor)
             latents = latents.to(self.vae.dtype)
             latents_mean = (
                 torch.tensor(self.vae.config.latents_mean)
@@ -713,9 +789,103 @@ class QwenImagePipeline(nn.Module, QwenImageCFGParallelMixin):
             )
             latents = latents / latents_std + latents_mean
             image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
-            # processed_image = self.image_processor.postprocess(image, output_type=output_type)
+        self._current_timestep = None
+        return DiffusionOutput(output=image, request_id=ctx.request_id, finished=True)
 
-        return DiffusionOutput(output=image)
+    def forward(
+        self,
+        req: OmniDiffusionRequest,
+        prompt: str | list[str] | None = None,
+        negative_prompt: str | list[str] | None = None,
+        true_cfg_scale: float = 4.0,
+        height: int | None = None,
+        width: int | None = None,
+        num_inference_steps: int = 50,
+        sigmas: list[float] | None = None,
+        guidance_scale: float = 1.0,
+        num_images_per_prompt: int = 1,
+        generator: torch.Generator | list[torch.Generator] | None = None,
+        latents: torch.Tensor | None = None,
+        prompt_embeds: torch.Tensor | None = None,
+        prompt_embeds_mask: torch.Tensor | None = None,
+        negative_prompt_embeds: torch.Tensor | None = None,
+        negative_prompt_embeds_mask: torch.Tensor | None = None,
+        output_type: str | None = "pil",
+        attention_kwargs: dict[str, Any] | None = None,
+        callback_on_step_end_tensor_inputs: list[str] = ["latents"],
+        max_sequence_length: int = 512,
+    ) -> DiffusionOutput:
+        if getattr(self.od_config, "diffusion_enable_step_chunk", False):
+            ctx = self.prepare_generation(
+                req,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                true_cfg_scale=true_cfg_scale,
+                height=height,
+                width=width,
+                num_inference_steps=num_inference_steps,
+                sigmas=sigmas,
+                guidance_scale=guidance_scale,
+                num_images_per_prompt=num_images_per_prompt,
+                generator=generator,
+                latents=latents,
+                prompt_embeds=prompt_embeds,
+                prompt_embeds_mask=prompt_embeds_mask,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+                output_type=output_type,
+                attention_kwargs=attention_kwargs,
+                callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
+                max_sequence_length=max_sequence_length,
+            )
+            ctx, _ = self.step_generation(ctx, ctx.num_inference_steps)
+            return self.finalize_generation(ctx)
+
+        # Preserve the original run-to-completion path when step-chunk is disabled.
+        ctx = self.prepare_generation(
+            req,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            true_cfg_scale=true_cfg_scale,
+            height=height,
+            width=width,
+            num_inference_steps=num_inference_steps,
+            sigmas=sigmas,
+            guidance_scale=guidance_scale,
+            num_images_per_prompt=num_images_per_prompt,
+            generator=generator,
+            latents=latents,
+            prompt_embeds=prompt_embeds,
+            prompt_embeds_mask=prompt_embeds_mask,
+            negative_prompt_embeds=negative_prompt_embeds,
+            negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+            output_type=output_type,
+            attention_kwargs=attention_kwargs,
+            callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
+            max_sequence_length=max_sequence_length,
+        )
+        state = ctx.extra_model_state
+        latents = self.diffuse(
+            state["prompt_embeds"],
+            state["prompt_embeds_mask"],
+            state["negative_prompt_embeds"],
+            state["negative_prompt_embeds_mask"],
+            state["latents"],
+            state["img_shapes"],
+            state["txt_seq_lens"],
+            state["negative_txt_seq_lens"],
+            state["timesteps"],
+            state["do_true_cfg"],
+            state["guidance"],
+            state["true_cfg_scale"],
+            image_latents=None,
+            cfg_normalize=True,
+            additional_transformer_kwargs=state["additional_transformer_kwargs"],
+        )
+        state["latents"] = latents
+        ctx.current_step = ctx.num_inference_steps
+        ctx.finished = True
+        return self.finalize_generation(ctx)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)

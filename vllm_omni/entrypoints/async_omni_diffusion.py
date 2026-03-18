@@ -122,11 +122,15 @@ class AsyncOmniDiffusion:
         # Initialize engine
         self.engine: DiffusionEngine = DiffusionEngine.make_engine(od_config)
 
-        # Thread pool for running sync engine in async context
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        # Thread pool for running sync engine in async context.
+        self._executor = ThreadPoolExecutor(max_workers=od_config.diffusion_engine_max_concurrency)
         self._closed = False
 
-        logger.info("AsyncOmniDiffusion initialized with model: %s", model)
+        logger.info(
+            "AsyncOmniDiffusion initialized with model: %s max_concurrency=%d",
+            model,
+            od_config.diffusion_engine_max_concurrency,
+        )
 
     async def generate(
         self,
@@ -168,7 +172,6 @@ class AsyncOmniDiffusion:
         # Run engine in thread pool
         loop = asyncio.get_event_loop()
         try:
-            # In async mode, only a single request is submitted at a time
             result = await loop.run_in_executor(
                 self._executor,
                 self.engine.step,
