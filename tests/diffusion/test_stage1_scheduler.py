@@ -446,6 +446,22 @@ def test_stage1_scheduler_estimate_cost_counts_num_outputs_once_without_profile(
     assert multi_output_cost == pytest.approx(single_output_cost * 2.0)
 
 
+def test_stage1_scheduler_scales_injected_estimated_cost_by_remaining_steps():
+    sched, _, _ = _make_stage1_scheduler(policy="sjf")
+    req = _mock_request(
+        "chunked",
+        num_inference_steps=20,
+        extra_args={"estimated_cost_s": 5.0},
+    )
+
+    initial_cost = sched._estimate_cost_seconds(req)  # noqa: SLF001
+    req.executed_steps = 10
+    resumed_cost = sched._estimate_cost_seconds(req)  # noqa: SLF001
+
+    assert initial_cost == pytest.approx(5.0)
+    assert resumed_cost == pytest.approx(2.5)
+
+
 def test_stage1_scheduler_caches_estimated_cost_for_waiting_plan():
     sched, _, _ = _make_stage1_scheduler(policy="slo_first", slo_target_ms=5000.0)
     original_estimate = sched._estimate_cost_seconds  # noqa: SLF001

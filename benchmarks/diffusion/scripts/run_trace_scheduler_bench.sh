@@ -13,6 +13,7 @@ POLICY="${POLICY:-sjf}"
 ENABLE_STEP_CHUNK="${ENABLE_STEP_CHUNK:-0}"
 ENABLE_CHUNK_PREEMPTION="${ENABLE_CHUNK_PREEMPTION:-0}"
 CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS:-4}"
+SMALL_REQUEST_LATENCY_THRESHOLD_MS="${SMALL_REQUEST_LATENCY_THRESHOLD_MS:-}"
 NUM_PROMPTS="${NUM_PROMPTS:-100}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-32}"
 REQUEST_RATE="${REQUEST_RATE:-inf}"
@@ -107,6 +108,7 @@ echo "  model: ${MODEL}"
 echo "  policy: ${POLICY}"
 echo "  step_chunk: ${ENABLE_STEP_CHUNK}"
 echo "  chunk_preemption: ${ENABLE_CHUNK_PREEMPTION}"
+echo "  small_request_latency_threshold_ms: ${SMALL_REQUEST_LATENCY_THRESHOLD_MS:-<disabled>}"
 echo "  port: ${PORT}"
 echo "  dataset: ${DATASET_PATH}"
 echo "  out_dir: ${OUT_DIR}"
@@ -127,6 +129,7 @@ setsid nohup vllm serve \
   --instance-scheduler-policy "${POLICY}" \
   $([[ "${ENABLE_STEP_CHUNK}" == "1" ]] && printf '%s ' --diffusion-enable-step-chunk) \
   $([[ "${ENABLE_CHUNK_PREEMPTION}" == "1" ]] && printf '%s ' --diffusion-enable-chunk-preemption) \
+  $([[ -n "${SMALL_REQUEST_LATENCY_THRESHOLD_MS}" ]] && printf '%s %s ' --diffusion-small-request-latency-threshold-ms "${SMALL_REQUEST_LATENCY_THRESHOLD_MS}") \
   --diffusion-chunk-budget-steps "${CHUNK_BUDGET_STEPS}" \
   >"${SERVER_LOG}" 2>&1 </dev/null &
 SERVER_PID=$!

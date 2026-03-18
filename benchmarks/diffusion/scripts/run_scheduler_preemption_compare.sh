@@ -16,14 +16,15 @@ WARMUP_REQUESTS="${WARMUP_REQUESTS:-5}"
 DATASET_PATH="${DATASET_PATH:-${ROOT_DIR}/benchmarks/dataset/sd3_trace_redistributed.txt}"
 SLO_SCALE="${SLO_SCALE:-3}"
 CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS:-4}"
+SMALL_REQUEST_LATENCY_THRESHOLD_MS="${SMALL_REQUEST_LATENCY_THRESHOLD_MS:-}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUT_DIR="${OUT_DIR:-/tmp/scheduler_preemption_compare_${RUN_TAG}}"
 
 mkdir -p "${OUT_DIR}"
 
 declare -a CASES=(
-  "sjf_baseline sjf 0 0 0"
-  "sjf_preempt sjf 1 1 0"
+  "sjf_baseline sjf 0 0 1"
+  "sjf_preempt sjf 1 1 1"
   "slo_first_baseline slo_first 0 0 1"
   "slo_first_preempt slo_first 1 1 1"
 )
@@ -52,6 +53,7 @@ run_case() {
     ENABLE_STEP_CHUNK="${enable_step_chunk}" \
     ENABLE_CHUNK_PREEMPTION="${enable_chunk_preemption}" \
     CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS}" \
+    SMALL_REQUEST_LATENCY_THRESHOLD_MS="${SMALL_REQUEST_LATENCY_THRESHOLD_MS}" \
     NUM_PROMPTS="${NUM_PROMPTS}" \
     MAX_CONCURRENCY="${MAX_CONCURRENCY}" \
     REQUEST_RATE="${REQUEST_RATE}" \

@@ -188,12 +188,13 @@ class Stage1Scheduler(Scheduler):
     def _estimate_cost_seconds(self, request: OmniDiffusionRequest) -> float:
         sampling_params = request.sampling_params
         extra_args = getattr(sampling_params, "extra_args", {}) or {}
-        if extra_args.get("estimated_cost_s") is not None:
-            return max(float(extra_args["estimated_cost_s"]), 0.0)
-
         total_steps = max(self._safe_int(getattr(sampling_params, "num_inference_steps", 1), 1), 1)
         executed_steps = max(self._safe_int(getattr(request, "executed_steps", 0), 0), 0)
         num_steps = max(total_steps - executed_steps, 1)
+        if extra_args.get("estimated_cost_s") is not None:
+            total_cost_s = max(float(extra_args["estimated_cost_s"]), 0.0)
+            return max(total_cost_s * (float(num_steps) / float(total_steps)), 0.0)
+
         num_outputs = max(self._safe_int(getattr(sampling_params, "num_outputs_per_prompt", 1), 1), 1)
         num_frames = max(self._safe_int(getattr(sampling_params, "num_frames", 1), 1), 1)
         width = getattr(sampling_params, "width", None)
