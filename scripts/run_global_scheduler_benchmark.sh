@@ -88,6 +88,7 @@ values = {
     "TASK": benchmark.task,
     "DATASET": benchmark.dataset,
     "DATASET_PATH": resolve_config_path(benchmark.dataset_path),
+    "RANDOM_REQUEST_CONFIG": benchmark.random_request_config or "",
     "MAX_CONCURRENCY": str(benchmark.max_concurrency),
     "WARMUP_REQUESTS": str(benchmark.warmup_requests),
     "WARMUP_NUM_INFERENCE_STEPS": str(benchmark.warmup_num_inference_steps),
@@ -401,6 +402,7 @@ run_benchmark_for_rate() {
   local cmd=(
     python3 "${BENCH_SCRIPT}"
     --base-url "${SCHEDULER_URL}"
+    --backend "${BACKEND}"
     --model "${MODEL}"
     --task "${TASK}"
     --dataset "${DATASET}"
@@ -409,10 +411,12 @@ run_benchmark_for_rate() {
     --request-rate "${rate}"
     --warmup-requests "${WARMUP_REQUESTS}"
     --warmup-num-inference-steps "${WARMUP_NUM_INFERENCE_STEPS}"
-    --random-request-config '[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},{"width":768,"height":768,"num_inference_steps":20,"weight":0.25},{"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},{"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}]'
   )
   if [[ -n "${DATASET_PATH}" ]]; then
     cmd+=(--dataset-path "${DATASET_PATH}")
+  fi
+  if [[ -n "${RANDOM_REQUEST_CONFIG}" ]]; then
+    cmd+=(--random-request-config "${RANDOM_REQUEST_CONFIG}")
   fi
   if [[ -n "${run_output_file}" ]]; then
     cmd+=(--output-file "${run_output_file}")

@@ -14,6 +14,8 @@
   - 你要压测的模型名或本地模型路径
 - `benchmark.dataset_path`
   - 你要使用的 trace 文件路径
+- `benchmark.random_request_config`
+  - 如果 `dataset=random`，这里决定随机混合请求分布
 - `benchmark.worker_ids`
   - 本次实验要启用哪些 worker
 - `instances[].endpoint`
@@ -36,6 +38,7 @@
 
 - 模型路径
 - trace 路径
+- random 混合请求配置（如果你用 `dataset=random`）
 - GPU 映射
 - worker 数量和端口
 
@@ -111,6 +114,7 @@ case_name|global_policy|instance_policy|enable_step_chunk|enable_chunk_preemptio
 - `benchmark.task`
 - `benchmark.dataset`
 - `benchmark.dataset_path`
+- `benchmark.random_request_config`
 - `benchmark.worker_ids`
 - `instances[].endpoint`
 - `instances[].backends`
@@ -127,6 +131,7 @@ case_name|global_policy|instance_policy|enable_step_chunk|enable_chunk_preemptio
 - `benchmark.backend`
 - `benchmark.task`
 - `benchmark.dataset_path`
+- `benchmark.random_request_config`
 - `instances[].backends`
 - `instances[].launch.model`
 - `instances[].launch.args`

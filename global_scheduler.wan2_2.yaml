@@ -7,7 +7,7 @@
 #
 # Before running, you usually need to adjust:
 #   1) benchmark.model / instances[].launch.model
-#   2) benchmark.dataset_path
+#   2) benchmark.random_request_config or benchmark.dataset_path
 #   3) instances[].endpoint
 #   4) instances[].launch.env.CUDA_VISIBLE_DEVICES
 #   5) instances[].stop.args
@@ -37,8 +37,15 @@ benchmark:
   model: /path/to/Wan2.2-T2V-A14B-Diffusers
   backend: v1/videos
   task: t2v
-  dataset: trace
-  dataset_path: ./benchmarks/dataset/cogvideox_trace_steps_30_40_50.txt
+  dataset: random
+  random_request_config: >-
+    [
+      {"width":854,"height":480,"num_inference_steps":3,"num_frames":80,"fps":16,"weight":0.15},
+      {"width":854,"height":480,"num_inference_steps":4,"num_frames":120,"fps":24,"weight":0.25},
+      {"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16,"weight":0.60}
+    ]
+  # If you want trace mode instead, switch dataset -> trace and point this to a video trace file:
+  # dataset_path: ./benchmarks/dataset/cogvideox_trace_steps_30_40_50.txt
   max_concurrency: 20
   warmup_requests: 1
   warmup_num_inference_steps: 1
@@ -49,6 +56,7 @@ instances:
   - id: worker0
     endpoint: http://127.0.0.1:8001
     instance_type: wan2.2-sp4-cfg2-hsdp
+    numa_node: 0
     backends: [v1/videos]
     launch:
       executable: vllm
@@ -89,6 +97,7 @@ instances:
   - id: worker1
     endpoint: http://127.0.0.1:8002
     instance_type: wan2.2-sp4-cfg2-hsdp
+    numa_node: 1
     backends: [v1/videos]
     launch:
       executable: vllm
