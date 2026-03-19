@@ -12,10 +12,12 @@
 
 - `benchmark.model`
   - 你要压测的模型名或本地模型路径
+- `benchmark.dataset`
+  - 当前 `global_scheduler.yaml` 默认是 `random`；如果你要跑 trace，需要改成 `trace`
 - `benchmark.dataset_path`
-  - 你要使用的 trace 文件路径
+  - 当 `dataset=trace` 时，这里是 trace 文件路径
 - `benchmark.random_request_config`
-  - 如果 `dataset=random`，这里决定随机混合请求分布
+  - 当 `dataset=random` 时，这里决定随机混合请求分布
 - `benchmark.worker_ids`
   - 本次实验要启用哪些 worker
 - `instances[].endpoint`
@@ -37,8 +39,8 @@
 那么 `global_scheduler.yaml` 本身已经会提供这一组默认模板；你最常需要改的是：
 
 - 模型路径
-- trace 路径
-- random 混合请求配置（如果你用 `dataset=random`）
+- random 混合请求配置
+- 如果你切回 `trace`，再改 trace 路径
 - GPU 映射
 - worker 数量和端口
 
@@ -299,6 +301,7 @@ run_global_instance_scheduler_rps_bench.sh
   - `benchmark.task`
   - `benchmark.dataset`
   - `benchmark.dataset_path`
+  - `benchmark.random_request_config`
   - `benchmark.max_concurrency`
   - `benchmark.warmup_requests`
   - `benchmark.warmup_num_inference_steps`
@@ -415,6 +418,7 @@ run_global_instance_scheduler_rps_bench.sh
 - `benchmark.backend`
 - `benchmark.task`
 - `benchmark.dataset_path`
+- `benchmark.random_request_config`
 - `instances[].launch.model`
 - `instances[].launch.args`
 - `instances[].backends`

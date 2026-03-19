@@ -82,17 +82,24 @@ policy:
     algorithm: min_queue_length
 
 benchmark:
-  worker_ids: [worker0, worker1]
+  worker_ids: [worker0, worker1, worker2, worker3, worker4, worker5, worker6, worker7]
   worker_ready_timeout_s: 1200
   model: Qwen/Qwen-Image
   backend: vllm-omni
   task: t2i
-  dataset: trace
-  dataset_path: ./benchmarks/dataset/sd3_trace_redistributed.txt
+  dataset: random
+  random_request_config: >-
+    [
+      {"width":512,"height":512,"num_inference_steps":20,"weight":0.15},
+      {"width":768,"height":768,"num_inference_steps":20,"weight":0.25},
+      {"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},
+      {"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}
+    ]
+  # dataset_path: ./benchmarks/dataset/sd3_trace_redistributed.txt
   max_concurrency: 20
   warmup_requests: 1
   warmup_num_inference_steps: 1
-  output_file: ./logs/global_scheduler_benchmark_metrics.json
+  output_file: ./logs/global_scheduler_qwen_image_benchmark_metrics.json
   auto_stop: true
 ```
 
@@ -109,9 +116,11 @@ benchmark:
 - `benchmark.task`
   - 对 Qwen-image 文生图，通常是 `t2i`
 - `benchmark.dataset`
-  - 当前建议优先用 `trace`
+  - 当前默认是 `random`
 - `benchmark.dataset_path`
-  - 指向具体 trace 文件
+  - 当 `dataset=trace` 时，指向具体 trace 文件
+- `benchmark.random_request_config`
+  - 当 `dataset=random` 时，定义混合请求分布
 - `benchmark.max_concurrency`
   - 这是 client 侧最大并发，不是 worker 内部并发
 - `benchmark.auto_stop`
@@ -142,12 +151,15 @@ instances:
         - --diffusion-chunk-budget-steps
         - "4"
         - --ulysses-degree
-        - "2"
+        - "1"
         - --cfg-parallel-size
-        - "2"
-        - --use-hsdp
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
       env:
-        CUDA_VISIBLE_DEVICES: "0,1,2,3"
+        CUDA_VISIBLE_DEVICES: "0"
     stop:
       executable: pkill
       args:
@@ -155,7 +167,9 @@ instances:
         - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
 ```
 
-如果是多实例，就复制出 `worker1`、`worker2`，只替换：
+当前仓库默认模板是 8 个单卡 worker：`worker0` 到 `worker7`。
+
+如果你要继续扩容或按机器实际拓扑调整，主要替换：
 
 - `id`
 - `endpoint`
@@ -202,8 +216,13 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
   --backend vllm-omni \
   --model Qwen/Qwen-Image \
   --task t2i \
-  --dataset trace \
-  --dataset-path ./benchmarks/dataset/sd3_trace_redistributed.txt \
+  --dataset random \
+  --random-request-config '[
+    {"width":512,"height":512,"num_inference_steps":20,"weight":0.15},
+    {"width":768,"height":768,"num_inference_steps":20,"weight":0.25},
+    {"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},
+    {"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}
+  ]' \
   --num-prompts 100 \
   --request-rate 0.5 \
   --max-concurrency 20 \
@@ -221,8 +240,8 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
   - 控制目标 RPS
 - `--max-concurrency`
   - 控制 client 侧最大并发
-- `--dataset trace`
-  - 用于制造更真实的 heterogeneous workload
+- `--dataset random`
+  - 默认通过 `random_request_config` 生成混合 heterogeneous workload
 
 ## 4. 推荐的 Qwen-image 运行步骤
 
@@ -273,13 +292,13 @@ curl -sS -X POST http://127.0.0.1:8089/instances/probe
   - `--request-rate`
   - `--max-concurrency`
   - `--dataset`
-  - `--dataset-path`
+  - `--dataset-path` / `--random-request-config`
 
 如果你后面要做横向对比，通常优先固定下面这些不变：
 
 - 模型
 - 数据集
-- trace 文件
+- `random_request_config` 或 trace 文件
 - chunk budget
 - worker 数量
 - 每个 worker 的 GPU 并行配置
@@ -291,22 +310,25 @@ curl -sS -X POST http://127.0.0.1:8089/instances/probe
 - 是否开启 preemption
 - RPS
 
-## 6. 关于 trace 数据集的建议
+## 6. 关于 random 与 trace 的建议
 
-对当前联合实验，推荐优先使用 `trace` 而不是 `random`，原因是：
+对当前仓库里的 Qwen 联合实验模板，默认推荐先用 `random`，原因是：
 
-- `min_queue_length` 更适合在异构请求负载下观察
-- `sjf + preemption` 也更需要不同请求大小混合，才能显著体现收益
+- 更容易直接复现实验，不依赖额外 trace 文件
+- 可以通过 `random_request_config` 明确固定混合负载分布
+- 对 `min_queue_length` 和 `sjf + preemption` 一样能制造异构请求
 
-对 `trace` 模式，benchmark 的参数优先级要记住：
+如果你切到 `trace` 模式，需要记住：
 
-- `num_frames`、`num_inference_steps` 等字段可以来自 trace
+- `dataset` 改成 `trace`
+- 再提供 `benchmark.dataset_path`
+- `num_inference_steps` 等字段可以来自 trace
 - 如果 CLI 显式传了 `--width` / `--height`，会覆盖 trace 里的对应值
 
 因此，做联合实验时推荐：
 
-- 尽量少在 CLI 上硬覆盖请求形状
-- 让 trace 自己决定请求分布
+- 默认先固定一份 `random_request_config`
+- 如果要复现线上或历史负载，再切到 `trace`
 
 ## 7. 当前组合实验不需要的配置
 
@@ -346,9 +368,12 @@ curl -sS -X POST http://127.0.0.1:8089/instances/probe
 
 Wan2.2 一般还要替换：
 
-- `--ulysses-degree`
+- `--tensor-parallel-size`
+- `--usp`
+- `--ring`
 - `--cfg-parallel-size`
 - `--use-hsdp`
+- `--hsdp-replicate-size`
 - `--num-weight-load-threads`
 - `CUDA_VISIBLE_DEVICES`
 
@@ -361,8 +386,9 @@ Wan2.2 一般还要替换：
 Wan2.2 通常需要替换：
 
 - `benchmark.dataset_path`
+- `benchmark.random_request_config`
 - `benchmark.task`
-- trace 文件内容本身
+- trace 文件内容本身或 random 配置本身
 
 因为视频请求和图像请求的：
 
@@ -424,7 +450,7 @@ qwen_global_minqlen_instance_sjf_preempt_rps_0p4.json
 - chunk budget：`4`
 - backend：`vllm-omni`
 - task：`t2i`
-- dataset：`trace`
+- dataset：`random`
 
 先把这组基线跑通，再去扩展：
 
