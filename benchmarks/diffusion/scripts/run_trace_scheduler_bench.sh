@@ -19,6 +19,9 @@ NUM_PROMPTS="${NUM_PROMPTS:-100}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-32}"
 REQUEST_RATE="${REQUEST_RATE:-inf}"
 WARMUP_REQUESTS="${WARMUP_REQUESTS:-5}"
+DATASET="${DATASET:-trace}"
+ENABLE_NEGATIVE_PROMPT="${ENABLE_NEGATIVE_PROMPT:-0}"
+RANDOM_REQUEST_CONFIG="${RANDOM_REQUEST_CONFIG:-}"
 DATASET_PATH="${DATASET_PATH:-${ROOT_DIR}/benchmarks/dataset/sd3_trace_redistributed.txt}"
 STREAM_SERVER_LOGS="${STREAM_SERVER_LOGS:-1}"
 INJECT_SCHEDULER_SLO="${INJECT_SCHEDULER_SLO:-0}"
@@ -112,7 +115,13 @@ echo "  chunk_preemption: ${ENABLE_CHUNK_PREEMPTION}"
 echo "  small_request_latency_threshold_ms: ${SMALL_REQUEST_LATENCY_THRESHOLD_MS:-<disabled>}"
 echo "  instance_scheduler_aging_factor: ${INSTANCE_SCHEDULER_AGING_FACTOR}"
 echo "  port: ${PORT}"
-echo "  dataset: ${DATASET_PATH}"
+echo "  dataset: ${DATASET}"
+if [[ "${DATASET}" == "trace" ]]; then
+  echo "  dataset_path: ${DATASET_PATH}"
+elif [[ "${DATASET}" == "random" ]]; then
+  echo "  random_request_config: ${RANDOM_REQUEST_CONFIG}"
+  echo "  enable_negative_prompt: ${ENABLE_NEGATIVE_PROMPT}"
+fi
 echo "  out_dir: ${OUT_DIR}"
 
 cd "${ROOT_DIR}"
@@ -167,25 +176,37 @@ if [[ "${STREAM_SERVER_LOGS}" == "1" ]]; then
 fi
 
 cd "${BENCH_DIR}"
-echo "Benchmark command:"
-echo "  python -u diffusion_benchmark_serving.py --backend openai --base-url http://${HOST}:${PORT} --model ${MODEL} --dataset trace --task t2i --dataset-path ${DATASET_PATH} --num-prompts ${NUM_PROMPTS} --warmup-requests ${WARMUP_REQUESTS} --request-rate ${REQUEST_RATE} --max-concurrency ${MAX_CONCURRENCY} --output-file ${RESULT_JSON}"
-if [[ "${INJECT_SCHEDULER_SLO}" == "1" ]]; then
-  echo "  scheduler SLO injection enabled: --inject-scheduler-slo --slo --slo-scale ${SLO_SCALE}"
+BENCH_CMD=(
+  python -u diffusion_benchmark_serving.py
+  --backend openai
+  --base-url "http://${HOST}:${PORT}"
+  --model "${MODEL}"
+  --dataset "${DATASET}"
+  --task t2i
+  --num-prompts "${NUM_PROMPTS}"
+  --warmup-requests "${WARMUP_REQUESTS}"
+  --request-rate "${REQUEST_RATE}"
+  --max-concurrency "${MAX_CONCURRENCY}"
+  --output-file "${RESULT_JSON}"
+)
+
+if [[ "${DATASET}" == "trace" ]]; then
+  BENCH_CMD+=(--dataset-path "${DATASET_PATH}")
+elif [[ "${DATASET}" == "random" ]]; then
+  BENCH_CMD+=(--random-request-config "${RANDOM_REQUEST_CONFIG}")
+  if [[ "${ENABLE_NEGATIVE_PROMPT}" == "1" ]]; then
+    BENCH_CMD+=(--enable-negative-prompt)
+  fi
 fi
-python -u diffusion_benchmark_serving.py \
-  --backend openai \
-  --base-url "http://${HOST}:${PORT}" \
-  --model "${MODEL}" \
-  --dataset trace \
-  --task t2i \
-  --dataset-path "${DATASET_PATH}" \
-  --num-prompts "${NUM_PROMPTS}" \
-  --warmup-requests "${WARMUP_REQUESTS}" \
-  --request-rate "${REQUEST_RATE}" \
-  --max-concurrency "${MAX_CONCURRENCY}" \
-  --output-file "${RESULT_JSON}" \
-  $([[ "${INJECT_SCHEDULER_SLO}" == "1" ]] && printf '%s ' --slo --slo-scale "${SLO_SCALE}" --inject-scheduler-slo) \
-  2>&1 | tee "${BENCH_LOG}"
+
+if [[ "${INJECT_SCHEDULER_SLO}" == "1" ]]; then
+  BENCH_CMD+=(--slo --slo-scale "${SLO_SCALE}" --inject-scheduler-slo)
+fi
+
+echo "Benchmark command:"
+printf '  %q' "${BENCH_CMD[@]}"
+printf '\n'
+python -u "${BENCH_CMD[@]:2}" 2>&1 | tee "${BENCH_LOG}"
 
 echo
 echo "Benchmark finished"

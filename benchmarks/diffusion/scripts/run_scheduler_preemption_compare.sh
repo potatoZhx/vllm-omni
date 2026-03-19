@@ -13,6 +13,14 @@ NUM_PROMPTS="${NUM_PROMPTS:-100}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-32}"
 REQUEST_RATE="${REQUEST_RATE:-inf}"
 WARMUP_REQUESTS="${WARMUP_REQUESTS:-5}"
+DATASET="${DATASET:-random}"
+ENABLE_NEGATIVE_PROMPT="${ENABLE_NEGATIVE_PROMPT:-1}"
+RANDOM_REQUEST_CONFIG="${RANDOM_REQUEST_CONFIG:-[
+  {\"width\":512,\"height\":512,\"num_inference_steps\":20,\"weight\":0.15},
+  {\"width\":768,\"height\":768,\"num_inference_steps\":20,\"weight\":0.25},
+  {\"width\":1024,\"height\":1024,\"num_inference_steps\":25,\"weight\":0.45},
+  {\"width\":1536,\"height\":1536,\"num_inference_steps\":35,\"weight\":0.15}
+]}"
 DATASET_PATH="${DATASET_PATH:-${ROOT_DIR}/benchmarks/dataset/sd3_trace_redistributed.txt}"
 SLO_SCALE="${SLO_SCALE:-3}"
 CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS:-4}"
@@ -65,6 +73,9 @@ run_case() {
     MAX_CONCURRENCY="${MAX_CONCURRENCY}" \
     REQUEST_RATE="${REQUEST_RATE}" \
     WARMUP_REQUESTS="${WARMUP_REQUESTS}" \
+    DATASET="${DATASET}" \
+    ENABLE_NEGATIVE_PROMPT="${ENABLE_NEGATIVE_PROMPT}" \
+    RANDOM_REQUEST_CONFIG="${RANDOM_REQUEST_CONFIG}" \
     DATASET_PATH="${DATASET_PATH}" \
     INJECT_SCHEDULER_SLO="${inject_slo}" \
     SLO_SCALE="${SLO_SCALE}" \
