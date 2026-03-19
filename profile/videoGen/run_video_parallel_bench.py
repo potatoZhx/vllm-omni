@@ -103,6 +103,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-cpu-offload", action="store_true")
     parser.add_argument("--enable-layerwise-offload", action="store_true")
     parser.add_argument(
+        "--num-weight-load-threads",
+        type=int,
+        default=8,
+        help="Number of threads used for model weight loading.",
+    )
+    parser.add_argument(
         "--request-timeout-seconds",
         type=int,
         default=0,
@@ -320,6 +326,8 @@ def build_worker_cmd(
         cmd.append("--enable-cpu-offload")
     if args.enable_layerwise_offload:
         cmd.append("--enable-layerwise-offload")
+    if args.num_weight_load_threads > 0:
+        cmd.extend(["--num-weight-load-threads", str(args.num_weight_load_threads)])
     if args.request_timeout_seconds > 0:
         cmd.extend(["--request-timeout-seconds", str(args.request_timeout_seconds)])
     if args.warmup_timeout_seconds > 0:
@@ -422,6 +430,7 @@ def main() -> None:
         "timeout_grace_seconds": args.timeout_grace_seconds,
         "resume": args.resume,
         "request_fail_fast": args.request_fail_fast,
+        "num_weight_load_threads": args.num_weight_load_threads,
         "worker_timeout_seconds": args.worker_timeout_seconds,
         "total_runs": total_runs,
         "request_types_config": str(request_types_path),

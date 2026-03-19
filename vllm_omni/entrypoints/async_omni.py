@@ -163,7 +163,7 @@ class AsyncOmni(OmniBase):
                 tensor_parallel_size=tensor_parallel_size,
                 sequence_parallel_size=sequence_parallel_size,
                 ulysses_degree=ulysses_degree,
-                vae_patch_parallel_size=vae_patch_parallel_size,
+                # vae_patch_parallel_size=vae_patch_parallel_size,
                 ring_degree=ring_degree,
                 cfg_parallel_size=cfg_parallel_size,
                 use_hsdp=use_hsdp,

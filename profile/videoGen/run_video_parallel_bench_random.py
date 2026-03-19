@@ -11,11 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# python profile/qwenGen/run_qwen_parallel_bench.py --request-types-config /home/mumura/omni/vllm-omni/profile/qwenGen/request_types_18.json --card-counts 1,2,4,8 --gpu-device-ids 0,1,2,3,4,5,6,7 --warmup-iters 1 --repeats 1 --request-timeout-seconds 200 --warmup-timeout-seconds 300 --timeout-grace-seconds 20
-# python profile/qwenGen/run_qwen_parallel_bench.py --card-counts 1,2,4,8 --gpu-device-ids 0,1,2,3,4,5,6,7 --warmup-iters 1 --repeats 3 --request-timeout-seconds 450 --warmup-timeout-seconds 600 --timeout-grace-seconds 20
+# python profile/videoGen/run_video_parallel_bench.py --request-types-config /home/mumura/omni/vllm-omni/profile/videoGen/test_req.json   --card-counts 1,2,4,8 --gpu-device-ids 0,1,2,3,4,5,6,7 --warmup-iters 1 --repeats 1 --request-timeout-seconds 200 --warmup-timeout-seconds 300 --timeout-grace-seconds 20 
+# python profile/videoGen/run_video_parallel_bench_random.py  --card-counts 4,8 --gpu-device-ids 0,1,2,3,4,5,6,7 --warmup-iters 1 --repeats 2 --request-timeout-seconds 450 --warmup-timeout-seconds 600 --timeout-grace-seconds 20 
 
 
-DEFAULT_MODEL = "/data2/group_谈海生/mumura/models/Qwen-Image"
+DEFAULT_MODEL = "/data2/group_谈海生/mumura/models/Wan2.2-T2V-A14B-Diffusers"
 
 
 @dataclass
@@ -24,13 +24,12 @@ class RequestType:
     width: int
     num_frames: int
     num_inference_steps: int
+    fps: int | None = None
 
     @property
     def request_type_id(self) -> str:
-        return (
-            f"h{self.height}_w{self.width}_f{self.num_frames}_"
-            f"s{self.num_inference_steps}"
-        )
+        fps_suffix = f"_fps{self.fps}" if self.fps is not None else ""
+        return f"h{self.height}_w{self.width}_f{self.num_frames}_s{self.num_inference_steps}{fps_suffix}"
 
 
 @dataclass
@@ -58,26 +57,26 @@ class ParallelConfig:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run offline Qwen-Image generation latency profiling across 1/2/4/8 GPU "
-            "parallel configurations and configured request types."
+            "Run offline video generation latency profiling across 1/2/4/8 GPU "
+            "parallel configurations and request types from random dataset profiles."
         )
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--request-types-config",
-        default="profile/qwenGen/request_types_18.json",
+        default="profile/videoGen/random_dataset_c_request_profiles.json",
     )
     parser.add_argument(
         "--parallel-matrix-config",
-        default="profile/qwenGen/parallel_matrix.json",
+        default="profile/videoGen/parallel_matrix.json",
     )
     parser.add_argument(
         "--worker-script",
-        default="profile/qwenGen/offline_profile_worker.py",
+        default="profile/videoGen/offline_profile_worker.py",
     )
     parser.add_argument(
         "--output-root",
-        default="profile/qwenGen/results",
+        default="profile/videoGen/results",
     )
     parser.add_argument(
         "--gpu-device-ids",
@@ -102,6 +101,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--enable-cpu-offload", action="store_true")
     parser.add_argument("--enable-layerwise-offload", action="store_true")
+    parser.add_argument(
+        "--num-weight-load-threads",
+        type=int,
+        default=8,
+        help="Number of threads used for model weight loading.",
+    )
     parser.add_argument(
         "--request-timeout-seconds",
         type=int,
@@ -159,11 +164,30 @@ def parse_args() -> argparse.Namespace:
 
 def load_request_types(path: Path) -> list[RequestType]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    request_types: list[RequestType] = []
+
+    # RandomDataset-style request profiles: keep exact tuples without Cartesian product.
+    if isinstance(payload, dict) and isinstance(payload.get("request_profiles"), list):
+        for profile in payload["request_profiles"]:
+            if not isinstance(profile, dict):
+                continue
+            request_types.append(
+                RequestType(
+                    height=int(profile["height"]),
+                    width=int(profile["width"]),
+                    num_frames=int(profile["num_frames"]),
+                    num_inference_steps=int(profile["num_inference_steps"]),
+                    fps=int(profile["fps"]) if profile.get("fps") is not None else None,
+                )
+            )
+        if not request_types:
+            raise ValueError(f"No valid request_profiles found in {path}")
+        return request_types
+
+    # Legacy request types format: expand Cartesian product.
     height_width = payload["height_width"]
     num_frames = payload["num_frames"]
     num_steps = payload["num_inference_steps"]
-
-    request_types: list[RequestType] = []
     for height, width in height_width:
         for frames in num_frames:
             for steps in num_steps:
@@ -320,6 +344,8 @@ def build_worker_cmd(
         cmd.append("--enable-cpu-offload")
     if args.enable_layerwise_offload:
         cmd.append("--enable-layerwise-offload")
+    if args.num_weight_load_threads > 0:
+        cmd.extend(["--num-weight-load-threads", str(args.num_weight_load_threads)])
     if args.request_timeout_seconds > 0:
         cmd.extend(["--request-timeout-seconds", str(args.request_timeout_seconds)])
     if args.warmup_timeout_seconds > 0:
@@ -357,6 +383,7 @@ def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
         "width",
         "num_frames",
         "num_inference_steps",
+        "fps",
         "repeat_id",
         "seed",
         "latency_seconds",
@@ -422,6 +449,7 @@ def main() -> None:
         "timeout_grace_seconds": args.timeout_grace_seconds,
         "resume": args.resume,
         "request_fail_fast": args.request_fail_fast,
+        "num_weight_load_threads": args.num_weight_load_threads,
         "worker_timeout_seconds": args.worker_timeout_seconds,
         "total_runs": total_runs,
         "request_types_config": str(request_types_path),
@@ -529,6 +557,7 @@ def main() -> None:
                             "width": item.get("width", ""),
                             "num_frames": item.get("num_frames", ""),
                             "num_inference_steps": item.get("num_inference_steps", ""),
+                            "fps": item.get("fps", ""),
                             "repeat_id": item.get("repeat_id", ""),
                             "seed": item.get("seed", ""),
                             "latency_seconds": item.get("latency_seconds", ""),
@@ -570,6 +599,7 @@ def main() -> None:
                     "width": "",
                     "num_frames": "",
                     "num_inference_steps": "",
+                    "fps": "",
                     "repeat_id": "",
                     "seed": "",
                     "latency_seconds": "",

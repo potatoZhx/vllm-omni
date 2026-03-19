@@ -1,0 +1,26 @@
+{
+  "name": "random_dataset_c",
+  "request_profiles": [
+    {
+      "width": 854,
+      "height": 480,
+      "num_inference_steps": 3,
+      "num_frames": 80,
+      "fps": 16
+    },
+    {
+      "width": 854,
+      "height": 480,
+      "num_inference_steps": 4,
+      "num_frames": 120,
+      "fps": 24
+    },
+    {
+      "width": 1280,
+      "height": 720,
+      "num_inference_steps": 6,
+      "num_frames": 80,
+      "fps": 16
+    }
+  ]
+}

@@ -29,7 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ulysses-degree", type=int, required=True)
     parser.add_argument("--ring-degree", type=int, required=True)
     parser.add_argument("--cfg-parallel-size", type=int, required=True)
-    parser.add_argument("--vae-patch-parallel-size", type=int, required=True)
+    # Keep optional for backward compatibility. Qwen profiling now uses slicing/tiling flags.
+    parser.add_argument("--vae-patch-parallel-size", type=int, default=1)
     parser.add_argument("--use-hsdp", action="store_true")
     parser.add_argument("--hsdp-shard-size", type=int, default=-1)
     parser.add_argument("--hsdp-replicate-size", type=int, default=1)
@@ -47,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--enable-cpu-offload", action="store_true")
     parser.add_argument("--enable-layerwise-offload", action="store_true")
+    parser.add_argument(
+        "--num-weight-load-threads",
+        type=int,
+        default=8,
+        help="Number of threads used for model weight loading.",
+    )
     parser.add_argument(
         "--request-timeout-seconds",
         type=int,
@@ -85,6 +92,41 @@ def parse_args() -> argparse.Namespace:
 
 def load_request_types(path: Path) -> list[dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+
+    # RandomDataset-like config:
+    # {
+    #   "request_profiles": [
+    #       {"width": ..., "height": ..., "num_inference_steps": ..., "num_frames": ...},
+    #       ...
+    #   ]
+    # }
+    if isinstance(payload, dict) and "request_profiles" in payload:
+        reqs = []
+        for idx, profile in enumerate(payload["request_profiles"]):
+            if not isinstance(profile, dict):
+                raise ValueError(f"Invalid request profile at index {idx}: expected object")
+
+            try:
+                width = int(profile["width"])
+                height = int(profile["height"])
+                num_steps = int(profile["num_inference_steps"])
+            except KeyError as exc:
+                raise ValueError(
+                    f"Invalid request profile at index {idx}: missing key {exc!s}"
+                ) from exc
+
+            num_frames = int(profile.get("num_frames", 1))
+            reqs.append(
+                {
+                    "height": height,
+                    "width": width,
+                    "num_frames": num_frames,
+                    "num_inference_steps": num_steps,
+                    "request_type_id": f"h{height}_w{width}_f{num_frames}_s{num_steps}",
+                }
+            )
+        return reqs
+
     reqs = []
     for (height, width), num_frames, num_steps in itertools.product(
         payload["height_width"],
@@ -397,7 +439,8 @@ def main() -> None:
                             "ulysses_degree": args.ulysses_degree,
                             "ring_degree": args.ring_degree,
                             "cfg_parallel_size": args.cfg_parallel_size,
-                            "vae_patch_parallel_size": args.vae_patch_parallel_size,
+                            "vae_use_slicing": args.vae_use_slicing,
+                            "vae_use_tiling": args.vae_use_tiling,
                             "request_type_id": request_type_id,
                             "height": int(meta.get("height", 0)),
                             "width": int(meta.get("width", 0)),
@@ -468,6 +511,7 @@ def main() -> None:
             enable_cpu_offload=args.enable_cpu_offload,
             enable_layerwise_offload=args.enable_layerwise_offload,
             enforce_eager=args.enforce_eager,
+            num_weight_load_threads=args.num_weight_load_threads,
         )
         model_load_elapsed_s = time.perf_counter() - model_load_start
         model_load_stats = {
@@ -594,7 +638,8 @@ def main() -> None:
                     "ulysses_degree": args.ulysses_degree,
                     "ring_degree": args.ring_degree,
                     "cfg_parallel_size": args.cfg_parallel_size,
-                    "vae_patch_parallel_size": args.vae_patch_parallel_size,
+                    "vae_use_slicing": args.vae_use_slicing,
+                    "vae_use_tiling": args.vae_use_tiling,
                     "request_type_id": req["request_type_id"],
                     "height": req["height"],
                     "width": req["width"],
@@ -618,7 +663,8 @@ def main() -> None:
                     "ulysses_degree": args.ulysses_degree,
                     "ring_degree": args.ring_degree,
                     "cfg_parallel_size": args.cfg_parallel_size,
-                    "vae_patch_parallel_size": args.vae_patch_parallel_size,
+                    "vae_use_slicing": args.vae_use_slicing,
+                    "vae_use_tiling": args.vae_use_tiling,
                     "request_type_id": req["request_type_id"],
                     "height": req["height"],
                     "width": req["width"],

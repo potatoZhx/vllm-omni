@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-cpu-offload", action="store_true")
     parser.add_argument("--enable-layerwise-offload", action="store_true")
     parser.add_argument(
+        "--num-weight-load-threads",
+        type=int,
+        default=8,
+        help="Number of threads used for model weight loading.",
+    )
+    parser.add_argument(
         "--request-timeout-seconds",
         type=int,
         default=0,
@@ -85,6 +91,28 @@ def parse_args() -> argparse.Namespace:
 
 def load_request_types(path: Path) -> list[dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and isinstance(payload.get("request_profiles"), list):
+        reqs = []
+        for profile in payload["request_profiles"]:
+            if not isinstance(profile, dict):
+                continue
+            fps = profile.get("fps", None)
+            fps_suffix = f"_fps{int(fps)}" if fps is not None else ""
+            reqs.append(
+                {
+                    "height": int(profile["height"]),
+                    "width": int(profile["width"]),
+                    "num_frames": int(profile["num_frames"]),
+                    "num_inference_steps": int(profile["num_inference_steps"]),
+                    "fps": int(fps) if fps is not None else None,
+                    "request_type_id": (
+                        f"h{int(profile['height'])}_w{int(profile['width'])}_"
+                        f"f{int(profile['num_frames'])}_s{int(profile['num_inference_steps'])}{fps_suffix}"
+                    ),
+                }
+            )
+        return reqs
+
     reqs = []
     for (height, width), num_frames, num_steps in itertools.product(
         payload["height_width"],
@@ -97,6 +125,7 @@ def load_request_types(path: Path) -> list[dict]:
                 "width": int(width),
                 "num_frames": int(num_frames),
                 "num_inference_steps": int(num_steps),
+                "fps": None,
                 "request_type_id": f"h{int(height)}_w{int(width)}_f{int(num_frames)}_s{int(num_steps)}",
             }
         )
@@ -125,6 +154,7 @@ def run_one(
             guidance_scale=guidance_scale,
             num_inference_steps=req["num_inference_steps"],
             num_frames=req["num_frames"],
+            fps=req.get("fps"),
         ),
     )
     end = time.perf_counter()
@@ -403,6 +433,7 @@ def main() -> None:
                             "width": int(meta.get("width", 0)),
                             "num_frames": int(meta.get("num_frames", 0)),
                             "num_inference_steps": int(meta.get("num_inference_steps", 0)),
+                            "fps": int(meta["fps"]) if meta.get("fps") is not None else "",
                             "repeat_id": repeat_id,
                             "seed": int(meta.get("seed", 0)),
                             "latency_seconds": float(elapsed),
@@ -468,6 +499,7 @@ def main() -> None:
             enable_cpu_offload=args.enable_cpu_offload,
             enable_layerwise_offload=args.enable_layerwise_offload,
             enforce_eager=args.enforce_eager,
+            num_weight_load_threads=args.num_weight_load_threads,
         )
         model_load_elapsed_s = time.perf_counter() - model_load_start
         model_load_stats = {
@@ -574,6 +606,7 @@ def main() -> None:
                         "width": req["width"],
                         "num_frames": req["num_frames"],
                         "num_inference_steps": req["num_inference_steps"],
+                        "fps": req.get("fps"),
                     },
                 )
                 try:
@@ -600,6 +633,7 @@ def main() -> None:
                     "width": req["width"],
                     "num_frames": req["num_frames"],
                     "num_inference_steps": req["num_inference_steps"],
+                    "fps": req.get("fps", ""),
                     "repeat_id": repeat_id,
                     "seed": seed,
                     "latency_seconds": latency_s,
@@ -624,6 +658,7 @@ def main() -> None:
                     "width": req["width"],
                     "num_frames": req["num_frames"],
                     "num_inference_steps": req["num_inference_steps"],
+                    "fps": req.get("fps", ""),
                     "repeat_id": repeat_id,
                     "seed": seed,
                     "latency_seconds": "",

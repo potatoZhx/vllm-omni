@@ -26,14 +26,25 @@ BASE_URL="http://localhost:${PORT}"
 DEVICE_TYPE="${DEVICE_TYPE:-gpu}"
 MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 MASTER_PORT="${MASTER_PORT:-29600}"
-NUM_DEVICES="${NUM_DEVICES:-8}"
+NUM_DEVICES="${NUM_DEVICES:-4}"
 
 # Benchmark 参数。
 TASK="${TASK:-t2v}"
 DATASET="${DATASET:-random}"
 DATASET_TYPE="${DATASET_TYPE:-C}"
-NUM_PROMPTS_DURATION_SECONDS="${NUM_PROMPTS_DURATION_SECONDS:-100}"
-RPS_LIST="${RPS_LIST:-[0.1]}"
+
+# BENCHMARK_MODE 支持：fixed_duration / fixed_num_prompts
+# fixed_duration: 所有 RPS 的发送总时长一致（现有模式），num-prompts = rps * duration_seconds
+# fixed_num_prompts: 所有 RPS 的请求数量一致，num-prompts = FIXED_NUM_PROMPTS
+BENCHMARK_MODE="${BENCHMARK_MODE:-fixed_num_prompts}"
+
+# fixed_duration 模式参数：每个 RPS 发送时长（秒）
+NUM_PROMPTS_DURATION_SECONDS="${NUM_PROMPTS_DURATION_SECONDS:-300}"
+
+# fixed_num_prompts 模式参数：每个 RPS 固定请求数
+FIXED_NUM_PROMPTS="${FIXED_NUM_PROMPTS:-100}"
+
+RPS_LIST="${RPS_LIST:-[0.05, 0.1, 0.5]}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-200}"
 BACKEND="${BACKEND:-v1/videos}"
 # =======================================================================
@@ -52,7 +63,9 @@ SUMMARY_CSV="${RUN_DIR}/summary.csv"
 echo "===== Run dir: ${RUN_DIR} =====" | tee -a "$MASTER_LOG"
 echo "===== Model: ${MODEL} =====" | tee -a "$MASTER_LOG"
 echo "===== RPS list: ${RPS_LIST} =====" | tee -a "$MASTER_LOG"
+echo "===== Benchmark mode: ${BENCHMARK_MODE} =====" | tee -a "$MASTER_LOG"
 echo "===== Duration(seconds): ${NUM_PROMPTS_DURATION_SECONDS} =====" | tee -a "$MASTER_LOG"
+echo "===== Fixed num-prompts: ${FIXED_NUM_PROMPTS} =====" | tee -a "$MASTER_LOG"
 echo "===== Dataset: ${DATASET} =====" | tee -a "$MASTER_LOG"
 echo "===== DatasetType: ${DATASET_TYPE} =====" | tee -a "$MASTER_LOG"
 echo "===== Device type: ${DEVICE_TYPE} =====" | tee -a "$MASTER_LOG"
@@ -78,6 +91,10 @@ if [ "$TASK" != "t2v" ]; then
 fi
 if [ "$DATASET" != "random" ]; then
   echo "Unsupported DATASET=${DATASET}. wan_2_2_serving_performance defaults to random." | tee -a "$MASTER_LOG"
+  exit 1
+fi
+if [ "$BENCHMARK_MODE" != "fixed_duration" ] && [ "$BENCHMARK_MODE" != "fixed_num_prompts" ]; then
+  echo "Unsupported BENCHMARK_MODE=${BENCHMARK_MODE}, expected fixed_duration or fixed_num_prompts" | tee -a "$MASTER_LOG"
   exit 1
 fi
 
@@ -131,8 +148,9 @@ vllm serve "$MODEL" \
   --omni \
   --port "$PORT" \
   --num-gpus "$NUM_DEVICES" \
+  --num-weight-load-threads 8 \
   --tensor-parallel-size 1 \
-  --usp 4 \
+  --usp 2 \
   --ring 1 \
   --cfg-parallel-size 2 \
   --use-hsdp \
@@ -175,7 +193,7 @@ fi
 ) >> "$DEVICE_LOG" 2>&1 &
 DEVICE_MONITOR_PID=$!
 
-printf '%s\n' "timestamp,rps,duration_seconds,num_prompts,metrics_json,log_file" > "$SUMMARY_CSV"
+printf '%s\n' "timestamp,mode,rps,duration_seconds,num_prompts,metrics_json,log_file" > "$SUMMARY_CSV"
 
 to_num_prompts() {
   local _rps="$1"
@@ -202,14 +220,35 @@ if [ -z "$RPS_ITEMS" ]; then
   exit 1
 fi
 
+if [ "$BENCHMARK_MODE" = "fixed_num_prompts" ]; then
+  if ! [[ "$FIXED_NUM_PROMPTS" =~ ^[0-9]+$ ]] || [ "$FIXED_NUM_PROMPTS" -lt 1 ]; then
+    echo "FIXED_NUM_PROMPTS must be a positive integer, got: ${FIXED_NUM_PROMPTS}" | tee -a "$MASTER_LOG"
+    exit 1
+  fi
+fi
+
 echo "===== Running benchmark by RPS =====" | tee -a "$MASTER_LOG"
 for rps in $RPS_ITEMS; do
-  num_prompts=$(to_num_prompts "$rps" "$NUM_PROMPTS_DURATION_SECONDS")
+  if [ "$BENCHMARK_MODE" = "fixed_duration" ]; then
+    num_prompts=$(to_num_prompts "$rps" "$NUM_PROMPTS_DURATION_SECONDS")
+    run_duration_seconds="$NUM_PROMPTS_DURATION_SECONDS"
+  else
+    num_prompts="$FIXED_NUM_PROMPTS"
+    # 该模式下总时长由 rps 与固定请求数共同决定，供记录与回看。
+    run_duration_seconds=$(python3 - <<PY
+from decimal import Decimal
+rps = Decimal(${rps@Q})
+num_prompts = Decimal(${num_prompts@Q})
+print(f"{(num_prompts / rps):f}")
+PY
+)
+  fi
+
   rps_label=${rps//./_}
   METRICS_FILE="${RUN_DIR}/metrics_rps_${rps_label}.json"
   RUN_LOG="${RUN_DIR}/bench_rps_${rps_label}.log"
 
-  echo "[RPS=${rps}] num-prompts=${num_prompts}, duration=${NUM_PROMPTS_DURATION_SECONDS}s" | tee -a "$MASTER_LOG"
+  echo "[mode=${BENCHMARK_MODE}] [RPS=${rps}] num-prompts=${num_prompts}, duration=${run_duration_seconds}s" | tee -a "$MASTER_LOG"
 
   python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
     --base-url "$BASE_URL" \
@@ -226,7 +265,7 @@ for rps in $RPS_ITEMS; do
     2>&1 | tee "$RUN_LOG"
 
   printf '%s,%s,%s,%s,%s,%s\n' \
-    "$(date -Iseconds)" "$rps" "$NUM_PROMPTS_DURATION_SECONDS" "$num_prompts" "$METRICS_FILE" "$RUN_LOG" \
+    "$(date -Iseconds)" "$BENCHMARK_MODE" "$rps" "$run_duration_seconds" "$num_prompts" "$METRICS_FILE" "$RUN_LOG" \
     >> "$SUMMARY_CSV"
 done
 

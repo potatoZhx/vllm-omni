@@ -6,7 +6,7 @@ from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta, RouteDec
 
 
 class ShortQueueRuntimePolicy(PolicyBase):
-    """Route to instance with minimum estimated queue runtime."""
+    """Route to instance with minimum estimated outstanding runtime."""
 
     def __init__(
         self,
@@ -22,12 +22,12 @@ class ShortQueueRuntimePolicy(PolicyBase):
         super().__init__(tie_breaker=tie_breaker)
         self._estimator = estimator
 
-    def _estimate_queue_runtime_s(
+    def _estimate_outstanding_runtime_s(
         self,
         instance: InstanceSpec,
         stats: RuntimeStats,
     ) -> float:
-        return sum(
+        waiting_runtime_s = sum(
             self._estimator.estimate_runtime_s(
                 request=waiting_request,
                 ewma_fallback_s=stats.ewma_service_time_s,
@@ -35,6 +35,10 @@ class ShortQueueRuntimePolicy(PolicyBase):
             )
             for waiting_request in stats.waiting_requests
         )
+        # Inflight requests do not keep per-request metadata today, so use the
+        # instance EWMA latency as a coarse estimate for currently running work.
+        inflight_runtime_s = float(stats.inflight) * stats.ewma_service_time_s
+        return inflight_runtime_s + waiting_runtime_s
 
     def select_instance(
         self,
@@ -42,7 +46,7 @@ class ShortQueueRuntimePolicy(PolicyBase):
         instances: list[InstanceSpec],
         runtime_stats: dict[str, RuntimeStats],
     ) -> RouteDecision:
-        """Select instance with lowest estimated queue runtime.
+        """Select instance with lowest estimated outstanding runtime.
 
         Args:
             request: Parsed request metadata.
@@ -50,7 +54,7 @@ class ShortQueueRuntimePolicy(PolicyBase):
             runtime_stats: Runtime snapshot for candidates.
 
         Returns:
-            Route decision with minimum queue-runtime score.
+            Route decision with minimum outstanding-runtime score.
         """
         if not instances:
             raise ValueError("No instances configured")
@@ -60,7 +64,7 @@ class ShortQueueRuntimePolicy(PolicyBase):
             candidates = list(instances)
 
         scored = [
-            (instance, self._estimate_queue_runtime_s(instance, runtime_stats[instance.id]))
+            (instance, self._estimate_outstanding_runtime_s(instance, runtime_stats[instance.id]))
             for instance in candidates
         ]
         min_score = min(score for _, score in scored)
