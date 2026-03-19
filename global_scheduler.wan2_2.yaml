@@ -1,0 +1,127 @@
+# Wan2.2 base template for joint scheduling experiments.
+#
+# Default goal:
+#   global scheduler   = min_queue_length
+#   instance scheduler = sjf
+#   chunk preemption   = enabled
+#
+# Before running, you usually need to adjust:
+#   1) benchmark.model / instances[].launch.model
+#   2) benchmark.dataset_path
+#   3) instances[].endpoint
+#   4) instances[].launch.env.CUDA_VISIBLE_DEVICES
+#   5) instances[].stop.args
+#
+# This template assumes 2 Wan workers, each using 4 GPUs.
+# If your machine topology is different, update worker count, ports, and GPU mapping.
+
+server:
+  host: 0.0.0.0
+  port: 8089
+  request_timeout_s: 1800
+  instance_health_check_interval_s: 5.0
+  instance_health_check_timeout_s: 1.0
+
+scheduler:
+  tie_breaker: random
+  ewma_alpha: 0.2
+
+policy:
+  baseline:
+    algorithm: min_queue_length
+
+benchmark:
+  # Keep at least two workers if you want global routing to be meaningful.
+  worker_ids: [worker0, worker1]
+  worker_ready_timeout_s: 1800
+  model: /path/to/Wan2.2-T2V-A14B-Diffusers
+  backend: v1/videos
+  task: t2v
+  dataset: trace
+  dataset_path: ./benchmarks/dataset/cogvideox_trace_steps_30_40_50.txt
+  max_concurrency: 20
+  warmup_requests: 1
+  warmup_num_inference_steps: 1
+  output_file: ./logs/global_scheduler_wan2_2_benchmark_metrics.json
+  auto_stop: true
+
+instances:
+  - id: worker0
+    endpoint: http://127.0.0.1:8001
+    instance_type: wan2.2-sp4-cfg2-hsdp
+    backends: [v1/videos]
+    launch:
+      executable: vllm
+      model: /path/to/Wan2.2-T2V-A14B-Diffusers
+      args:
+        - --omni
+        - --max-concurrency
+        - "2"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "4"
+        - --num-weight-load-threads
+        - "8"
+        - --tensor-parallel-size
+        - "1"
+        - --usp
+        - "2"
+        - --ring
+        - "1"
+        - --cfg-parallel-size
+        - "2"
+        - --use-hsdp
+        - --hsdp-replicate-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+      env:
+        CUDA_VISIBLE_DEVICES: "0,1,2,3"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /path/to/Wan2.2-T2V-A14B-Diffusers --port {endpoint_port}"
+
+  - id: worker1
+    endpoint: http://127.0.0.1:8002
+    instance_type: wan2.2-sp4-cfg2-hsdp
+    backends: [v1/videos]
+    launch:
+      executable: vllm
+      model: /path/to/Wan2.2-T2V-A14B-Diffusers
+      args:
+        - --omni
+        - --max-concurrency
+        - "2"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "4"
+        - --num-weight-load-threads
+        - "8"
+        - --tensor-parallel-size
+        - "1"
+        - --usp
+        - "2"
+        - --ring
+        - "1"
+        - --cfg-parallel-size
+        - "2"
+        - --use-hsdp
+        - --hsdp-replicate-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+      env:
+        CUDA_VISIBLE_DEVICES: "4,5,6,7"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve /path/to/Wan2.2-T2V-A14B-Diffusers --port {endpoint_port}"
