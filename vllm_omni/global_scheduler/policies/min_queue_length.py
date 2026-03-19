@@ -5,7 +5,7 @@ from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta, RouteDec
 
 
 class MinQueueLengthPolicy(PolicyBase):
-    """Route to the instance with the smallest request queue length."""
+    """Route to the instance with the smallest outstanding request count."""
 
     def select_instance(
         self,
@@ -13,11 +13,12 @@ class MinQueueLengthPolicy(PolicyBase):
         instances: list[InstanceSpec],
         runtime_stats: dict[str, RuntimeStats],
     ) -> RouteDecision:
-        """Select the instance with the fewest queued requests.
+        """Select the instance with the fewest outstanding requests.
 
-        Queue length here is the number of requests in ``RuntimeStats.queue_len``.
-        The policy prefers available instances first; if all are busy it falls
-        back to the full instance set.
+        Outstanding requests are counted as ``RuntimeStats.inflight +
+        RuntimeStats.queue_len`` so the policy reflects both running and waiting
+        work. The policy prefers available instances first; if all are busy it
+        falls back to the full instance set.
         """
         del request
         if not instances:
@@ -27,7 +28,13 @@ class MinQueueLengthPolicy(PolicyBase):
         if not candidates:
             candidates = list(instances)
 
-        scored = [(instance, float(runtime_stats[instance.id].queue_len)) for instance in candidates]
+        scored = [
+            (
+                instance,
+                float(runtime_stats[instance.id].inflight + runtime_stats[instance.id].queue_len),
+            )
+            for instance in candidates
+        ]
         min_score = min(score for _, score in scored)
         tie_group = [instance for instance, score in scored if score == min_score]
         selected = tie_group[0] if len(tie_group) == 1 else self._break_tie(tie_group)
