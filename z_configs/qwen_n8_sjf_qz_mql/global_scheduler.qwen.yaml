@@ -1,0 +1,366 @@
+# Current default template:
+#   global scheduler  = min_queue_length
+#   instance scheduler = sjf
+#   chunk preemption  = enabled
+#
+# Before running, you usually only need to adjust:
+#   1) benchmark.model / instances[].launch.model
+#   2) benchmark.random_request_config or benchmark.dataset_path
+#   3) benchmark.worker_ids
+#   4) instances[].endpoint
+#   5) instances[].launch.env.CUDA_VISIBLE_DEVICES
+#   6) instances[].stop.args
+#
+# This file is intentionally Qwen-image-first for the current joint experiment.
+# It assumes 8 single-GPU Qwen workers.
+# Later, when switching to Wan2.2, keep the same structure and replace:
+#   - benchmark.backend -> v1/videos
+#   - benchmark.task -> t2v / i2v
+#   - benchmark.random_request_config or benchmark.dataset_path
+#   - instances[].backends
+#   - instances[].launch.model
+#   - instances[].launch.args
+#   - instances[].launch.env.CUDA_VISIBLE_DEVICES
+
+server:
+  host: 0.0.0.0
+  port: 8089
+  request_timeout_s: 1200
+  instance_health_check_interval_s: 5.0
+  instance_health_check_timeout_s: 1.0
+
+scheduler:
+  tie_breaker: random
+  ewma_alpha: 0.2
+
+policy:
+  baseline:
+    algorithm: min_queue_length
+
+benchmark:
+  # Keep at least two workers here, otherwise global routing is not meaningful.
+  worker_ids: [worker0, worker1, worker2, worker3, worker4, worker5, worker6, worker7]
+  worker_ready_timeout_s: 1200
+  model: Qwen/Qwen-Image
+  backend: vllm-omni
+  task: t2i
+  dataset: random
+  random_request_config: >-
+    [
+      {"width":512,"height":512,"num_inference_steps":20,"weight":0.15},
+      {"width":768,"height":768,"num_inference_steps":20,"weight":0.25},
+      {"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},
+      {"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}
+    ]
+  # If you want trace mode instead, switch dataset -> trace and point this to an image trace file:
+  # dataset_path: ./benchmarks/dataset/sd3_trace_redistributed.txt
+  max_concurrency: 20000
+  warmup_requests: 1
+  warmup_num_inference_steps: 1
+  output_file: ./logs/global_scheduler_qwen_image_benchmark_metrics.json
+  auto_stop: true
+
+instances:
+  - id: worker0
+    endpoint: http://127.0.0.1:8001
+    instance_type: qwen-image
+    numa_node: 0
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "0"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker1
+    endpoint: http://127.0.0.1:8002
+    instance_type: qwen-image
+    numa_node: 0
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "1"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker2
+    endpoint: http://127.0.0.1:8003
+    instance_type: qwen-image
+    numa_node: 0
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "2"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker3
+    endpoint: http://127.0.0.1:8004
+    instance_type: qwen-image
+    numa_node: 0
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "3"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker4
+    endpoint: http://127.0.0.1:8005
+    instance_type: qwen-image
+    numa_node: 1
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "4"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker5
+    endpoint: http://127.0.0.1:8006
+    instance_type: qwen-image
+    numa_node: 1
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "5"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker6
+    endpoint: http://127.0.0.1:8007
+    instance_type: qwen-image
+    numa_node: 1
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "6"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker7
+    endpoint: http://127.0.0.1:8008
+    instance_type: qwen-image
+    numa_node: 1
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "16"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "12"
+        - --diffusion-image-chunk-budget-steps
+        - "12"
+        - --diffusion-small-request-latency-threshold-ms
+        - "20000"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "7"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
