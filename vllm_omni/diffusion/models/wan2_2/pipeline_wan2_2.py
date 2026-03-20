@@ -325,6 +325,44 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
     def current_timestep(self):
         return self._current_timestep
 
+    def _clone_scheduler_value(self, value: Any) -> Any:
+        if isinstance(value, torch.Tensor):
+            return value.detach().clone()
+        if isinstance(value, list):
+            return [self._clone_scheduler_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._clone_scheduler_value(item) for item in value)
+        return value
+
+    def _capture_scheduler_state(self) -> dict[str, Any]:
+        return {
+            "timesteps": self._clone_scheduler_value(self.scheduler.timesteps),
+            "sigmas": self._clone_scheduler_value(self.scheduler.sigmas),
+            "num_inference_steps": getattr(self.scheduler, "num_inference_steps", None),
+            "model_outputs": self._clone_scheduler_value(getattr(self.scheduler, "model_outputs", None)),
+            "timestep_list": self._clone_scheduler_value(getattr(self.scheduler, "timestep_list", None)),
+            "lower_order_nums": getattr(self.scheduler, "lower_order_nums", None),
+            "last_sample": self._clone_scheduler_value(getattr(self.scheduler, "last_sample", None)),
+            "step_index": getattr(self.scheduler, "_step_index", None),
+            "begin_index": getattr(self.scheduler, "_begin_index", None),
+            "this_order": getattr(self.scheduler, "this_order", None),
+        }
+
+    def _restore_scheduler_state(self, scheduler_state: dict[str, Any] | None) -> None:
+        if not scheduler_state:
+            return
+
+        self.scheduler.timesteps = self._clone_scheduler_value(scheduler_state.get("timesteps"))
+        self.scheduler.sigmas = self._clone_scheduler_value(scheduler_state.get("sigmas"))
+        self.scheduler.num_inference_steps = scheduler_state.get("num_inference_steps")
+        self.scheduler.model_outputs = self._clone_scheduler_value(scheduler_state.get("model_outputs"))
+        self.scheduler.timestep_list = self._clone_scheduler_value(scheduler_state.get("timestep_list"))
+        self.scheduler.lower_order_nums = scheduler_state.get("lower_order_nums", 0)
+        self.scheduler.last_sample = self._clone_scheduler_value(scheduler_state.get("last_sample"))
+        self.scheduler._step_index = scheduler_state.get("step_index")
+        self.scheduler._begin_index = scheduler_state.get("begin_index")
+        self.scheduler.this_order = scheduler_state.get("this_order", 1)
+
     def prepare_generation(
         self,
         req: OmniDiffusionRequest,
@@ -524,6 +562,7 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
         ctx = DiffusionRequestContext.from_request(req)
         ctx.current_step = 0
         ctx.num_inference_steps = len(timesteps)
+        ctx.scheduler_state = self._capture_scheduler_state()
         ctx.extra_model_state = {
             "height": height,
             "width": width,
@@ -548,6 +587,7 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
     ) -> tuple[DiffusionRequestContext, bool]:
         state = ctx.extra_model_state
         timesteps = state["timesteps"]
+        self._restore_scheduler_state(ctx.scheduler_state)
         start = ctx.current_step
         end = min(start + steps, len(timesteps))
         if start >= end:
@@ -629,6 +669,7 @@ class Wan22Pipeline(nn.Module, CFGParallelMixin):
             latents = self.scheduler_step_maybe_with_cfg(noise_pred, t, latents, do_true_cfg)
 
         state["latents"] = latents
+        ctx.scheduler_state = self._capture_scheduler_state()
         ctx.current_step = end
         ctx.finished = ctx.current_step >= len(timesteps)
         return ctx, ctx.finished

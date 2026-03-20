@@ -433,6 +433,34 @@ Wan2.2 通常需要替换：
 
 也就是说，后续变化主要是“模型和并行参数”，不是“实验流程”。
 
+### 8.4 Wan T2V step-chunk 恢复状态修复说明
+
+在 `Wan2.2 T2V` 上开启 `step_chunk + preemption` 时，`FlowUniPCMultistepScheduler` 会维护多步历史状态，例如 `model_outputs`、`timestep_list`、`last_sample`、`lower_order_nums`、`_step_index` 和 `this_order`。如果这些状态不随请求一起保存和恢复，不同分辨率请求在同一实例内交错执行后，可能在 resume 时复用到别的请求留下的 scheduler 历史，从而在 `multistep_uni_c_bh_update()` 中触发形状不一致错误，例如 `160 vs 106`。
+
+当前修复已经在 `pipeline_wan2_2.py` 中补齐了 scheduler state capture/restore，Wan T2V 的 chunked request 会在每次 chunk 结束后保存完整 scheduler 状态，并在 resume 前恢复。
+
+建议用混合分辨率请求做回归验证：
+
+```bash
+WORKER_IDS=worker0 \
+BASE_CONFIG=./global_scheduler.wan2_2.yaml \
+REQUEST_DURATION_S=30 \
+REQUEST_RATES=0.2 \
+ENABLE_STEP_CHUNK=1 \
+ENABLE_CHUNK_PREEMPTION=1 \
+BENCHMARK_RANDOM_REQUEST_CONFIG='[
+  {"width":854,"height":480,"num_inference_steps":6,"num_frames":17,"fps":16,"weight":0.5},
+  {"width":1280,"height":720,"num_inference_steps":6,"num_frames":17,"fps":16,"weight":0.5}
+]' \
+benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
+```
+
+期望现象：
+
+- 日志中仍然出现 `REQUEST_PREEMPTED` 和 `REQUEST_RESUMED`
+- 不再出现 `The size of tensor a (...) must match the size of tensor b (...)`
+- 请求成功完成，或只因与本问题无关的原因失败
+
 ## 9. 推荐输出目录命名
 
 为了后续对比不同组合，建议结果目录名直接编码策略组合，例如：
