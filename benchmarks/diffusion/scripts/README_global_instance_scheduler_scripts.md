@@ -54,7 +54,8 @@
 
 ```bash
 BASE_CONFIG=./global_scheduler.qwen.yaml \
-REQUEST_DURATION_S=600 \
+BENCHMARK_MODE=fixed_duration \
+NUM_PROMPTS_DURATION_SECONDS=600 \
 REQUEST_RATES=0.2,0.4,0.6 \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 ```
@@ -79,7 +80,8 @@ benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 ```bash
 CASE_MATRIX=$'qwen_minqlen_sjf_preempt|min_queue_length|sjf|1|1|4\nqwen_rr_sjf_preempt|round_robin|sjf|1|1|4' \
 BASE_CONFIG=./global_scheduler.qwen.yaml \
-REQUEST_DURATION_S=600 \
+BENCHMARK_MODE=fixed_duration \
+NUM_PROMPTS_DURATION_SECONDS=600 \
 REQUEST_RATES=0.2,0.4,0.6 \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_rps_bench.sh
 ```
@@ -97,16 +99,21 @@ case_name|global_policy|instance_policy|enable_step_chunk|enable_chunk_preemptio
 不用改 YAML，优先改环境变量：
 
 - `REQUEST_RATES`
-- `REQUEST_DURATION_S`
+- `BENCHMARK_MODE`
+- `NUM_PROMPTS_DURATION_SECONDS`
+- `FIXED_NUM_PROMPTS`
 
 当前默认值：
 
-- `REQUEST_DURATION_S=600`
+- `BENCHMARK_MODE=fixed_duration`
+- `NUM_PROMPTS_DURATION_SECONDS=600`
+- `FIXED_NUM_PROMPTS=20`
 
 含义是：
 
-- 每个 RPS 档默认跑 `600s`
-- 当前联合实验脚本优先按“时长驱动”跑，不是固定每档请求数
+- `fixed_duration`：每个 RPS 档发送总时长一致，`num-prompts = ceil(rps * duration_seconds)`
+- `fixed_num_prompts`：每个 RPS 档请求总数一致，`num-prompts = FIXED_NUM_PROMPTS`
+- 默认模式仍然是“时长驱动”
 
 #### 只想改“策略组合”
 
@@ -363,7 +370,23 @@ ENABLE_STEP_CHUNK=1 \
 ENABLE_CHUNK_PREEMPTION=1 \
 CHUNK_BUDGET_STEPS=4 \
 SMALL_REQUEST_LATENCY_THRESHOLD_MS=1200 \
-REQUEST_DURATION_S=600 \
+BENCHMARK_MODE=fixed_duration \
+NUM_PROMPTS_DURATION_SECONDS=600 \
+REQUEST_RATES=0.2,0.4,0.6 \
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
+```
+
+如果你希望不同 `rps` 下总请求数一致：
+
+```bash
+GLOBAL_POLICY=min_queue_length \
+INSTANCE_POLICY=sjf \
+ENABLE_STEP_CHUNK=1 \
+ENABLE_CHUNK_PREEMPTION=1 \
+CHUNK_BUDGET_STEPS=4 \
+BENCHMARK_MODE=fixed_num_prompts \
+FIXED_NUM_PROMPTS=100 \
 REQUEST_RATES=0.2,0.4,0.6 \
 BASE_CONFIG=./global_scheduler.qwen.yaml \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
@@ -375,7 +398,19 @@ benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 
 ```bash
 CASE_MATRIX=$'qwen_minqlen_sjf_preempt|min_queue_length|sjf|1|1|4\nqwen_rr_sjf_preempt|round_robin|sjf|1|1|4' \
-REQUEST_DURATION_S=600 \
+BENCHMARK_MODE=fixed_duration \
+NUM_PROMPTS_DURATION_SECONDS=600 \
+REQUEST_RATES=0.2,0.4,0.6 \
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+benchmarks/diffusion/scripts/run_global_instance_scheduler_rps_bench.sh
+```
+
+如果你希望批量对比时每个 `rps` 都发送同样数量的请求：
+
+```bash
+CASE_MATRIX=$'qwen_minqlen_sjf_preempt|min_queue_length|sjf|1|1|4\nqwen_rr_sjf_preempt|round_robin|sjf|1|1|4' \
+BENCHMARK_MODE=fixed_num_prompts \
+FIXED_NUM_PROMPTS=100 \
 REQUEST_RATES=0.2,0.4,0.6 \
 BASE_CONFIG=./global_scheduler.qwen.yaml \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_rps_bench.sh

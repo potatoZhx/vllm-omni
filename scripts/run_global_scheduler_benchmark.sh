@@ -10,6 +10,9 @@ NUM_PROMPTS="${NUM_PROMPTS:-20}"
 REQUEST_RATE="${REQUEST_RATE:-0.1}"
 REQUEST_RATES="${REQUEST_RATES:-0.2,0.4,0.6,0.8,1.0}"
 REQUEST_DURATION_S="${REQUEST_DURATION_S:-600}"
+BENCHMARK_MODE="${BENCHMARK_MODE:-fixed_duration}"
+NUM_PROMPTS_DURATION_SECONDS="${NUM_PROMPTS_DURATION_SECONDS:-${REQUEST_DURATION_S}}"
+FIXED_NUM_PROMPTS="${FIXED_NUM_PROMPTS:-${NUM_PROMPTS}}"
 BACKEND="${BACKEND:-vllm-omni}"
 BENCH_RUNNING=0
 BENCH_PID=""
@@ -248,6 +251,20 @@ parse_request_rates() {
   REQUEST_RATE_LIST=("${normalized[@]}")
 }
 
+validate_benchmark_mode() {
+  if [[ "${BENCHMARK_MODE}" != "fixed_duration" && "${BENCHMARK_MODE}" != "fixed_num_prompts" ]]; then
+    echo "Unsupported BENCHMARK_MODE=${BENCHMARK_MODE}, expected fixed_duration or fixed_num_prompts" >&2
+    return 1
+  fi
+
+  if [[ "${BENCHMARK_MODE}" == "fixed_num_prompts" ]]; then
+    if ! [[ "${FIXED_NUM_PROMPTS}" =~ ^[0-9]+$ ]] || [[ "${FIXED_NUM_PROMPTS}" -lt 1 ]]; then
+      echo "FIXED_NUM_PROMPTS must be a positive integer, got: ${FIXED_NUM_PROMPTS}" >&2
+      return 1
+    fi
+  fi
+}
+
 sanitize_rate_for_filename() {
   local rate="$1"
   rate="${rate//./p}"
@@ -257,25 +274,49 @@ sanitize_rate_for_filename() {
 
 resolve_num_prompts_for_rate() {
   local rate="$1"
-  if [[ -n "${REQUEST_DURATION_S}" ]]; then
-    python3 - "${rate}" "${REQUEST_DURATION_S}" <<'PY'
+
+  if [[ "${BENCHMARK_MODE}" == "fixed_duration" ]]; then
+    python3 - "${rate}" "${NUM_PROMPTS_DURATION_SECONDS}" <<'PY'
 import math
 import sys
 
 rate = float(sys.argv[1])
 duration = float(sys.argv[2])
 if not math.isfinite(rate):
-    raise ValueError("REQUEST_DURATION_S requires a finite request rate")
+    raise ValueError("fixed_duration mode requires a finite request rate")
 if duration <= 0:
-    raise ValueError("REQUEST_DURATION_S must be > 0")
+    raise ValueError("NUM_PROMPTS_DURATION_SECONDS must be > 0")
 if rate <= 0:
-    raise ValueError("request rate must be > 0 when REQUEST_DURATION_S is set")
+    raise ValueError("request rate must be > 0 in fixed_duration mode")
 print(max(1, math.ceil(rate * duration)))
 PY
     return 0
   fi
 
-  printf '%s\n' "${NUM_PROMPTS}"
+  printf '%s\n' "${FIXED_NUM_PROMPTS}"
+}
+
+resolve_run_duration_for_rate() {
+  local rate="$1"
+
+  if [[ "${BENCHMARK_MODE}" == "fixed_duration" ]]; then
+    printf '%s\n' "${NUM_PROMPTS_DURATION_SECONDS}"
+    return 0
+  fi
+
+  python3 - "${rate}" "${FIXED_NUM_PROMPTS}" <<'PY'
+import math
+import sys
+
+rate = float(sys.argv[1])
+num_prompts = int(sys.argv[2])
+if not math.isfinite(rate):
+    print("inf")
+elif rate <= 0:
+    raise ValueError("request rate must be > 0 in fixed_num_prompts mode")
+else:
+    print(f"{num_prompts / rate:.6f}")
+PY
 }
 
 resolve_output_file_for_rate() {
@@ -402,11 +443,13 @@ run_benchmark_for_rate() {
   local rate="$1"
   local run_num_prompts
   local run_output_file
+  local run_duration_s
 
   run_num_prompts="$(resolve_num_prompts_for_rate "${rate}")"
   run_output_file="$(resolve_output_file_for_rate "${rate}")"
+  run_duration_s="$(resolve_run_duration_for_rate "${rate}")"
 
-  echo "[bench] start benchmark: rate=${rate}, num_prompts=${run_num_prompts}${REQUEST_DURATION_S:+, request_duration_s=${REQUEST_DURATION_S}}"
+  echo "[bench] start benchmark: mode=${BENCHMARK_MODE}, rate=${rate}, num_prompts=${run_num_prompts}, request_duration_s=${run_duration_s}"
   local cmd=(
     python3 "${BENCH_SCRIPT}"
     --base-url "${SCHEDULER_URL}"
@@ -447,6 +490,7 @@ main() {
   trap on_signal INT TERM
   trap on_exit EXIT
 
+  validate_benchmark_mode
   parse_request_rates
 
   echo "[check] scheduler health: ${SCHEDULER_URL}"
