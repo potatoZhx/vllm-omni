@@ -4,16 +4,20 @@
 
 ### 0.1 运行前你至少要检查这几个配置
 
-默认基准配置文件是：
+默认 Qwen 基准配置文件是：
 
-- `/home/tianzhu/vllm-omni/global_scheduler.yaml`
+- `/home/tianzhu/vllm-omni/global_scheduler.qwen.yaml`
+
+如果你要跑 Wan2.2，对应 base 配置文件是：
+
+- `/home/tianzhu/vllm-omni/global_scheduler.wan2_2.yaml`
 
 在真正运行前，至少确认下面这些字段已经改成你机器上真实可用的值：
 
 - `benchmark.model`
   - 你要压测的模型名或本地模型路径
 - `benchmark.dataset`
-  - 当前 `global_scheduler.yaml` 默认是 `random`；如果你要跑 trace，需要改成 `trace`
+  - 当前 `global_scheduler.qwen.yaml` 默认是 `random`；如果你要跑 trace，需要改成 `trace`
 - `benchmark.dataset_path`
   - 当 `dataset=trace` 时，这里是 trace 文件路径
 - `benchmark.random_request_config`
@@ -36,7 +40,7 @@
 - step chunk：开启
 - chunk preemption：开启
 
-那么 `global_scheduler.yaml` 本身已经会提供这一组默认模板；你最常需要改的是：
+那么 `global_scheduler.qwen.yaml` 本身已经会提供这一组默认模板；你最常需要改的是：
 
 - 模型路径
 - random 混合请求配置
@@ -49,14 +53,15 @@
 如果你只想跑当前默认组合，直接执行：
 
 ```bash
-BASE_CONFIG=./global_scheduler.yaml \
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+REQUEST_DURATION_S=600 \
 REQUEST_RATES=0.2,0.4,0.6 \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 ```
 
 这条命令会做这些事：
 
-1. 从 `global_scheduler.yaml` 读入 base 配置
+1. 从 `global_scheduler.qwen.yaml` 读入 base 配置
 2. 生成临时 `global_scheduler.generated.yaml`
 3. 用默认组合注入策略：
    - global `min_queue_length`
@@ -73,7 +78,8 @@ benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 
 ```bash
 CASE_MATRIX=$'qwen_minqlen_sjf_preempt|min_queue_length|sjf|1|1|4\nqwen_rr_sjf_preempt|round_robin|sjf|1|1|4' \
-BASE_CONFIG=./global_scheduler.yaml \
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+REQUEST_DURATION_S=600 \
 REQUEST_RATES=0.2,0.4,0.6 \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_rps_bench.sh
 ```
@@ -93,6 +99,15 @@ case_name|global_policy|instance_policy|enable_step_chunk|enable_chunk_preemptio
 - `REQUEST_RATES`
 - `REQUEST_DURATION_S`
 
+当前默认值：
+
+- `REQUEST_DURATION_S=600`
+
+含义是：
+
+- 每个 RPS 档默认跑 `600s`
+- 当前联合实验脚本优先按“时长驱动”跑，不是固定每档请求数
+
 #### 只想改“策略组合”
 
 不用手改 YAML，优先改环境变量：
@@ -102,6 +117,9 @@ case_name|global_policy|instance_policy|enable_step_chunk|enable_chunk_preemptio
 - `ENABLE_STEP_CHUNK`
 - `ENABLE_CHUNK_PREEMPTION`
 - `CHUNK_BUDGET_STEPS`
+- `IMAGE_CHUNK_BUDGET_STEPS`
+- `VIDEO_CHUNK_BUDGET_STEPS`
+- `SMALL_REQUEST_LATENCY_THRESHOLD_MS`
 
 或者在批量模式里改：
 
@@ -109,7 +127,7 @@ case_name|global_policy|instance_policy|enable_step_chunk|enable_chunk_preemptio
 
 #### 想改“模型 / worker / 数据集”
 
-优先改 `global_scheduler.yaml` 里的这些位置：
+优先改 `global_scheduler.qwen.yaml` 或 `global_scheduler.wan2_2.yaml` 里的这些位置：
 
 - `benchmark.model`
 - `benchmark.backend`
@@ -322,6 +340,9 @@ run_global_instance_scheduler_rps_bench.sh
 - `--diffusion-enable-step-chunk`（如果开启）
 - `--diffusion-enable-chunk-preemption`（如果开启）
 - `--diffusion-chunk-budget-steps <CHUNK_BUDGET_STEPS>`
+- `--diffusion-image-chunk-budget-steps <IMAGE_CHUNK_BUDGET_STEPS>`（如果设置；否则继承 base YAML）
+- `--diffusion-video-chunk-budget-steps <VIDEO_CHUNK_BUDGET_STEPS>`（如果设置；否则继承 base YAML）
+- `--diffusion-small-request-latency-threshold-ms <SMALL_REQUEST_LATENCY_THRESHOLD_MS>`（如果设置；否则继承 base YAML）
 
 这意味着：
 
@@ -341,8 +362,10 @@ INSTANCE_POLICY=sjf \
 ENABLE_STEP_CHUNK=1 \
 ENABLE_CHUNK_PREEMPTION=1 \
 CHUNK_BUDGET_STEPS=4 \
+SMALL_REQUEST_LATENCY_THRESHOLD_MS=1200 \
+REQUEST_DURATION_S=600 \
 REQUEST_RATES=0.2,0.4,0.6 \
-BASE_CONFIG=./global_scheduler.yaml \
+BASE_CONFIG=./global_scheduler.qwen.yaml \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 ```
 
@@ -352,8 +375,9 @@ benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 
 ```bash
 CASE_MATRIX=$'qwen_minqlen_sjf_preempt|min_queue_length|sjf|1|1|4\nqwen_rr_sjf_preempt|round_robin|sjf|1|1|4' \
+REQUEST_DURATION_S=600 \
 REQUEST_RATES=0.2,0.4,0.6 \
-BASE_CONFIG=./global_scheduler.yaml \
+BASE_CONFIG=./global_scheduler.qwen.yaml \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_rps_bench.sh
 ```
 

@@ -10,6 +10,9 @@ INSTANCE_POLICY="${INSTANCE_POLICY:-sjf}"
 ENABLE_STEP_CHUNK="${ENABLE_STEP_CHUNK:-1}"
 ENABLE_CHUNK_PREEMPTION="${ENABLE_CHUNK_PREEMPTION:-1}"
 CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS:-4}"
+IMAGE_CHUNK_BUDGET_STEPS="${IMAGE_CHUNK_BUDGET_STEPS:-}"
+VIDEO_CHUNK_BUDGET_STEPS="${VIDEO_CHUNK_BUDGET_STEPS:-}"
+SMALL_REQUEST_LATENCY_THRESHOLD_MS="${SMALL_REQUEST_LATENCY_THRESHOLD_MS:-}"
 
 REQUEST_RATES="${REQUEST_RATES:-0.2,0.4,0.6,0.8,1.0}"
 REQUEST_DURATION_S="${REQUEST_DURATION_S:-600}"
@@ -47,6 +50,9 @@ generate_config() {
   ENABLE_STEP_CHUNK="${ENABLE_STEP_CHUNK}" \
   ENABLE_CHUNK_PREEMPTION="${ENABLE_CHUNK_PREEMPTION}" \
   CHUNK_BUDGET_STEPS="${CHUNK_BUDGET_STEPS}" \
+  IMAGE_CHUNK_BUDGET_STEPS="${IMAGE_CHUNK_BUDGET_STEPS}" \
+  VIDEO_CHUNK_BUDGET_STEPS="${VIDEO_CHUNK_BUDGET_STEPS}" \
+  SMALL_REQUEST_LATENCY_THRESHOLD_MS="${SMALL_REQUEST_LATENCY_THRESHOLD_MS}" \
   WORKER_IDS="${WORKER_IDS}" \
   BENCH_OUTPUT_FILE="${BENCH_OUTPUT_FILE}" \
   BENCHMARK_MODEL="${BENCHMARK_MODEL}" \
@@ -74,6 +80,9 @@ INSTANCE_POLICY = os.environ["INSTANCE_POLICY"]
 ENABLE_STEP_CHUNK = os.environ["ENABLE_STEP_CHUNK"] == "1"
 ENABLE_CHUNK_PREEMPTION = os.environ["ENABLE_CHUNK_PREEMPTION"] == "1"
 CHUNK_BUDGET_STEPS = os.environ["CHUNK_BUDGET_STEPS"]
+IMAGE_CHUNK_BUDGET_STEPS = os.environ.get("IMAGE_CHUNK_BUDGET_STEPS", "").strip()
+VIDEO_CHUNK_BUDGET_STEPS = os.environ.get("VIDEO_CHUNK_BUDGET_STEPS", "").strip()
+SMALL_REQUEST_LATENCY_THRESHOLD_MS = os.environ.get("SMALL_REQUEST_LATENCY_THRESHOLD_MS", "").strip()
 
 WORKER_IDS_RAW = os.environ.get("WORKER_IDS", "").replace(",", " ")
 WORKER_IDS = [item.strip() for item in WORKER_IDS_RAW.split() if item.strip()]
@@ -130,6 +139,18 @@ def strip_flag(args: list[str], flag: str) -> list[str]:
         idx += 1
     return filtered
 
+
+def get_flag_value(args: list[str], flag: str) -> str:
+    idx = 0
+    while idx < len(args):
+        item = str(args[idx])
+        if item == flag and idx + 1 < len(args):
+            return str(args[idx + 1])
+        if item.startswith(flag + "="):
+            return item.split("=", 1)[1]
+        idx += 1
+    return ""
+
 managed_flags = [
     "--instance-scheduler-policy",
     "--diffusion-enable-step-chunk",
@@ -151,6 +172,11 @@ for instance in instances:
     if not isinstance(launch, dict):
         continue
     args = [str(item) for item in launch.get("args", [])]
+    original_image_chunk_budget_steps = get_flag_value(args, "--diffusion-image-chunk-budget-steps")
+    original_video_chunk_budget_steps = get_flag_value(args, "--diffusion-video-chunk-budget-steps")
+    original_small_request_latency_threshold_ms = get_flag_value(
+        args, "--diffusion-small-request-latency-threshold-ms"
+    )
     for flag in managed_flags:
         args = strip_flag(args, flag)
     args.extend(["--instance-scheduler-policy", INSTANCE_POLICY])
@@ -159,6 +185,22 @@ for instance in instances:
     if ENABLE_CHUNK_PREEMPTION:
         args.append("--diffusion-enable-chunk-preemption")
     args.extend(["--diffusion-chunk-budget-steps", str(int(CHUNK_BUDGET_STEPS))])
+    image_chunk_budget_steps = IMAGE_CHUNK_BUDGET_STEPS or original_image_chunk_budget_steps
+    if image_chunk_budget_steps:
+        args.extend(["--diffusion-image-chunk-budget-steps", str(int(image_chunk_budget_steps))])
+    video_chunk_budget_steps = VIDEO_CHUNK_BUDGET_STEPS or original_video_chunk_budget_steps
+    if video_chunk_budget_steps:
+        args.extend(["--diffusion-video-chunk-budget-steps", str(int(video_chunk_budget_steps))])
+    small_request_latency_threshold_ms = (
+        SMALL_REQUEST_LATENCY_THRESHOLD_MS or original_small_request_latency_threshold_ms
+    )
+    if small_request_latency_threshold_ms:
+        args.extend(
+            [
+                "--diffusion-small-request-latency-threshold-ms",
+                str(float(small_request_latency_threshold_ms)),
+            ]
+        )
     launch["args"] = args
     matched_instances.append(instance_id)
 
@@ -189,7 +231,7 @@ main() {
   echo "[case] ${CASE_NAME}"
   echo "[config] base=${BASE_CONFIG}"
   echo "[config] generated=${GENERATED_CONFIG}"
-  echo "[policy] global=${GLOBAL_POLICY} instance=${INSTANCE_POLICY} step_chunk=${ENABLE_STEP_CHUNK} preemption=${ENABLE_CHUNK_PREEMPTION} chunk_budget=${CHUNK_BUDGET_STEPS}"
+  echo "[policy] global=${GLOBAL_POLICY} instance=${INSTANCE_POLICY} step_chunk=${ENABLE_STEP_CHUNK} preemption=${ENABLE_CHUNK_PREEMPTION} chunk_budget=${CHUNK_BUDGET_STEPS} image_chunk_budget=${IMAGE_CHUNK_BUDGET_STEPS:-<inherit>} video_chunk_budget=${VIDEO_CHUNK_BUDGET_STEPS:-<inherit>} small_latency_threshold_ms=${SMALL_REQUEST_LATENCY_THRESHOLD_MS:-<inherit>}"
   echo "[rates] ${REQUEST_RATES}"
   echo "[out_dir] ${OUT_DIR}"
 

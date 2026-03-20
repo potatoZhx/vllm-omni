@@ -59,9 +59,9 @@
 
 ### 3.1 global scheduler 层
 
-对应文件通常是：
+Qwen 对应文件通常是：
 
-- `global_scheduler.yaml`
+- `global_scheduler.qwen.yaml`
 
 你至少需要这些顶层块：
 
@@ -186,6 +186,12 @@ instances:
   - 允许 unfinished request 在 chunk 边界重新入队
 - `--diffusion-chunk-budget-steps 4`
   - 每次最多执行多少 step 再回到调度器
+- `--diffusion-image-chunk-budget-steps`
+  - 如果设置，会覆盖图像请求使用的 chunk budget
+- `--diffusion-video-chunk-budget-steps`
+  - 如果设置，会覆盖视频请求使用的 chunk budget
+- `--diffusion-small-request-latency-threshold-ms`
+  - 估计剩余时延低于该阈值的请求会直接跑完，不再继续分 chunk
 
 如果不同时打开：
 
@@ -243,17 +249,24 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
 - `--dataset random`
   - 默认通过 `random_request_config` 生成混合 heterogeneous workload
 
+如果你使用当前联合实验脚本而不是手动调用 benchmark，需要额外记住：
+
+- 运行时长由环境变量 `REQUEST_DURATION_S` 控制
+- 当前默认值是 `600`
+- 含义是每个 RPS 档默认跑 `600s`
+- 当前脚本优先按“时长驱动”计算请求数，而不是固定每档 `num_prompts`
+
 ## 4. 推荐的 Qwen-image 运行步骤
 
 建议按这个顺序跑：
 
-1. 先确认 `global_scheduler.yaml` 中：
+1. 先确认 `global_scheduler.qwen.yaml` 中：
    - 全局算法是 `min_queue_length`
    - worker 的 `launch.args` 里已经是 `sjf + step_chunk + preemption`
 2. 启动 global scheduler：
 
 ```bash
-python3 -m vllm_omni.global_scheduler.server --config ./global_scheduler.yaml
+python3 -m vllm_omni.global_scheduler.server --config ./global_scheduler.qwen.yaml
 ```
 
 3. 查看实例状态：
@@ -276,6 +289,15 @@ curl -sS -X POST http://127.0.0.1:8089/instances/probe
    - `routable=true`
 6. 再开始跑 benchmark
 7. 按不同 RPS 重复实验，比较每轮 metrics 输出
+
+如果你直接用联合实验脚本，推荐像这样显式写出测试时长：
+
+```bash
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+REQUEST_DURATION_S=600 \
+REQUEST_RATES=0.2,0.4,0.6 \
+benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
+```
 
 ## 5. 哪些参数属于“实验强相关”
 

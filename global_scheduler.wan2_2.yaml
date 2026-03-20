@@ -71,6 +71,10 @@ instances:
         - --diffusion-enable-chunk-preemption
         - --diffusion-chunk-budget-steps
         - "4"
+        - --diffusion-video-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "1200"
         - --num-weight-load-threads
         - "8"
         - --tensor-parallel-size
@@ -112,6 +116,10 @@ instances:
         - --diffusion-enable-chunk-preemption
         - --diffusion-chunk-budget-steps
         - "4"
+        - --diffusion-video-chunk-budget-steps
+        - "4"
+        - --diffusion-small-request-latency-threshold-ms
+        - "1200"
         - --num-weight-load-threads
         - "8"
         - --tensor-parallel-size
