@@ -353,6 +353,9 @@ class DiffusionModelRunner:
                                 finished=False,
                                 metrics={"executed_steps": ctx.current_step},
                             )
+                        output.metrics = dict(getattr(output, "metrics", {}) or {})
+                        output.metrics["executed_steps"] = ctx.current_step
+                        output.metrics["dispatch_epoch"] = req.dispatch_epoch
                 else:
                     with record_function("pipeline_forward"):
                         output = self.pipeline.forward(req)

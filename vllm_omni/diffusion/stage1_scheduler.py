@@ -127,6 +127,16 @@ class Stage1Scheduler(Scheduler):
         }
 
     @classmethod
+    def _request_elapsed_ms(cls, request: OmniDiffusionRequest, now: float | None = None) -> float | None:
+        base_ts = cls._safe_optional_float(getattr(request, "arrival_time", None))
+        if base_ts is None:
+            base_ts = cls._safe_optional_float(getattr(request, "first_enqueue_time", None))
+        if base_ts is None:
+            return None
+        current_ts = time.monotonic() if now is None else float(now)
+        return max((current_ts - base_ts) * 1000.0, 0.0)
+
+    @classmethod
     def _request_log_payload(cls, request: OmniDiffusionRequest) -> dict[str, Any]:
         payload = dict(cls._request_summary(request))
         payload.update(cls._request_time_summary(request))
@@ -465,6 +475,9 @@ class Stage1Scheduler(Scheduler):
         execute_latency_ms: float,
     ) -> DiffusionOutput:
         request_label = self._request_label(request)
+        now = time.monotonic()
+        chunk_latency_ms = queue_wait_ms + execute_latency_ms
+        end_to_end_latency_ms = self._request_elapsed_ms(request, now)
         metrics = dict(getattr(output, "metrics", {}) or {})
         queued_metrics = dict(queued_request.schedule_metrics)
         metrics.update(
@@ -472,7 +485,8 @@ class Stage1Scheduler(Scheduler):
                 "scheduler_policy": self._policy_name(),
                 "queue_wait_ms": queue_wait_ms,
                 "scheduler_execute_ms": execute_latency_ms,
-                "scheduler_latency_ms": queue_wait_ms + execute_latency_ms,
+                "scheduler_chunk_latency_ms": chunk_latency_ms,
+                "scheduler_latency_ms": end_to_end_latency_ms if end_to_end_latency_ms is not None else chunk_latency_ms,
                 "queue_len": len(self._waiting_queue),
                 "dispatch_epoch": self._safe_int(getattr(request, "dispatch_epoch", 0), 0),
                 "executed_steps": self._safe_int(getattr(request, "executed_steps", 0), 0),
@@ -491,10 +505,36 @@ class Stage1Scheduler(Scheduler):
         output.request_id = output.request_id or request_label
         return output
 
+    def _refresh_output_metrics(
+        self,
+        output: DiffusionOutput,
+        request: OmniDiffusionRequest,
+        *,
+        queue_len: int | None = None,
+    ) -> None:
+        metrics = dict(getattr(output, "metrics", {}) or {})
+        metrics.update(self._request_summary(request))
+        metrics.update(self._request_time_summary(request))
+        metrics["dispatch_epoch"] = self._safe_int(getattr(request, "dispatch_epoch", 0), 0)
+        metrics["executed_steps"] = self._safe_int(getattr(request, "executed_steps", 0), 0)
+        metrics["remaining_steps"] = max(
+            self._safe_int(getattr(request.sampling_params, "num_inference_steps", 0), 0)
+            - self._safe_int(getattr(request, "executed_steps", 0), 0),
+            0,
+        )
+        metrics["chunk_budget_steps"] = self._safe_optional_int(getattr(request, "max_steps_this_turn", None))
+        elapsed_ms = self._request_elapsed_ms(request)
+        if elapsed_ms is not None:
+            metrics["scheduler_latency_ms"] = elapsed_ms
+        if queue_len is not None:
+            metrics["queue_len"] = queue_len
+        output.metrics = metrics
+
     def _sync_request_progress_from_output(self, request: OmniDiffusionRequest, output: DiffusionOutput) -> None:
         metrics = dict(getattr(output, "metrics", {}) or {})
         total_steps = max(self._safe_int(getattr(request.sampling_params, "num_inference_steps", 0), 0), 0)
         current_steps = max(self._safe_int(getattr(request, "executed_steps", 0), 0), 0)
+        current_dispatch_epoch = self._safe_int(getattr(request, "dispatch_epoch", 0), 0)
 
         if "executed_steps" in metrics:
             executed_steps = self._safe_int(metrics["executed_steps"], current_steps)
@@ -509,8 +549,10 @@ class Stage1Scheduler(Scheduler):
             executed_steps = max(executed_steps, 0)
 
         request.executed_steps = executed_steps
+        request.dispatch_epoch = self._safe_int(metrics.get("dispatch_epoch"), current_dispatch_epoch)
         metrics["executed_steps"] = executed_steps
         metrics["remaining_steps"] = max(total_steps - executed_steps, 0)
+        metrics["dispatch_epoch"] = request.dispatch_epoch
         output.metrics = metrics
 
     def _normalize_error_output(self, request: OmniDiffusionRequest, error: str, error_code: str) -> DiffusionOutput:
@@ -728,6 +770,7 @@ class Stage1Scheduler(Scheduler):
             setattr(request, "failure_time", time.monotonic())
             if output.error_code is None:
                 output.error_code = "REQUEST_EXEC_FAILED"
+            self._refresh_output_metrics(output, request, queue_len=len(self._waiting_queue))
             self._log_request_event(
                 "REQUEST_FAILED",
                 request,
@@ -752,6 +795,8 @@ class Stage1Scheduler(Scheduler):
             with self._queue_cv:
                 setattr(request, "last_preempted_time", time.monotonic())
                 self._requeue_request_locked(request)
+                queue_len = len(self._waiting_queue)
+            self._refresh_output_metrics(output, request, queue_len=queue_len)
             self._log_request_event(
                 "REQUEST_PREEMPTED",
                 request,
@@ -775,6 +820,7 @@ class Stage1Scheduler(Scheduler):
         else:
             self.finish_request(request)
             setattr(request, "completion_time", time.monotonic())
+            self._refresh_output_metrics(output, request, queue_len=len(self._waiting_queue))
             self._log_request_event(
                 "REQUEST_COMPLETED",
                 request,
