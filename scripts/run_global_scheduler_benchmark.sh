@@ -78,6 +78,14 @@ def resolve_config_path(value: str | None) -> str:
         path = (config_path.parent / path).resolve()
     return str(path)
 
+
+def normalize_shell_value(value: str | None) -> str:
+    if not value:
+        return ""
+    # Keep shell export on one physical line so the downstream read/eval loop
+    # does not get broken by YAML folded/literal multi-line strings.
+    return " ".join(str(value).split())
+
 values = {
     "SCHEDULER_HOST": scheduler_host,
     "SCHEDULER_URL": scheduler_url,
@@ -88,7 +96,7 @@ values = {
     "TASK": benchmark.task,
     "DATASET": benchmark.dataset,
     "DATASET_PATH": resolve_config_path(benchmark.dataset_path),
-    "RANDOM_REQUEST_CONFIG": benchmark.random_request_config or "",
+    "RANDOM_REQUEST_CONFIG": normalize_shell_value(benchmark.random_request_config),
     "MAX_CONCURRENCY": str(benchmark.max_concurrency),
     "WARMUP_REQUESTS": str(benchmark.warmup_requests),
     "WARMUP_NUM_INFERENCE_STEPS": str(benchmark.warmup_num_inference_steps),
