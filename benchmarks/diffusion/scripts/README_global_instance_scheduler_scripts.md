@@ -50,7 +50,9 @@
 
 ### 0.2 跑单个默认组合
 
-如果你只想跑当前默认组合，直接执行：
+如果你只想跑当前默认组合，可以直接执行下面任意一种。
+
+固定发送时长：
 
 ```bash
 BASE_CONFIG=./global_scheduler.qwen.yaml \
@@ -60,7 +62,17 @@ REQUEST_RATES=0.2,0.4,0.6 \
 benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
 ```
 
-这条命令会做这些事：
+固定总请求数：
+
+```bash
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+BENCHMARK_MODE=fixed_num_prompts \
+FIXED_NUM_PROMPTS=100 \
+REQUEST_RATES=0.2,0.4,0.6 \
+benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
+```
+
+这两条命令都会做这些事：
 
 1. 从 `global_scheduler.qwen.yaml` 读入 base 配置
 2. 生成临时 `global_scheduler.generated.yaml`
