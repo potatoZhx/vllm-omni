@@ -11,6 +11,7 @@ import csv
 import json
 import re
 import sys
+import random
 from pathlib import Path
 
 import numpy as np
@@ -45,31 +46,92 @@ def worker_config_id(w: dict) -> str:
     return f"sp{w['sp']}_cfg{w['cfg']}_tp{w['tp']}"
 
 
-def load_profile(profile_path: Path) -> dict[tuple[str, int, str], float]:
-    """加载 profile CSV，键 (size, steps, config_id) -> request_time_s。查表严格，无则报错。"""
-    table = {}
+def _parse_size(size: str) -> tuple[int, int]:
+    """解析 size='HxW'，返回 (height, width)。"""
+    m = re.fullmatch(r"\s*(\d+)\s*x\s*(\d+)\s*", str(size))
+    if not m:
+        raise ValueError(f"非法 size 格式: {size!r}，期望 'HxW'")
+    return int(m.group(1)), int(m.group(2))
+
+
+def _instance_type_to_config_id(instance_type: str) -> str | None:
+    """将 profile 的 instance_type（如 sp1-cfg1-tp1-baseline）转为 config_id 格式（sp1_cfg1_tp1）。"""
+    m = re.match(r"sp(\d+)-cfg(\d+)-tp(\d+)(?:-.*)?", instance_type, re.IGNORECASE)
+    if m:
+        return f"sp{m.group(1)}_cfg{m.group(2)}_tp{m.group(3)}"
+    return None
+
+
+def load_profile_json(profile_path: Path) -> dict[tuple[str, str, int, int, int, int], float]:
+    """
+    加载 profile JSON，键:
+    (instance_type, task_type, width, height, num_frames, steps) -> request_time_s
+    对 spX-cfgY-tpZ-* 格式的 instance_type 会额外注册 config_id 别名（spX_cfgY_tpZ），
+    以便 worker 用 config_id 查表时能命中。
+    """
     with open(profile_path, encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            size = row["size"].strip()
-            steps = int(row["steps"])
-            config_id = row["config_id"].strip()
-            request_time_s = float(row["request_time_s"])
-            table[(size, steps, config_id)] = request_time_s
+        data = json.load(f)
+    profiles = data.get("profiles", [])
+    if not isinstance(profiles, list):
+        raise ValueError("JSON profile 格式错误：顶层需要 'profiles' 列表")
+    table = {}
+    for p in profiles:
+        instance_type = str(p["instance_type"]).strip()
+        task_type = str(p["task_type"]).strip().lower()
+        width = int(p["width"])
+        height = int(p["height"])
+        num_frames = int(p["num_frames"])
+        steps = int(p["steps"])
+        latency_ms = float(p["latency_ms"])
+        key = (instance_type, task_type, width, height, num_frames, steps)
+        table[key] = latency_ms / 1000.0
+        # 兼容：worker 用 config_id（sp1_cfg1_tp1）查表时，profile 可能是 sp1-cfg1-tp1-baseline
+        alias = _instance_type_to_config_id(instance_type)
+        if alias and alias != instance_type:
+            table[(alias, task_type, width, height, num_frames, steps)] = latency_ms / 1000.0
     return table
 
 
-def lookup(
-    table: dict[tuple[str, int, str], float],
-    size: str,
-    steps: int,
-    config_id: str,
-) -> float:
-    """查表得到 request_time_s。size 或 config 无匹配则报错。"""
-    bucketed = bucket_steps(steps)
-    key = (size, bucketed, config_id)
-    if key not in table:
-        raise KeyError(f"profile 中无匹配: size={size!r}, steps(档位)={bucketed}, config_id={config_id!r}")
-    return table[key]
+def load_profile(profile_path: Path) -> dict:
+    """加载 profile JSON。"""
+    table = load_profile_json(profile_path)
+    return {"source": "json", "json_table": table}
+
+
+def lookup(profile_data: dict, request: dict, worker: dict) -> float:
+    """按 profile 查表得到 request_time_s。"""
+    table = profile_data["json_table"]
+    instance_type = str(worker.get("instance_type") or worker.get("config_id") or "").strip()
+    if not instance_type:
+        raise KeyError("profile 查表失败：worker 缺少 instance_type")
+    width = request.get("width")
+    height = request.get("height")
+    if width is None or height is None:
+        height, width = _parse_size(request.get("size", ""))
+    width, height = int(width), int(height)
+    num_frames = int(request.get("num_frames", 1))
+    task_type = str(request.get("task_type") or ("video" if num_frames > 1 else "image")).lower().strip()
+    steps = int(request["steps"])
+
+    exact_key = (instance_type, task_type, width, height, num_frames, steps)
+    if exact_key in table:
+        return table[exact_key]
+
+    # 兼容历史步数分档：无精确 steps 时尝试档位匹配
+    try:
+        bucketed = bucket_steps(steps)
+    except ValueError:
+        bucketed = None
+    if bucketed is not None:
+        bucketed_key = (instance_type, task_type, width, height, num_frames, bucketed)
+        if bucketed_key in table:
+            return table[bucketed_key]
+
+    raise KeyError(
+        "profile 中无匹配: "
+        f"instance_type={instance_type!r}, task_type={task_type!r}, "
+        f"width={width}, height={height}, num_frames={num_frames}, steps={steps}"
+    )
 
 
 def load_config(config_path: Path) -> dict:
@@ -80,14 +142,18 @@ def load_config(config_path: Path) -> dict:
         cfg = yaml.safe_load(f)
     base = config_path.parent
     sim = cfg.get("simulation", {})
-    profile_path = sim.get("profile_path", "profile_qwen.csv")
+    profile_path = sim.get("profile_path", "profile.json")
     if not Path(profile_path).is_absolute():
         profile_path = base / profile_path
     sim["profile_path"] = Path(profile_path)
+    profile_stem = Path(profile_path).stem
     if sim.get("output_dir"):
         out = Path(sim["output_dir"])
         if not out.is_absolute():
             out = base / out
+        # output_dir 为 output 根目录时，自动追加 profile 名子目录：output/{profile名}/
+        if out.name == "output":
+            out = out / profile_stem
         sim["output_dir"] = out
     trace_path = sim.get("trace_path")
     if trace_path is not None:
@@ -105,10 +171,20 @@ def _parse_sd3_trace_line(line: str) -> dict | None:
     h = re.search(r"height=(\d+)", line)
     w = re.search(r"width=(\d+)", line)
     s = re.search(r"num_inference_steps=(\d+)", line)
+    nf = re.search(r"num_frames=(\d+)", line)
     if not all([h, w, s]):
         return None
     height, width = int(h.group(1)), int(w.group(1))
-    return {"size": f"{height}x{width}", "steps": int(s.group(1))}
+    num_frames = int(nf.group(1)) if nf else 1
+    task_type = "video" if num_frames > 1 else "image"
+    return {
+        "size": f"{height}x{width}",
+        "height": height,
+        "width": width,
+        "num_frames": num_frames,
+        "task_type": task_type,
+        "steps": int(s.group(1)),
+    }
 
 
 def load_trace_template(trace_path: Path) -> list[dict]:
@@ -123,23 +199,99 @@ def load_trace_template(trace_path: Path) -> list[dict]:
 
 
 def build_requests(cfg: dict, rps: float, t_end: float) -> list[dict]:
-    """生成请求列表。时间驱动：t=0, 1/rps, 2/rps, ... 当 t <= T_end 时生成该请求（与 README 一致）。trace 仅提供请求顺序对应的 size、steps。"""
+    """生成请求列表。
+
+    时间驱动：t=0, 1/rps, 2/rps, ... 当 t <= T_end 时生成该请求（与 README 一致）。
+
+    数据集来源由 simulation.dataset 决定：
+      - trace  : 使用 trace_path 提供的 size/steps 序列，仅用于请求类型顺序；arrival_time 仍按 rps 均匀注入
+      - default: 使用 default_request 中配置的单一请求类型
+      - random : 使用 random_request_config，模拟 benchmarks/diffusion 中的 --random-request-config（按 weight 采样）
+    """
     sim = cfg["simulation"]
     default = cfg.get("default_request", {})
     size_default = default.get("size", "128x128")
-    steps_default = int(default.get("steps", 5))
-    trace_path = sim.get("trace_path")
-    if trace_path and Path(trace_path).exists():
-        template = load_trace_template(trace_path)
-        if not template:
-            raise ValueError(f"trace 解析后无有效请求: {trace_path}")
+    if "height" in default and "width" in default:
+        height_default = int(default.get("height"))
+        width_default = int(default.get("width"))
     else:
-        template = [{"size": size_default, "steps": steps_default}]
+        height_default, width_default = _parse_size(size_default)
+    num_frames_default = int(default.get("num_frames", 1))
+    task_type_default = str(default.get("task_type") or ("video" if num_frames_default > 1 else "image")).lower().strip()
+    steps_default = int(default.get("steps", 5))
+    dataset = str(sim.get("dataset", "") or "").strip().lower()
+    trace_path = sim.get("trace_path")
+
+    template: list[dict]
+    weights: list[float] | None = None
+    rng: random.Random | None = None
+
+    if dataset == "random":
+        random_cfg = sim.get("random_request_config") or []
+        if not isinstance(random_cfg, list) or not random_cfg:
+            raise ValueError("dataset=random 但 random_request_config 为空或不是列表")
+        template = []
+        weights = []
+        for item in random_cfg:
+            if not isinstance(item, dict):
+                continue
+            w = int(item.get("width", width_default))
+            h = int(item.get("height", height_default))
+            nf = int(item.get("num_frames", num_frames_default))
+            tt = str(item.get("task_type") or ("video" if nf > 1 else "image")).lower().strip()
+            st = int(item.get("steps", steps_default))
+            wt = float(item.get("weight", 1.0))
+            if wt <= 0:
+                continue
+            template.append({
+                "size": f"{h}x{w}",
+                "height": h,
+                "width": w,
+                "num_frames": nf,
+                "task_type": tt,
+                "steps": st,
+            })
+            weights.append(wt)
+        if not template:
+            raise ValueError("dataset=random 但 random_request_config 解析后为空")
+        seed = int(sim.get("random_request_seed", 42))
+        rng = random.Random(seed)
+    else:
+        # 兼容旧行为：未显式配置 dataset 时，若 trace_path 存在则使用 trace，否则使用 default_request。
+        if (not dataset or dataset == "trace") and trace_path and Path(trace_path).exists():
+            template = load_trace_template(Path(trace_path))
+            if not template:
+                raise ValueError(f"trace 解析后无有效请求: {trace_path}")
+        elif dataset in ("trace", "", None):
+            template = [{
+                "size": f"{height_default}x{width_default}",
+                "height": height_default,
+                "width": width_default,
+                "num_frames": num_frames_default,
+                "task_type": task_type_default,
+                "steps": steps_default,
+            }]
+        elif dataset == "default":
+            template = [{
+                "size": f"{height_default}x{width_default}",
+                "height": height_default,
+                "width": width_default,
+                "num_frames": num_frames_default,
+                "task_type": task_type_default,
+                "steps": steps_default,
+            }]
+        else:
+            raise ValueError(f"不支持的 dataset 类型: {dataset!r}，可选: trace, default, random")
     requests = []
     i = 0
     t = 0.0
     while t <= t_end and rps > 0:
-        req = template[i % len(template)].copy()
+        if dataset == "random" and rng is not None and weights is not None:
+            idx = rng.choices(range(len(template)), weights=weights, k=1)[0]
+            base_req = template[idx]
+        else:
+            base_req = template[i % len(template)]
+        req = base_req.copy()
         req["request_id"] = f"req_{i}"
         req["arrival_time"] = t
         requests.append(req)
@@ -153,17 +305,18 @@ def build_requests(cfg: dict, rps: float, t_end: float) -> list[dict]:
     return requests
 
 
-def assign_slo(requests: list[dict], table: dict, workers: list[dict], slo_scale: float) -> None:
-    """为每个请求赋 slo_ms：用第一个 worker 的 config 查表 * 1000 * slo_scale。"""
+def assign_slo(requests: list[dict], profile_data: dict, workers: list[dict], slo_scale: float) -> None:
+    """为每个请求赋 slo_ms：用第一个 worker 的 profile 基准 * 1000 * slo_scale。"""
     if not workers or slo_scale <= 0:
         return
-    cid = worker_config_id(workers[0])
+    first_worker = workers[0]
+    worker_ref = {
+        "config_id": worker_config_id(first_worker),
+        "instance_type": first_worker.get("instance_type"),
+    }
     for r in requests:
-        bt = bucket_steps(r["steps"])
-        key = (r["size"], bt, cid)
-        if key not in table:
-            raise KeyError(f"为 SLO 查表失败: size={r['size']!r}, steps(档位)={bt}, config_id={cid!r}")
-        r["slo_ms"] = table[key] * 1000.0 * slo_scale
+        st = lookup(profile_data, r, worker_ref)
+        r["slo_ms"] = st * 1000.0 * slo_scale
 
 
 # ---------- 调度模块（可插拔） ----------
@@ -182,80 +335,57 @@ def dispatch_round_robin(request: dict, workers: list, state: dict) -> int:
     return selected
 
 
-def dispatch_fcfs(request: dict, workers: list, state: dict) -> int:
-    """先到先服务：优先选配置顺序里第一个空闲的 worker；若全部忙碌则退化为当前负载最小的 worker。"""
-    for i, w in enumerate(workers):
-        if w["next_time"] == INF:
-            return i
-    best = 0
-    best_load = INF
-    for i, w in enumerate(workers):
-        load = len(w["queue"]) + (0 if w["next_time"] == INF else 1)
-        if load < best_load:
-            best_load = load
+def dispatch_min_queue_length(request: dict, workers: list, state: dict) -> int:
+    """最小队列长度：优先在空闲实例中选择队列长度（不含正在运行请求）最小者；若全部忙碌，则在全体实例中选队列长度最小者。"""
+    del request, state
+    n = len(workers)
+    if n == 0:
+        raise ValueError("No workers configured")
+    available = [i for i, w in enumerate(workers) if w["next_time"] == INF]
+    indices = available if available else list(range(n))
+    best = indices[0]
+    best_len = len(workers[best]["queue"])
+    for i in indices[1:]:
+        qlen = len(workers[i]["queue"])
+        if qlen < best_len:
+            best_len = qlen
             best = i
     return best
 
 
-def _remaining_work_s(worker: dict, table: dict, current_time: float) -> float:
-    """该 worker 当前剩余总工作量（秒）：正在执行剩余时间 + 队列中所有请求的 service_time 之和。"""
-    running = 0.0
-    if worker["next_time"] != INF:
-        running = max(0.0, worker["next_time"] - current_time)
+def _queued_work_s(worker: dict, profile_data: dict, current_time: float) -> float:
+    """该 worker 队列中的剩余总工作量（秒），不包含当前正在运行请求。查不到配置即报错（fail-fast）。"""
+    del current_time
     queued = 0.0
     for r in worker["queue"]:
-        try:
-            queued += lookup(table, r["size"], r["steps"], worker["config_id"])
-        except KeyError:
-            pass
-    return running + queued
+        queued += lookup(profile_data, r, worker)
+    return queued
 
 
 def dispatch_short_queue_runtime(request: dict, workers: list, state: dict) -> int:
-    """最短队列预估时间：选当前剩余总工作量（秒）最小的实例。基于真实队列内请求类型查表，非 queue_len×本请求时间。"""
-    table = state["table"]
-    t = state.get("current_time", 0.0)
+    """最短队列预估时间：选当前队列中预估总工作量（秒）最小的实例（不计正在运行请求）。"""
     best = 0
     best_work = INF
     for i, w in enumerate(workers):
-        work = _remaining_work_s(w, table, t)
+        work = w.get("_queued_work")
+        if work is None:
+            work = _queued_work_s(w, state["profile_data"], state.get("current_time", 0.0))
         if work < best_work:
             best_work = work
             best = i
     return best
 
 
-def dispatch_estimated_completion_time(request: dict, workers: list, state: dict) -> int:
-    """预估完成时间最小：选（当前剩余总工作量 + 本请求在该实例的 service_time）最小的实例。"""
-    table = state["table"]
-    size, steps = request["size"], request["steps"]
-    t = state.get("current_time", 0.0)
-    best = 0
-    best_ect = INF
-    for i, w in enumerate(workers):
-        remaining = _remaining_work_s(w, table, t)
-        try:
-            my_st = lookup(table, size, steps, w["config_id"])
-        except KeyError:
-            my_st = INF
-        ect = remaining + my_st
-        if ect < best_ect:
-            best_ect = ect
-            best = i
-    return best
-
-
 DISPATCH = {
     "round_robin": dispatch_round_robin,
-    "fcfs": dispatch_fcfs,
+    "min_queue_length": dispatch_min_queue_length,
     "short_queue_runtime": dispatch_short_queue_runtime,
-    "estimated_completion_time": dispatch_estimated_completion_time,
 }
 
 def run_simulation(
     requests: list[dict],
     workers: list[dict],
-    table: dict[tuple[str, int, str], float],
+    profile_data: dict,
     rps: float,
     t_end: float,
     algorithm: str,
@@ -267,16 +397,21 @@ def run_simulation(
     if algorithm not in DISPATCH:
         raise ValueError(f"不支持的算法: {algorithm}，可选: {list(DISPATCH.keys())}")
     dispatch_fn = DISPATCH[algorithm]
-    state = {"table": table}
+    state = {"profile_data": profile_data}
 
     # 复制 worker 状态：config_id, queue, next_time
     ws = []
     for w in workers:
-        ws.append({
-            "config_id": worker_config_id(w),
+        cid = worker_config_id(w)
+        wr = {
+            "config_id": cid,
+            "instance_type": w.get("instance_type", cid),
             "queue": [],
             "next_time": INF,
-        })
+        }
+        if algorithm == "short_queue_runtime":
+            wr["_queued_work"] = 0.0  # 增量维护队列总工作量，避免 O(n^2)
+        ws.append(wr)
     n_workers = len(ws)
     # 调度器下一事件 = 下一请求的到达时间（请求发起时间），不是 rps 均匀间隔
     req_index = [0]
@@ -314,6 +449,10 @@ def run_simulation(
                 req["assigned_worker_index"] = wi
                 req["assigned_worker_config"] = ws[wi]["config_id"]
                 # 默认行为：任务放到队列末尾。入队后、立即派工前由调度器对队列排序为占位，以后可在此扩展。
+                if algorithm == "short_queue_runtime":
+                    st = lookup(profile_data, req, ws[wi])
+                    req["_svc"] = st
+                    ws[wi]["_queued_work"] += st
                 ws[wi]["queue"].append(req)
             scheduler_next = scheduler_next_time()
 
@@ -332,8 +471,10 @@ def run_simulation(
         for w in ws:
             if w["next_time"] == INF and w["queue"]:
                 req = w["queue"].pop(0)
+                if algorithm == "short_queue_runtime":
+                    w["_queued_work"] -= req.get("_svc", 0.0)
                 req["start_time"] = t  # 从本时刻开始执行
-                st = lookup(table, req["size"], req["steps"], w["config_id"])
+                st = lookup(profile_data, req, w)
                 w["next_time"] = t + st
                 w["current_request"] = req
 
@@ -380,6 +521,7 @@ def run_simulation(
 
     if n_ok == 0:
         duration = throughput_qps = 0.0
+        n_in_window = 0
         latency_mean = latency_median = latency_p50 = latency_p95 = latency_p99 = 0.0
         waiting_time_mean = waiting_time_p95 = waiting_time_p99 = 0.0
         service_time_mean = service_time_p95 = service_time_p99 = 0.0
@@ -388,10 +530,19 @@ def run_simulation(
         t_first = min(r["arrival_time"] for r in completed)
         t_last = max(r["finish_time"] for r in completed)
         duration = t_last - t_first
+        completed_in_window = [r for r in completed if r["finish_time"] <= t_end]
+        n_in_window = len(completed_in_window)
+        # 吞吐量 = 总完成请求数 / 总持续时间（首请求到达至末请求完成的时长）
         throughput_qps = n_ok / duration if duration > 0 else 0.0
+        # 口径对齐：latency/waiting/service/slo 均基于窗口内完成的请求
+        stats_base = completed_in_window if n_in_window > 0 else completed
+        latencies = [r["latency"] for r in stats_base if "latency" in r]
+        waiting_times = [r["waiting_time"] for r in stats_base if "waiting_time" in r]
+        service_times = [r["service_time"] for r in stats_base if "service_time" in r]
         latencies.sort()
-        latency_mean = sum(latencies) / n_ok
-        latency_median = float(np.median(latencies))
+        n_stats = len(latencies)
+        latency_mean = sum(latencies) / n_stats if n_stats else 0.0
+        latency_median = float(np.median(latencies)) if latencies else 0.0
         latency_p50 = perc(latencies, 0.50)
         latency_p95 = perc(latencies, 0.95)
         latency_p99 = perc(latencies, 0.99)
@@ -403,8 +554,8 @@ def run_simulation(
         service_time_mean = sum(service_times) / len(service_times) if service_times else 0.0
         service_time_p95 = perc(service_times, 0.95)
         service_time_p99 = perc(service_times, 0.99)
-        slo_met = sum(1 for r in completed if r.get("slo_ms") is not None and r["latency"] * 1000 <= r["slo_ms"])
-        slo_total = sum(1 for r in completed if r.get("slo_ms") is not None)
+        slo_met = sum(1 for r in stats_base if r.get("slo_ms") is not None and r["latency"] * 1000 <= r["slo_ms"])
+        slo_total = sum(1 for r in stats_base if r.get("slo_ms") is not None)
         slo_attainment_rate = (slo_met / slo_total) if slo_total else 0.0
 
     return {
@@ -412,6 +563,7 @@ def run_simulation(
         "rps": rps,
         "duration": round(duration, 4),
         "completed_requests": n_ok,
+        "completed_in_window": n_in_window,
         "failed_requests": 0,
         "throughput_qps": round(throughput_qps, 4),
         "latency_mean": round(latency_mean, 4),
@@ -463,7 +615,7 @@ def _write_requests_csv(path: Path, runs: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="离散事件模拟器：YAML 配置 + profile 查表，输出与 plot_results 对齐")
-    parser.add_argument("config", nargs="?", default="simulation_config.yaml", help="YAML 配置文件路径")
+    parser.add_argument("config", nargs="?", default="config/simulation_config.yaml", help="YAML 配置文件路径")
     args = parser.parse_args()
     config_path = Path(args.config)
     if not config_path.exists():
@@ -478,7 +630,11 @@ def main() -> None:
         print(f"profile 不存在: {profile_path}", file=sys.stderr)
         sys.exit(1)
 
-    table = load_profile(profile_path)
+    try:
+        profile_data = load_profile(profile_path)
+    except (ValueError, KeyError) as e:
+        print(f"profile 加载失败: {e}", file=sys.stderr)
+        sys.exit(1)
     t_end = float(sim["t_end"])
     rps_cfg = sim["rps"]
     rps_list = [float(x) for x in (rps_cfg if isinstance(rps_cfg, list) else [rps_cfg])]
@@ -495,9 +651,9 @@ def main() -> None:
         runs_for_algo = []
         for rps in rps_list:
             requests = build_requests(cfg, rps, t_end)
-            assign_slo(requests, table, workers, slo_scale)
+            assign_slo(requests, profile_data, workers, slo_scale)
             try:
-                out = run_simulation(requests, workers, table, rps, t_end, algo)
+                out = run_simulation(requests, workers, profile_data, rps, t_end, algo)
                 runs_for_algo.append(out)
                 all_runs.append(out)
             except (KeyError, ValueError) as e:
@@ -527,14 +683,18 @@ def main() -> None:
         plot_metrics = plot_cfg.get("metrics", ["latency_p95", "latency_mean"])
         if isinstance(plot_metrics, str):
             plot_metrics = [plot_metrics]
-        plot_output_dir = plot_cfg.get("output_dir", "output")
-        plot_output_prefix = plot_cfg.get("output_prefix", "compare")
-        base = config_path.parent
-        if not Path(plot_output_dir).is_absolute():
-            plot_output_dir = base / plot_output_dir
+        plot_output_dir = plot_cfg.get("output_dir")
+        if plot_output_dir in (None, "output", "../output"):
+            plot_output_dir = output_dir  # 与仿真结果同目录：output/{profile名}/
         else:
-            plot_output_dir = Path(plot_output_dir)
+            base = config_path.parent
+            if not Path(plot_output_dir).is_absolute():
+                plot_output_dir = base / plot_output_dir
+            else:
+                plot_output_dir = Path(plot_output_dir)
+        plot_output_dir = Path(plot_output_dir)
         plot_output_dir.mkdir(parents=True, exist_ok=True)
+        plot_output_prefix = plot_cfg.get("output_prefix", "compare")
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
             from diffusion_bench.plot_results import plot_results as plot_results_fn

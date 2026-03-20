@@ -1,0 +1,2474 @@
+===== Qwen-Image 文生图性能画像（profile.md）=====
+数据项：25 种（5 分辨率 × 5 steps: 1,5,10,30,50），配置项：16 个，每 (数据项, 配置) 发 5 次请求
+REPO_DIR=/home/xhf/xhf/vllm-omni  PORT=8099  结果追加到: /home/xhf/xhf/vllm-omni/switch_time/logs/qwen_profile_result_10709_20260310_233958.log
+Unexpected error writing token file:
+  path: /home/xhf/.conda/aau_token_host
+  exception: write() argument must be str, not None
+/home/xhf/.conda/envs/vllm_omni/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+WARNING 03-10 23:40:24 [envs.py:94] No Flash Attention backend found, using pytorch SDPA implementation
+========== 配置 1：启动 pgid=3906101，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 1] 就绪 ready_poll=63s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=1.2112
+    run 2 / 5  request_time_s=0.1638
+    run 3 / 5  request_time_s=0.1582
+    run 4 / 5  request_time_s=0.1691
+    run 5 / 5  request_time_s=0.1642
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.3748
+    run 2 / 5  request_time_s=0.3791
+    run 3 / 5  request_time_s=0.3668
+    run 4 / 5  request_time_s=0.3889
+    run 5 / 5  request_time_s=0.3872
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=0.6216
+    run 2 / 5  request_time_s=0.622
+    run 3 / 5  request_time_s=0.6242
+    run 4 / 5  request_time_s=0.6757
+    run 5 / 5  request_time_s=0.6472
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=1.6541
+    run 2 / 5  request_time_s=1.6404
+    run 3 / 5  request_time_s=1.6147
+    run 4 / 5  request_time_s=1.624
+    run 5 / 5  request_time_s=1.6313
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=2.654
+    run 2 / 5  request_time_s=3.0719
+    run 3 / 5  request_time_s=2.6557
+    run 4 / 5  request_time_s=2.7285
+    run 5 / 5  request_time_s=3.1844
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2067
+    run 2 / 5  request_time_s=0.1921
+    run 3 / 5  request_time_s=0.1724
+    run 4 / 5  request_time_s=0.1675
+    run 5 / 5  request_time_s=0.1675
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5144
+    run 2 / 5  request_time_s=0.5239
+    run 3 / 5  request_time_s=0.5924
+    run 4 / 5  request_time_s=0.5907
+    run 5 / 5  request_time_s=0.4033
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=0.6527
+    run 2 / 5  request_time_s=0.6434
+    run 3 / 5  request_time_s=0.6407
+    run 4 / 5  request_time_s=0.6424
+    run 5 / 5  request_time_s=0.6506
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=1.6201
+    run 2 / 5  request_time_s=1.6264
+    run 3 / 5  request_time_s=1.6128
+    run 4 / 5  request_time_s=1.6278
+    run 5 / 5  request_time_s=1.7176
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=2.6254
+    run 2 / 5  request_time_s=2.6223
+    run 3 / 5  request_time_s=2.5918
+    run 4 / 5  request_time_s=2.6302
+    run 5 / 5  request_time_s=2.6009
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7298
+    run 2 / 5  request_time_s=0.7107
+    run 3 / 5  request_time_s=0.6988
+    run 4 / 5  request_time_s=0.7368
+    run 5 / 5  request_time_s=0.7167
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.2893
+    run 2 / 5  request_time_s=1.2924
+    run 3 / 5  request_time_s=1.2866
+    run 4 / 5  request_time_s=1.281
+    run 5 / 5  request_time_s=1.2712
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.746
+    run 2 / 5  request_time_s=1.7507
+    run 3 / 5  request_time_s=1.7333
+    run 4 / 5  request_time_s=1.7662
+    run 5 / 5  request_time_s=2.0255
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.6961
+    run 2 / 5  request_time_s=3.8904
+    run 3 / 5  request_time_s=3.7015
+    run 4 / 5  request_time_s=3.7302
+    run 5 / 5  request_time_s=3.7216
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.615
+    run 2 / 5  request_time_s=5.6008
+    run 3 / 5  request_time_s=5.663
+    run 4 / 5  request_time_s=5.6623
+    run 5 / 5  request_time_s=5.6859
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.7347
+    run 2 / 5  request_time_s=2.7089
+    run 3 / 5  request_time_s=2.7185
+    run 4 / 5  request_time_s=2.6831
+    run 5 / 5  request_time_s=2.7201
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=4.9178
+    run 2 / 5  request_time_s=4.8624
+    run 3 / 5  request_time_s=4.7483
+    run 4 / 5  request_time_s=4.7519
+    run 5 / 5  request_time_s=4.9608
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=6.4914
+    run 2 / 5  request_time_s=6.4414
+    run 3 / 5  request_time_s=6.6734
+    run 4 / 5  request_time_s=6.6261
+    run 5 / 5  request_time_s=6.4999
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=13.5707
+    run 2 / 5  request_time_s=13.8419
+    run 3 / 5  request_time_s=13.8201
+    run 4 / 5  request_time_s=13.6347
+    run 5 / 5  request_time_s=13.6064
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=20.9793
+    run 2 / 5  request_time_s=20.8086
+    run 3 / 5  request_time_s=20.8109
+    run 4 / 5  request_time_s=20.8013
+    run 5 / 5  request_time_s=20.8155
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=5.143
+    run 2 / 5  request_time_s=5.0996
+    run 3 / 5  request_time_s=5.171
+    run 4 / 5  request_time_s=5.0822
+    run 5 / 5  request_time_s=5.086
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=10.5042
+    run 2 / 5  request_time_s=10.5307
+    run 3 / 5  request_time_s=10.3102
+    run 4 / 5  request_time_s=10.519
+    run 5 / 5  request_time_s=10.5169
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=15.1408
+    run 2 / 5  request_time_s=14.9502
+    run 3 / 5  request_time_s=15.1229
+    run 4 / 5  request_time_s=15.1186
+    run 5 / 5  request_time_s=15.0132
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=33.4505
+    run 2 / 5  request_time_s=33.5212
+    run 3 / 5  request_time_s=33.5011
+    run 4 / 5  request_time_s=33.3141
+    run 5 / 5  request_time_s=33.4145
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=52.0463
+    run 2 / 5  request_time_s=51.891
+    run 3 / 5  request_time_s=52.0326
+    run 4 / 5  request_time_s=52.0389
+    run 5 / 5  request_time_s=51.8869
+  [配置 1] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 2：启动 pgid=3908367，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 2] 就绪 ready_poll=72s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=5.9392
+    run 2 / 5  request_time_s=0.1818
+    run 3 / 5  request_time_s=0.1845
+    run 4 / 5  request_time_s=0.1768
+    run 5 / 5  request_time_s=0.194
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.4682
+    run 2 / 5  request_time_s=0.4772
+    run 3 / 5  request_time_s=0.4691
+    run 4 / 5  request_time_s=0.4828
+    run 5 / 5  request_time_s=0.4724
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=0.8155
+    run 2 / 5  request_time_s=0.823
+    run 3 / 5  request_time_s=0.8621
+    run 4 / 5  request_time_s=0.8245
+    run 5 / 5  request_time_s=0.8329
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.2322
+    run 2 / 5  request_time_s=2.2319
+    run 3 / 5  request_time_s=2.2332
+    run 4 / 5  request_time_s=2.211
+    run 5 / 5  request_time_s=2.2147
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=3.5763
+    run 2 / 5  request_time_s=3.6081
+    run 3 / 5  request_time_s=3.6054
+    run 4 / 5  request_time_s=3.6114
+    run 5 / 5  request_time_s=3.6081
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.1917
+    run 2 / 5  request_time_s=0.1834
+    run 3 / 5  request_time_s=0.1804
+    run 4 / 5  request_time_s=0.1848
+    run 5 / 5  request_time_s=0.1868
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5571
+    run 2 / 5  request_time_s=0.5104
+    run 3 / 5  request_time_s=0.5162
+    run 4 / 5  request_time_s=0.5126
+    run 5 / 5  request_time_s=0.5423
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=0.9078
+    run 2 / 5  request_time_s=0.8581
+    run 3 / 5  request_time_s=0.8683
+    run 4 / 5  request_time_s=0.8642
+    run 5 / 5  request_time_s=0.8605
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.2927
+    run 2 / 5  request_time_s=2.2806
+    run 3 / 5  request_time_s=2.2594
+    run 4 / 5  request_time_s=2.2698
+    run 5 / 5  request_time_s=2.2593
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=3.7213
+    run 2 / 5  request_time_s=3.6884
+    run 3 / 5  request_time_s=3.747
+    run 4 / 5  request_time_s=3.747
+    run 5 / 5  request_time_s=3.7173
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7232
+    run 2 / 5  request_time_s=0.6967
+    run 3 / 5  request_time_s=0.6948
+    run 4 / 5  request_time_s=0.6963
+    run 5 / 5  request_time_s=0.7061
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.215
+    run 2 / 5  request_time_s=1.167
+    run 3 / 5  request_time_s=1.1745
+    run 4 / 5  request_time_s=1.17
+    run 5 / 5  request_time_s=1.1765
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.667
+    run 2 / 5  request_time_s=1.5363
+    run 3 / 5  request_time_s=1.5602
+    run 4 / 5  request_time_s=1.5544
+    run 5 / 5  request_time_s=1.5525
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=2.9513
+    run 2 / 5  request_time_s=2.9526
+    run 3 / 5  request_time_s=2.9598
+    run 4 / 5  request_time_s=2.9298
+    run 5 / 5  request_time_s=3.3795
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=4.4125
+    run 2 / 5  request_time_s=4.4058
+    run 3 / 5  request_time_s=4.4406
+    run 4 / 5  request_time_s=4.4381
+    run 5 / 5  request_time_s=4.3892
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.6127
+    run 2 / 5  request_time_s=2.5779
+    run 3 / 5  request_time_s=2.5837
+    run 4 / 5  request_time_s=2.5853
+    run 5 / 5  request_time_s=2.5826
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=4.2498
+    run 2 / 5  request_time_s=4.0951
+    run 3 / 5  request_time_s=4.2616
+    run 4 / 5  request_time_s=4.2613
+    run 5 / 5  request_time_s=4.2205
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=5.0401
+    run 2 / 5  request_time_s=5.2502
+    run 3 / 5  request_time_s=5.2231
+    run 4 / 5  request_time_s=5.2777
+    run 5 / 5  request_time_s=5.1096
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=9.4347
+    run 2 / 5  request_time_s=9.3929
+    run 3 / 5  request_time_s=9.615
+    run 4 / 5  request_time_s=9.4395
+    run 5 / 5  request_time_s=9.4407
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=13.8057
+    run 2 / 5  request_time_s=13.8913
+    run 3 / 5  request_time_s=13.832
+    run 4 / 5  request_time_s=13.8225
+    run 5 / 5  request_time_s=14.0172
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.8095
+    run 2 / 5  request_time_s=4.7616
+    run 3 / 5  request_time_s=4.7477
+    run 4 / 5  request_time_s=4.7552
+    run 5 / 5  request_time_s=4.7579
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=8.6066
+    run 2 / 5  request_time_s=8.6149
+    run 3 / 5  request_time_s=8.642
+    run 4 / 5  request_time_s=8.6127
+    run 5 / 5  request_time_s=8.6427
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=11.3042
+    run 2 / 5  request_time_s=11.2435
+    run 3 / 5  request_time_s=11.1715
+    run 4 / 5  request_time_s=10.8176
+    run 5 / 5  request_time_s=11.1981
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=22.0269
+    run 2 / 5  request_time_s=21.844
+    run 3 / 5  request_time_s=21.7654
+    run 4 / 5  request_time_s=21.874
+    run 5 / 5  request_time_s=21.962
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=32.63
+    run 2 / 5  request_time_s=32.8222
+    run 3 / 5  request_time_s=32.7035
+    run 4 / 5  request_time_s=32.7767
+    run 5 / 5  request_time_s=32.7169
+  [配置 2] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 3：启动 pgid=3911187，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 3] 就绪 ready_poll=81s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=5.0213
+    run 2 / 5  request_time_s=0.1824
+    run 3 / 5  request_time_s=0.1774
+    run 4 / 5  request_time_s=0.1827
+    run 5 / 5  request_time_s=0.1756
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.4908
+    run 2 / 5  request_time_s=0.4961
+    run 3 / 5  request_time_s=0.4653
+    run 4 / 5  request_time_s=0.4906
+    run 5 / 5  request_time_s=0.556
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.0044
+    run 2 / 5  request_time_s=0.9604
+    run 3 / 5  request_time_s=0.8653
+    run 4 / 5  request_time_s=0.9609
+    run 5 / 5  request_time_s=0.9508
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.4003
+    run 2 / 5  request_time_s=2.2505
+    run 3 / 5  request_time_s=2.5104
+    run 4 / 5  request_time_s=2.3253
+    run 5 / 5  request_time_s=2.5299
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=3.6809
+    run 2 / 5  request_time_s=3.6228
+    run 3 / 5  request_time_s=4.0789
+    run 4 / 5  request_time_s=3.6995
+    run 5 / 5  request_time_s=3.8684
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.1974
+    run 2 / 5  request_time_s=0.1848
+    run 3 / 5  request_time_s=0.1837
+    run 4 / 5  request_time_s=0.1864
+    run 5 / 5  request_time_s=0.1885
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5062
+    run 2 / 5  request_time_s=0.524
+    run 3 / 5  request_time_s=0.5595
+    run 4 / 5  request_time_s=0.5789
+    run 5 / 5  request_time_s=0.5981
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.0278
+    run 2 / 5  request_time_s=1.0631
+    run 3 / 5  request_time_s=1.0748
+    run 4 / 5  request_time_s=1.0529
+    run 5 / 5  request_time_s=0.8668
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.2727
+    run 2 / 5  request_time_s=2.2526
+    run 3 / 5  request_time_s=2.374
+    run 4 / 5  request_time_s=2.3271
+    run 5 / 5  request_time_s=2.2524
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=3.698
+    run 2 / 5  request_time_s=3.6252
+    run 3 / 5  request_time_s=3.9148
+    run 4 / 5  request_time_s=3.7199
+    run 5 / 5  request_time_s=3.887
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7213
+    run 2 / 5  request_time_s=0.6944
+    run 3 / 5  request_time_s=0.6803
+    run 4 / 5  request_time_s=0.7038
+    run 5 / 5  request_time_s=0.6725
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.2359
+    run 2 / 5  request_time_s=1.3914
+    run 3 / 5  request_time_s=1.3774
+    run 4 / 5  request_time_s=1.2615
+    run 5 / 5  request_time_s=1.3623
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.5942
+    run 2 / 5  request_time_s=1.8421
+    run 3 / 5  request_time_s=1.764
+    run 4 / 5  request_time_s=1.5882
+    run 5 / 5  request_time_s=1.8217
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=2.8579
+    run 2 / 5  request_time_s=3.1376
+    run 3 / 5  request_time_s=2.9714
+    run 4 / 5  request_time_s=2.9361
+    run 5 / 5  request_time_s=3.5113
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=4.239
+    run 2 / 5  request_time_s=4.5096
+    run 3 / 5  request_time_s=4.2959
+    run 4 / 5  request_time_s=4.2919
+    run 5 / 5  request_time_s=4.5359
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.4577
+    run 2 / 5  request_time_s=2.4383
+    run 3 / 5  request_time_s=2.496
+    run 4 / 5  request_time_s=2.5654
+    run 5 / 5  request_time_s=2.4968
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.8559
+    run 2 / 5  request_time_s=3.8041
+    run 3 / 5  request_time_s=3.5738
+    run 4 / 5  request_time_s=3.6028
+    run 5 / 5  request_time_s=3.7874
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.4702
+    run 2 / 5  request_time_s=4.397
+    run 3 / 5  request_time_s=4.2667
+    run 4 / 5  request_time_s=4.3966
+    run 5 / 5  request_time_s=4.4727
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=7.0973
+    run 2 / 5  request_time_s=7.0592
+    run 3 / 5  request_time_s=7.1117
+    run 4 / 5  request_time_s=7.0433
+    run 5 / 5  request_time_s=7.1169
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=9.8957
+    run 2 / 5  request_time_s=10.0114
+    run 3 / 5  request_time_s=9.9408
+    run 4 / 5  request_time_s=10.1062
+    run 5 / 5  request_time_s=9.9389
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.5834
+    run 2 / 5  request_time_s=4.6371
+    run 3 / 5  request_time_s=4.3857
+    run 4 / 5  request_time_s=4.4527
+    run 5 / 5  request_time_s=4.3907
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=7.4801
+    run 2 / 5  request_time_s=7.4935
+    run 3 / 5  request_time_s=7.4739
+    run 4 / 5  request_time_s=7.6122
+    run 5 / 5  request_time_s=7.4863
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=8.6818
+    run 2 / 5  request_time_s=9.0993
+    run 3 / 5  request_time_s=9.0782
+    run 4 / 5  request_time_s=9.0407
+    run 5 / 5  request_time_s=9.1636
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=15.6586
+    run 2 / 5  request_time_s=15.4385
+    run 3 / 5  request_time_s=15.8561
+    run 4 / 5  request_time_s=15.6861
+    run 5 / 5  request_time_s=15.7139
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=22.3547
+    run 2 / 5  request_time_s=21.9809
+    run 3 / 5  request_time_s=22.3223
+    run 4 / 5  request_time_s=22.0262
+    run 5 / 5  request_time_s=22.0928
+  [配置 3] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 4：启动 pgid=3915357，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 4] 就绪 ready_poll=92s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=1.4352
+    run 2 / 5  request_time_s=0.1871
+    run 3 / 5  request_time_s=0.1845
+    run 4 / 5  request_time_s=0.1815
+    run 5 / 5  request_time_s=0.1875
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.479
+    run 2 / 5  request_time_s=0.4827
+    run 3 / 5  request_time_s=0.4866
+    run 4 / 5  request_time_s=0.483
+    run 5 / 5  request_time_s=0.4778
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=0.8527
+    run 2 / 5  request_time_s=0.8488
+    run 3 / 5  request_time_s=0.8482
+    run 4 / 5  request_time_s=0.896
+    run 5 / 5  request_time_s=0.9991
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.3948
+    run 2 / 5  request_time_s=2.2936
+    run 3 / 5  request_time_s=2.7347
+    run 4 / 5  request_time_s=2.4237
+    run 5 / 5  request_time_s=2.2994
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=4.1461
+    run 2 / 5  request_time_s=3.7169
+    run 3 / 5  request_time_s=3.7318
+    run 4 / 5  request_time_s=3.6986
+    run 5 / 5  request_time_s=3.7441
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.198
+    run 2 / 5  request_time_s=0.1936
+    run 3 / 5  request_time_s=0.1925
+    run 4 / 5  request_time_s=0.1886
+    run 5 / 5  request_time_s=0.1874
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5252
+    run 2 / 5  request_time_s=0.5802
+    run 3 / 5  request_time_s=0.595
+    run 4 / 5  request_time_s=0.6002
+    run 5 / 5  request_time_s=0.5919
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=0.9001
+    run 2 / 5  request_time_s=0.8932
+    run 3 / 5  request_time_s=0.9778
+    run 4 / 5  request_time_s=0.9015
+    run 5 / 5  request_time_s=0.891
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.3467
+    run 2 / 5  request_time_s=2.6796
+    run 3 / 5  request_time_s=2.4031
+    run 4 / 5  request_time_s=2.3157
+    run 5 / 5  request_time_s=2.3543
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=3.9509
+    run 2 / 5  request_time_s=3.7814
+    run 3 / 5  request_time_s=3.7732
+    run 4 / 5  request_time_s=3.8103
+    run 5 / 5  request_time_s=3.8526
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7219
+    run 2 / 5  request_time_s=0.7389
+    run 3 / 5  request_time_s=0.6933
+    run 4 / 5  request_time_s=0.6938
+    run 5 / 5  request_time_s=0.6927
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.1876
+    run 2 / 5  request_time_s=1.1188
+    run 3 / 5  request_time_s=1.3399
+    run 4 / 5  request_time_s=1.3345
+    run 5 / 5  request_time_s=1.1522
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.5851
+    run 2 / 5  request_time_s=1.5714
+    run 3 / 5  request_time_s=1.8063
+    run 4 / 5  request_time_s=1.6131
+    run 5 / 5  request_time_s=1.5314
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.2266
+    run 2 / 5  request_time_s=2.9788
+    run 3 / 5  request_time_s=2.9797
+    run 4 / 5  request_time_s=2.9829
+    run 5 / 5  request_time_s=2.9394
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=4.4351
+    run 2 / 5  request_time_s=4.6266
+    run 3 / 5  request_time_s=4.4933
+    run 4 / 5  request_time_s=4.3924
+    run 5 / 5  request_time_s=4.4941
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.5194
+    run 2 / 5  request_time_s=2.4961
+    run 3 / 5  request_time_s=2.709
+    run 4 / 5  request_time_s=2.4785
+    run 5 / 5  request_time_s=2.4785
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.7238
+    run 2 / 5  request_time_s=3.7519
+    run 3 / 5  request_time_s=3.6883
+    run 4 / 5  request_time_s=3.6976
+    run 5 / 5  request_time_s=3.6365
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.1881
+    run 2 / 5  request_time_s=4.2347
+    run 3 / 5  request_time_s=4.242
+    run 4 / 5  request_time_s=4.2672
+    run 5 / 5  request_time_s=4.0694
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=6.297
+    run 2 / 5  request_time_s=6.469
+    run 3 / 5  request_time_s=6.3156
+    run 4 / 5  request_time_s=6.3355
+    run 5 / 5  request_time_s=6.4138
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=8.6352
+    run 2 / 5  request_time_s=8.8709
+    run 3 / 5  request_time_s=8.8042
+    run 4 / 5  request_time_s=8.5897
+    run 5 / 5  request_time_s=8.8557
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.4496
+    run 2 / 5  request_time_s=4.6044
+    run 3 / 5  request_time_s=4.4908
+    run 4 / 5  request_time_s=4.5849
+    run 5 / 5  request_time_s=4.53
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=7.171
+    run 2 / 5  request_time_s=7.1887
+    run 3 / 5  request_time_s=6.8037
+    run 4 / 5  request_time_s=7.2231
+    run 5 / 5  request_time_s=7.2069
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=8.3103
+    run 2 / 5  request_time_s=7.8852
+    run 3 / 5  request_time_s=7.9014
+    run 4 / 5  request_time_s=8.3284
+    run 5 / 5  request_time_s=7.9458
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=12.7747
+    run 2 / 5  request_time_s=12.8284
+    run 3 / 5  request_time_s=13.0927
+    run 4 / 5  request_time_s=13.0989
+    run 5 / 5  request_time_s=12.792
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=17.9705
+    run 2 / 5  request_time_s=17.9735
+    run 3 / 5  request_time_s=17.969
+    run 4 / 5  request_time_s=17.7201
+    run 5 / 5  request_time_s=17.5868
+  [配置 4] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 5：启动 pgid=3919913，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 5] 就绪 ready_poll=74s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=11.3848
+    run 2 / 5  request_time_s=0.2208
+    run 3 / 5  request_time_s=0.2136
+    run 4 / 5  request_time_s=0.2185
+    run 5 / 5  request_time_s=0.2259
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6326
+    run 2 / 5  request_time_s=0.6735
+    run 3 / 5  request_time_s=0.5305
+    run 4 / 5  request_time_s=0.4772
+    run 5 / 5  request_time_s=0.479
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=0.7967
+    run 2 / 5  request_time_s=0.7939
+    run 3 / 5  request_time_s=0.7232
+    run 4 / 5  request_time_s=0.6693
+    run 5 / 5  request_time_s=0.6966
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=1.7187
+    run 2 / 5  request_time_s=1.7442
+    run 3 / 5  request_time_s=1.7565
+    run 4 / 5  request_time_s=1.7139
+    run 5 / 5  request_time_s=1.7066
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=2.7386
+    run 2 / 5  request_time_s=2.7413
+    run 3 / 5  request_time_s=2.7194
+    run 4 / 5  request_time_s=2.7214
+    run 5 / 5  request_time_s=2.7493
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2012
+    run 2 / 5  request_time_s=0.1923
+    run 3 / 5  request_time_s=0.1975
+    run 4 / 5  request_time_s=0.196
+    run 5 / 5  request_time_s=0.1963
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.4399
+    run 2 / 5  request_time_s=0.4531
+    run 3 / 5  request_time_s=0.4496
+    run 4 / 5  request_time_s=0.4479
+    run 5 / 5  request_time_s=0.4382
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=0.7092
+    run 2 / 5  request_time_s=0.7038
+    run 3 / 5  request_time_s=0.7032
+    run 4 / 5  request_time_s=0.7199
+    run 5 / 5  request_time_s=0.7244
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=1.8092
+    run 2 / 5  request_time_s=1.761
+    run 3 / 5  request_time_s=1.8223
+    run 4 / 5  request_time_s=2.0213
+    run 5 / 5  request_time_s=2.1082
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=2.8268
+    run 2 / 5  request_time_s=2.8737
+    run 3 / 5  request_time_s=2.8531
+    run 4 / 5  request_time_s=2.8146
+    run 5 / 5  request_time_s=2.7753
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.791
+    run 2 / 5  request_time_s=0.7641
+    run 3 / 5  request_time_s=0.7656
+    run 4 / 5  request_time_s=0.7671
+    run 5 / 5  request_time_s=0.7631
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.2687
+    run 2 / 5  request_time_s=1.2751
+    run 3 / 5  request_time_s=1.2728
+    run 4 / 5  request_time_s=1.262
+    run 5 / 5  request_time_s=1.2668
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.7756
+    run 2 / 5  request_time_s=1.7836
+    run 3 / 5  request_time_s=1.7813
+    run 4 / 5  request_time_s=1.7987
+    run 5 / 5  request_time_s=1.785
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.7337
+    run 2 / 5  request_time_s=3.7037
+    run 3 / 5  request_time_s=3.7204
+    run 4 / 5  request_time_s=3.7349
+    run 5 / 5  request_time_s=3.781
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.7186
+    run 2 / 5  request_time_s=5.6587
+    run 3 / 5  request_time_s=5.7085
+    run 4 / 5  request_time_s=5.6607
+    run 5 / 5  request_time_s=5.7052
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.9051
+    run 2 / 5  request_time_s=2.877
+    run 3 / 5  request_time_s=2.8486
+    run 4 / 5  request_time_s=2.8346
+    run 5 / 5  request_time_s=2.8745
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=4.7139
+    run 2 / 5  request_time_s=4.7218
+    run 3 / 5  request_time_s=4.6655
+    run 4 / 5  request_time_s=4.6816
+    run 5 / 5  request_time_s=4.7563
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=6.4545
+    run 2 / 5  request_time_s=6.5187
+    run 3 / 5  request_time_s=6.7228
+    run 4 / 5  request_time_s=6.4471
+    run 5 / 5  request_time_s=6.4325
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=13.7305
+    run 2 / 5  request_time_s=13.7474
+    run 3 / 5  request_time_s=13.9541
+    run 4 / 5  request_time_s=13.7337
+    run 5 / 5  request_time_s=13.9772
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=21.0079
+    run 2 / 5  request_time_s=21.0553
+    run 3 / 5  request_time_s=20.9979
+    run 4 / 5  request_time_s=21.0472
+    run 5 / 5  request_time_s=21.1784
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=5.4125
+    run 2 / 5  request_time_s=5.3471
+    run 3 / 5  request_time_s=5.3481
+    run 4 / 5  request_time_s=5.3445
+    run 5 / 5  request_time_s=5.3519
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=9.9833
+    run 2 / 5  request_time_s=10.0531
+    run 3 / 5  request_time_s=9.9654
+    run 4 / 5  request_time_s=9.9756
+    run 5 / 5  request_time_s=9.8701
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=14.414
+    run 2 / 5  request_time_s=14.5352
+    run 3 / 5  request_time_s=15.038
+    run 4 / 5  request_time_s=14.3959
+    run 5 / 5  request_time_s=14.5261
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=33.3426
+    run 2 / 5  request_time_s=33.4707
+    run 3 / 5  request_time_s=33.367
+    run 4 / 5  request_time_s=33.2282
+    run 5 / 5  request_time_s=33.1857
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=52.0293
+    run 2 / 5  request_time_s=52.0038
+    run 3 / 5  request_time_s=52.303
+    run 4 / 5  request_time_s=52.3047
+    run 5 / 5  request_time_s=52.1446
+  [配置 5] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 6：启动 pgid=3923299，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 6] 就绪 ready_poll=78s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=9.7727
+    run 2 / 5  request_time_s=0.2396
+    run 3 / 5  request_time_s=0.2431
+    run 4 / 5  request_time_s=0.2367
+    run 5 / 5  request_time_s=0.2434
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6104
+    run 2 / 5  request_time_s=0.582
+    run 3 / 5  request_time_s=0.5809
+    run 4 / 5  request_time_s=0.5209
+    run 5 / 5  request_time_s=0.498
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=0.8543
+    run 2 / 5  request_time_s=0.8753
+    run 3 / 5  request_time_s=0.8577
+    run 4 / 5  request_time_s=0.8647
+    run 5 / 5  request_time_s=0.8655
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.2957
+    run 2 / 5  request_time_s=2.2987
+    run 3 / 5  request_time_s=2.2926
+    run 4 / 5  request_time_s=2.2937
+    run 5 / 5  request_time_s=2.325
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=3.7729
+    run 2 / 5  request_time_s=3.7186
+    run 3 / 5  request_time_s=3.7154
+    run 4 / 5  request_time_s=3.7559
+    run 5 / 5  request_time_s=3.7002
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2159
+    run 2 / 5  request_time_s=0.209
+    run 3 / 5  request_time_s=0.2216
+    run 4 / 5  request_time_s=0.2109
+    run 5 / 5  request_time_s=0.2091
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5407
+    run 2 / 5  request_time_s=0.5286
+    run 3 / 5  request_time_s=0.547
+    run 4 / 5  request_time_s=0.6264
+    run 5 / 5  request_time_s=0.642
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=0.9595
+    run 2 / 5  request_time_s=0.9035
+    run 3 / 5  request_time_s=0.9011
+    run 4 / 5  request_time_s=0.9014
+    run 5 / 5  request_time_s=0.907
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.3492
+    run 2 / 5  request_time_s=2.3492
+    run 3 / 5  request_time_s=2.3392
+    run 4 / 5  request_time_s=2.3585
+    run 5 / 5  request_time_s=2.3696
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=3.8205
+    run 2 / 5  request_time_s=3.8155
+    run 3 / 5  request_time_s=3.8205
+    run 4 / 5  request_time_s=3.976
+    run 5 / 5  request_time_s=3.9835
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7322
+    run 2 / 5  request_time_s=0.7092
+    run 3 / 5  request_time_s=0.706
+    run 4 / 5  request_time_s=0.7154
+    run 5 / 5  request_time_s=0.7213
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.133
+    run 2 / 5  request_time_s=1.1141
+    run 3 / 5  request_time_s=1.0959
+    run 4 / 5  request_time_s=1.1058
+    run 5 / 5  request_time_s=1.1008
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.6302
+    run 2 / 5  request_time_s=1.6183
+    run 3 / 5  request_time_s=1.5009
+    run 4 / 5  request_time_s=1.4941
+    run 5 / 5  request_time_s=1.7124
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.2049
+    run 2 / 5  request_time_s=2.9864
+    run 3 / 5  request_time_s=2.9629
+    run 4 / 5  request_time_s=2.9826
+    run 5 / 5  request_time_s=2.9902
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=4.4894
+    run 2 / 5  request_time_s=4.4375
+    run 3 / 5  request_time_s=4.4617
+    run 4 / 5  request_time_s=4.4049
+    run 5 / 5  request_time_s=4.4315
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.567
+    run 2 / 5  request_time_s=2.6047
+    run 3 / 5  request_time_s=2.5779
+    run 4 / 5  request_time_s=2.5888
+    run 5 / 5  request_time_s=2.5802
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.8958
+    run 2 / 5  request_time_s=3.7789
+    run 3 / 5  request_time_s=3.8788
+    run 4 / 5  request_time_s=3.819
+    run 5 / 5  request_time_s=3.7309
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.9229
+    run 2 / 5  request_time_s=5.318
+    run 3 / 5  request_time_s=4.9129
+    run 4 / 5  request_time_s=4.9189
+    run 5 / 5  request_time_s=5.2198
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=9.5154
+    run 2 / 5  request_time_s=9.3761
+    run 3 / 5  request_time_s=9.5271
+    run 4 / 5  request_time_s=9.3849
+    run 5 / 5  request_time_s=9.3874
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=14.026
+    run 2 / 5  request_time_s=13.8793
+    run 3 / 5  request_time_s=13.8594
+    run 4 / 5  request_time_s=13.9948
+    run 5 / 5  request_time_s=13.9499
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.7499
+    run 2 / 5  request_time_s=4.762
+    run 3 / 5  request_time_s=4.7681
+    run 4 / 5  request_time_s=4.7899
+    run 5 / 5  request_time_s=4.8067
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=8.1316
+    run 2 / 5  request_time_s=7.6482
+    run 3 / 5  request_time_s=7.8798
+    run 4 / 5  request_time_s=7.7776
+    run 5 / 5  request_time_s=7.8605
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=10.3624
+    run 2 / 5  request_time_s=10.3492
+    run 3 / 5  request_time_s=10.2167
+    run 4 / 5  request_time_s=10.7371
+    run 5 / 5  request_time_s=10.4651
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=21.3765
+    run 2 / 5  request_time_s=21.2291
+    run 3 / 5  request_time_s=21.1635
+    run 4 / 5  request_time_s=21.1587
+    run 5 / 5  request_time_s=21.1473
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=32.3191
+    run 2 / 5  request_time_s=32.1058
+    run 3 / 5  request_time_s=31.9399
+    run 4 / 5  request_time_s=32.3093
+    run 5 / 5  request_time_s=32.247
+  [配置 6] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 7：启动 pgid=3927096，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 7] 就绪 ready_poll=97s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=10.2835
+    run 2 / 5  request_time_s=0.2568
+    run 3 / 5  request_time_s=0.2476
+    run 4 / 5  request_time_s=0.2476
+    run 5 / 5  request_time_s=0.2496
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6172
+    run 2 / 5  request_time_s=0.62
+    run 3 / 5  request_time_s=0.6185
+    run 4 / 5  request_time_s=0.6082
+    run 5 / 5  request_time_s=0.5911
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=0.9936
+    run 2 / 5  request_time_s=1.0418
+    run 3 / 5  request_time_s=0.9858
+    run 4 / 5  request_time_s=0.8838
+    run 5 / 5  request_time_s=0.9957
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.3701
+    run 2 / 5  request_time_s=2.3624
+    run 3 / 5  request_time_s=2.3379
+    run 4 / 5  request_time_s=2.5096
+    run 5 / 5  request_time_s=2.3471
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=3.9587
+    run 2 / 5  request_time_s=4.2016
+    run 3 / 5  request_time_s=4.1015
+    run 4 / 5  request_time_s=3.9584
+    run 5 / 5  request_time_s=4.1677
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2189
+    run 2 / 5  request_time_s=0.2123
+    run 3 / 5  request_time_s=0.2116
+    run 4 / 5  request_time_s=0.2151
+    run 5 / 5  request_time_s=0.2176
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5414
+    run 2 / 5  request_time_s=0.6069
+    run 3 / 5  request_time_s=0.6538
+    run 4 / 5  request_time_s=0.6521
+    run 5 / 5  request_time_s=0.6487
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.1084
+    run 2 / 5  request_time_s=1.107
+    run 3 / 5  request_time_s=0.9286
+    run 4 / 5  request_time_s=0.9169
+    run 5 / 5  request_time_s=0.9166
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.4673
+    run 2 / 5  request_time_s=2.4485
+    run 3 / 5  request_time_s=2.3929
+    run 4 / 5  request_time_s=2.419
+    run 5 / 5  request_time_s=2.4031
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=3.8526
+    run 2 / 5  request_time_s=3.861
+    run 3 / 5  request_time_s=3.9191
+    run 4 / 5  request_time_s=3.8694
+    run 5 / 5  request_time_s=3.8484
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7615
+    run 2 / 5  request_time_s=0.7225
+    run 3 / 5  request_time_s=0.7258
+    run 4 / 5  request_time_s=0.7215
+    run 5 / 5  request_time_s=0.7195
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.1123
+    run 2 / 5  request_time_s=1.1807
+    run 3 / 5  request_time_s=1.1969
+    run 4 / 5  request_time_s=1.3706
+    run 5 / 5  request_time_s=1.1082
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.6351
+    run 2 / 5  request_time_s=1.8394
+    run 3 / 5  request_time_s=1.7803
+    run 4 / 5  request_time_s=1.5132
+    run 5 / 5  request_time_s=1.5127
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.2413
+    run 2 / 5  request_time_s=3.0088
+    run 3 / 5  request_time_s=3.0241
+    run 4 / 5  request_time_s=2.9387
+    run 5 / 5  request_time_s=2.9732
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=4.3793
+    run 2 / 5  request_time_s=4.488
+    run 3 / 5  request_time_s=4.509
+    run 4 / 5  request_time_s=4.3976
+    run 5 / 5  request_time_s=4.4366
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.5558
+    run 2 / 5  request_time_s=2.53
+    run 3 / 5  request_time_s=2.5329
+    run 4 / 5  request_time_s=2.5321
+    run 5 / 5  request_time_s=2.5228
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.5763
+    run 2 / 5  request_time_s=3.4547
+    run 3 / 5  request_time_s=3.6063
+    run 4 / 5  request_time_s=3.3943
+    run 5 / 5  request_time_s=3.5726
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.1977
+    run 2 / 5  request_time_s=4.1995
+    run 3 / 5  request_time_s=4.1912
+    run 4 / 5  request_time_s=4.158
+    run 5 / 5  request_time_s=4.1909
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=7.1065
+    run 2 / 5  request_time_s=7.1118
+    run 3 / 5  request_time_s=7.3032
+    run 4 / 5  request_time_s=7.1288
+    run 5 / 5  request_time_s=7.2395
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=9.9801
+    run 2 / 5  request_time_s=10.066
+    run 3 / 5  request_time_s=9.9731
+    run 4 / 5  request_time_s=9.9453
+    run 5 / 5  request_time_s=10.1209
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.6151
+    run 2 / 5  request_time_s=4.6754
+    run 3 / 5  request_time_s=4.6309
+    run 4 / 5  request_time_s=4.9801
+    run 5 / 5  request_time_s=4.6398
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=6.9388
+    run 2 / 5  request_time_s=6.9501
+    run 3 / 5  request_time_s=6.8655
+    run 4 / 5  request_time_s=7.03
+    run 5 / 5  request_time_s=6.8007
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=8.3263
+    run 2 / 5  request_time_s=8.3179
+    run 3 / 5  request_time_s=8.8528
+    run 4 / 5  request_time_s=8.4165
+    run 5 / 5  request_time_s=8.6523
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=15.2594
+    run 2 / 5  request_time_s=15.2006
+    run 3 / 5  request_time_s=15.428
+    run 4 / 5  request_time_s=15.5319
+    run 5 / 5  request_time_s=15.6764
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=22.3726
+    run 2 / 5  request_time_s=22.166
+    run 3 / 5  request_time_s=22.3512
+    run 4 / 5  request_time_s=22.3629
+    run 5 / 5  request_time_s=22.486
+  [配置 7] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 8：启动 pgid=3932790，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 8] 就绪 ready_poll=89s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=18.4364
+    run 2 / 5  request_time_s=0.2226
+    run 3 / 5  request_time_s=0.2204
+    run 4 / 5  request_time_s=0.2182
+    run 5 / 5  request_time_s=0.2185
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6256
+    run 2 / 5  request_time_s=0.627
+    run 3 / 5  request_time_s=0.5965
+    run 4 / 5  request_time_s=0.533
+    run 5 / 5  request_time_s=0.5297
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=0.9405
+    run 2 / 5  request_time_s=0.9418
+    run 3 / 5  request_time_s=0.9738
+    run 4 / 5  request_time_s=0.9642
+    run 5 / 5  request_time_s=0.9625
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.6558
+    run 2 / 5  request_time_s=2.5701
+    run 3 / 5  request_time_s=2.5826
+    run 4 / 5  request_time_s=2.5783
+    run 5 / 5  request_time_s=2.5511
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=4.212
+    run 2 / 5  request_time_s=4.38
+    run 3 / 5  request_time_s=4.423
+    run 4 / 5  request_time_s=4.1992
+    run 5 / 5  request_time_s=4.1893
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2027
+    run 2 / 5  request_time_s=0.1987
+    run 3 / 5  request_time_s=0.1973
+    run 4 / 5  request_time_s=0.199
+    run 5 / 5  request_time_s=0.1945
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5705
+    run 2 / 5  request_time_s=0.5753
+    run 3 / 5  request_time_s=0.5757
+    run 4 / 5  request_time_s=0.6209
+    run 5 / 5  request_time_s=0.7023
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.1891
+    run 2 / 5  request_time_s=1.1759
+    run 3 / 5  request_time_s=1.1681
+    run 4 / 5  request_time_s=1.0497
+    run 5 / 5  request_time_s=0.9784
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.6205
+    run 2 / 5  request_time_s=3.1168
+    run 3 / 5  request_time_s=2.9205
+    run 4 / 5  request_time_s=2.6301
+    run 5 / 5  request_time_s=2.6404
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=4.3212
+    run 2 / 5  request_time_s=4.358
+    run 3 / 5  request_time_s=4.3233
+    run 4 / 5  request_time_s=4.353
+    run 5 / 5  request_time_s=4.34
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7284
+    run 2 / 5  request_time_s=0.7214
+    run 3 / 5  request_time_s=0.7143
+    run 4 / 5  request_time_s=0.724
+    run 5 / 5  request_time_s=0.7474
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.2445
+    run 2 / 5  request_time_s=1.2329
+    run 3 / 5  request_time_s=1.2303
+    run 4 / 5  request_time_s=1.2122
+    run 5 / 5  request_time_s=1.2171
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.6721
+    run 2 / 5  request_time_s=1.6197
+    run 3 / 5  request_time_s=1.6626
+    run 4 / 5  request_time_s=1.6168
+    run 5 / 5  request_time_s=1.6241
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.2254
+    run 2 / 5  request_time_s=3.2275
+    run 3 / 5  request_time_s=3.3167
+    run 4 / 5  request_time_s=3.3377
+    run 5 / 5  request_time_s=3.3158
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.0288
+    run 2 / 5  request_time_s=4.9701
+    run 3 / 5  request_time_s=4.9989
+    run 4 / 5  request_time_s=4.8721
+    run 5 / 5  request_time_s=4.912
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.6201
+    run 2 / 5  request_time_s=3.0156
+    run 3 / 5  request_time_s=2.5951
+    run 4 / 5  request_time_s=2.6108
+    run 5 / 5  request_time_s=2.7069
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=4.0567
+    run 2 / 5  request_time_s=4.275
+    run 3 / 5  request_time_s=4.3475
+    run 4 / 5  request_time_s=4.2683
+    run 5 / 5  request_time_s=4.2796
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=5.1029
+    run 2 / 5  request_time_s=5.3223
+    run 3 / 5  request_time_s=5.302
+    run 4 / 5  request_time_s=5.3205
+    run 5 / 5  request_time_s=5.1591
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=9.5023
+    run 2 / 5  request_time_s=9.6964
+    run 3 / 5  request_time_s=9.4665
+    run 4 / 5  request_time_s=9.5201
+    run 5 / 5  request_time_s=9.6685
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=14.0314
+    run 2 / 5  request_time_s=13.9862
+    run 3 / 5  request_time_s=13.9751
+    run 4 / 5  request_time_s=13.954
+    run 5 / 5  request_time_s=14.1597
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.8219
+    run 2 / 5  request_time_s=4.7697
+    run 3 / 5  request_time_s=4.9432
+    run 4 / 5  request_time_s=4.7484
+    run 5 / 5  request_time_s=4.7816
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=8.5873
+    run 2 / 5  request_time_s=8.6456
+    run 3 / 5  request_time_s=8.8197
+    run 4 / 5  request_time_s=8.6349
+    run 5 / 5  request_time_s=8.2234
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=11.225
+    run 2 / 5  request_time_s=10.8546
+    run 3 / 5  request_time_s=10.7245
+    run 4 / 5  request_time_s=10.765
+    run 5 / 5  request_time_s=10.8231
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=21.7335
+    run 2 / 5  request_time_s=21.5029
+    run 3 / 5  request_time_s=21.4334
+    run 4 / 5  request_time_s=21.5738
+    run 5 / 5  request_time_s=21.7899
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=32.1428
+    run 2 / 5  request_time_s=31.8787
+    run 3 / 5  request_time_s=31.9282
+    run 4 / 5  request_time_s=32.3399
+    run 5 / 5  request_time_s=32.2406
+  [配置 8] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 9：启动 pgid=3936509，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 9] 就绪 ready_poll=89s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=18.8697
+    run 2 / 5  request_time_s=0.2382
+    run 3 / 5  request_time_s=0.2305
+    run 4 / 5  request_time_s=0.2294
+    run 5 / 5  request_time_s=0.2295
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.7431
+    run 2 / 5  request_time_s=0.7427
+    run 3 / 5  request_time_s=0.7341
+    run 4 / 5  request_time_s=0.7278
+    run 5 / 5  request_time_s=0.6131
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.1167
+    run 2 / 5  request_time_s=1.1228
+    run 3 / 5  request_time_s=1.1335
+    run 4 / 5  request_time_s=1.1288
+    run 5 / 5  request_time_s=1.1036
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=3.1118
+    run 2 / 5  request_time_s=3.0853
+    run 3 / 5  request_time_s=3.1172
+    run 4 / 5  request_time_s=3.148
+    run 5 / 5  request_time_s=3.4533
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=5.054
+    run 2 / 5  request_time_s=5.3942
+    run 3 / 5  request_time_s=5.0589
+    run 4 / 5  request_time_s=5.0733
+    run 5 / 5  request_time_s=5.0622
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2238
+    run 2 / 5  request_time_s=0.2171
+    run 3 / 5  request_time_s=0.2164
+    run 4 / 5  request_time_s=0.2198
+    run 5 / 5  request_time_s=0.2187
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.6614
+    run 2 / 5  request_time_s=0.6568
+    run 3 / 5  request_time_s=0.6602
+    run 4 / 5  request_time_s=0.758
+    run 5 / 5  request_time_s=0.7615
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.2348
+    run 2 / 5  request_time_s=1.1548
+    run 3 / 5  request_time_s=1.1402
+    run 4 / 5  request_time_s=1.1939
+    run 5 / 5  request_time_s=1.1534
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=3.1502
+    run 2 / 5  request_time_s=3.1522
+    run 3 / 5  request_time_s=3.1718
+    run 4 / 5  request_time_s=3.1497
+    run 5 / 5  request_time_s=3.1755
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=5.2101
+    run 2 / 5  request_time_s=5.1267
+    run 3 / 5  request_time_s=5.4318
+    run 4 / 5  request_time_s=5.1278
+    run 5 / 5  request_time_s=5.4717
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7558
+    run 2 / 5  request_time_s=0.7231
+    run 3 / 5  request_time_s=0.7183
+    run 4 / 5  request_time_s=0.7309
+    run 5 / 5  request_time_s=0.7703
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.3138
+    run 2 / 5  request_time_s=1.3116
+    run 3 / 5  request_time_s=1.2809
+    run 4 / 5  request_time_s=1.3049
+    run 5 / 5  request_time_s=1.2546
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.8396
+    run 2 / 5  request_time_s=1.8217
+    run 3 / 5  request_time_s=1.8376
+    run 4 / 5  request_time_s=1.8096
+    run 5 / 5  request_time_s=1.8148
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.834
+    run 2 / 5  request_time_s=3.846
+    run 3 / 5  request_time_s=3.8137
+    run 4 / 5  request_time_s=3.8266
+    run 5 / 5  request_time_s=3.8743
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.9548
+    run 2 / 5  request_time_s=5.6752
+    run 3 / 5  request_time_s=5.7102
+    run 4 / 5  request_time_s=5.706
+    run 5 / 5  request_time_s=5.7252
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.5196
+    run 2 / 5  request_time_s=2.5033
+    run 3 / 5  request_time_s=2.5006
+    run 4 / 5  request_time_s=2.4921
+    run 5 / 5  request_time_s=2.5072
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.7074
+    run 2 / 5  request_time_s=3.7827
+    run 3 / 5  request_time_s=3.7073
+    run 4 / 5  request_time_s=3.6997
+    run 5 / 5  request_time_s=3.8609
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.3273
+    run 2 / 5  request_time_s=4.3476
+    run 3 / 5  request_time_s=4.3234
+    run 4 / 5  request_time_s=4.5539
+    run 5 / 5  request_time_s=4.5316
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=7.2029
+    run 2 / 5  request_time_s=7.1335
+    run 3 / 5  request_time_s=7.1318
+    run 4 / 5  request_time_s=7.1077
+    run 5 / 5  request_time_s=7.1698
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=9.9006
+    run 2 / 5  request_time_s=10.0818
+    run 3 / 5  request_time_s=10.1362
+    run 4 / 5  request_time_s=9.8885
+    run 5 / 5  request_time_s=9.9864
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.5653
+    run 2 / 5  request_time_s=4.5437
+    run 3 / 5  request_time_s=4.648
+    run 4 / 5  request_time_s=4.6062
+    run 5 / 5  request_time_s=4.5265
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=7.0922
+    run 2 / 5  request_time_s=7.4701
+    run 3 / 5  request_time_s=7.0995
+    run 4 / 5  request_time_s=7.5497
+    run 5 / 5  request_time_s=7.6273
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=8.992
+    run 2 / 5  request_time_s=9.079
+    run 3 / 5  request_time_s=9.0722
+    run 4 / 5  request_time_s=8.69
+    run 5 / 5  request_time_s=8.6719
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=15.3098
+    run 2 / 5  request_time_s=15.0979
+    run 3 / 5  request_time_s=15.4368
+    run 4 / 5  request_time_s=15.4403
+    run 5 / 5  request_time_s=15.4339
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=21.8389
+    run 2 / 5  request_time_s=21.9532
+    run 3 / 5  request_time_s=21.8514
+    run 4 / 5  request_time_s=21.7722
+    run 5 / 5  request_time_s=21.933
+  [配置 9] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 10：启动 pgid=3942258，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 10] 就绪 ready_poll=110s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=18.3544
+    run 2 / 5  request_time_s=0.237
+    run 3 / 5  request_time_s=0.2306
+    run 4 / 5  request_time_s=0.2311
+    run 5 / 5  request_time_s=0.2404
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.7015
+    run 2 / 5  request_time_s=0.7006
+    run 3 / 5  request_time_s=0.704
+    run 4 / 5  request_time_s=0.6744
+    run 5 / 5  request_time_s=0.6896
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.1846
+    run 2 / 5  request_time_s=1.1595
+    run 3 / 5  request_time_s=1.3307
+    run 4 / 5  request_time_s=1.1642
+    run 5 / 5  request_time_s=1.1833
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=3.1766
+    run 2 / 5  request_time_s=3.2888
+    run 3 / 5  request_time_s=3.173
+    run 4 / 5  request_time_s=3.2474
+    run 5 / 5  request_time_s=3.2694
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=5.4225
+    run 2 / 5  request_time_s=5.052
+    run 3 / 5  request_time_s=5.0354
+    run 4 / 5  request_time_s=5.0349
+    run 5 / 5  request_time_s=5.0238
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2244
+    run 2 / 5  request_time_s=0.2235
+    run 3 / 5  request_time_s=0.2139
+    run 4 / 5  request_time_s=0.2186
+    run 5 / 5  request_time_s=0.2159
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.6611
+    run 2 / 5  request_time_s=0.6734
+    run 3 / 5  request_time_s=0.661
+    run 4 / 5  request_time_s=0.6668
+    run 5 / 5  request_time_s=0.6549
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.1599
+    run 2 / 5  request_time_s=1.14
+    run 3 / 5  request_time_s=1.1659
+    run 4 / 5  request_time_s=1.1743
+    run 5 / 5  request_time_s=1.3341
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=3.3393
+    run 2 / 5  request_time_s=3.1527
+    run 3 / 5  request_time_s=3.2651
+    run 4 / 5  request_time_s=3.2882
+    run 5 / 5  request_time_s=3.2241
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=5.2096
+    run 2 / 5  request_time_s=4.9743
+    run 3 / 5  request_time_s=5.4961
+    run 4 / 5  request_time_s=5.0798
+    run 5 / 5  request_time_s=5.0215
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7602
+    run 2 / 5  request_time_s=0.7344
+    run 3 / 5  request_time_s=0.7212
+    run 4 / 5  request_time_s=0.7195
+    run 5 / 5  request_time_s=0.7193
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.3024
+    run 2 / 5  request_time_s=1.5316
+    run 3 / 5  request_time_s=1.4131
+    run 4 / 5  request_time_s=1.3424
+    run 5 / 5  request_time_s=1.3462
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.7867
+    run 2 / 5  request_time_s=1.7938
+    run 3 / 5  request_time_s=1.9507
+    run 4 / 5  request_time_s=1.7985
+    run 5 / 5  request_time_s=1.7633
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.7669
+    run 2 / 5  request_time_s=3.7022
+    run 3 / 5  request_time_s=3.813
+    run 4 / 5  request_time_s=3.7021
+    run 5 / 5  request_time_s=4.1692
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.8436
+    run 2 / 5  request_time_s=5.8715
+    run 3 / 5  request_time_s=5.8477
+    run 4 / 5  request_time_s=6.0418
+    run 5 / 5  request_time_s=5.7678
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.5585
+    run 2 / 5  request_time_s=2.5428
+    run 3 / 5  request_time_s=2.5357
+    run 4 / 5  request_time_s=2.5265
+    run 5 / 5  request_time_s=2.5267
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.772
+    run 2 / 5  request_time_s=3.7761
+    run 3 / 5  request_time_s=3.5732
+    run 4 / 5  request_time_s=3.932
+    run 5 / 5  request_time_s=3.8586
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.2236
+    run 2 / 5  request_time_s=4.1905
+    run 3 / 5  request_time_s=4.1779
+    run 4 / 5  request_time_s=4.1553
+    run 5 / 5  request_time_s=4.2391
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=6.3839
+    run 2 / 5  request_time_s=6.4624
+    run 3 / 5  request_time_s=6.3357
+    run 4 / 5  request_time_s=6.219
+    run 5 / 5  request_time_s=6.388
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=8.5778
+    run 2 / 5  request_time_s=8.4492
+    run 3 / 5  request_time_s=8.5532
+    run 4 / 5  request_time_s=8.4527
+    run 5 / 5  request_time_s=8.7228
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.5505
+    run 2 / 5  request_time_s=4.5278
+    run 3 / 5  request_time_s=4.5067
+    run 4 / 5  request_time_s=4.5045
+    run 5 / 5  request_time_s=4.8936
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=7.113
+    run 2 / 5  request_time_s=6.7857
+    run 3 / 5  request_time_s=7.0799
+    run 4 / 5  request_time_s=7.1631
+    run 5 / 5  request_time_s=7.0347
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=7.692
+    run 2 / 5  request_time_s=8.2234
+    run 3 / 5  request_time_s=8.0572
+    run 4 / 5  request_time_s=8.1822
+    run 5 / 5  request_time_s=7.7554
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=12.339
+    run 2 / 5  request_time_s=12.097
+    run 3 / 5  request_time_s=12.3153
+    run 4 / 5  request_time_s=12.3393
+    run 5 / 5  request_time_s=12.1578
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=16.3966
+    run 2 / 5  request_time_s=16.7864
+    run 3 / 5  request_time_s=16.7327
+    run 4 / 5  request_time_s=16.3087
+    run 5 / 5  request_time_s=16.7712
+  [配置 10] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 11：启动 pgid=3951565，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 11] 就绪 ready_poll=79s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=22.4564
+    run 2 / 5  request_time_s=0.2641
+    run 3 / 5  request_time_s=0.2546
+    run 4 / 5  request_time_s=0.2614
+    run 5 / 5  request_time_s=0.2561
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6541
+    run 2 / 5  request_time_s=0.6695
+    run 3 / 5  request_time_s=0.6687
+    run 4 / 5  request_time_s=0.6895
+    run 5 / 5  request_time_s=0.6554
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.1704
+    run 2 / 5  request_time_s=1.1314
+    run 3 / 5  request_time_s=1.1609
+    run 4 / 5  request_time_s=1.0756
+    run 5 / 5  request_time_s=0.9572
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.5993
+    run 2 / 5  request_time_s=2.5914
+    run 3 / 5  request_time_s=2.6097
+    run 4 / 5  request_time_s=2.6107
+    run 5 / 5  request_time_s=2.5907
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=4.3674
+    run 2 / 5  request_time_s=4.2736
+    run 3 / 5  request_time_s=4.3295
+    run 4 / 5  request_time_s=4.244
+    run 5 / 5  request_time_s=4.2194
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2633
+    run 2 / 5  request_time_s=0.2437
+    run 3 / 5  request_time_s=0.2428
+    run 4 / 5  request_time_s=0.2541
+    run 5 / 5  request_time_s=0.2527
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.6981
+    run 2 / 5  request_time_s=0.5894
+    run 3 / 5  request_time_s=0.6136
+    run 4 / 5  request_time_s=0.7617
+    run 5 / 5  request_time_s=0.6977
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.1514
+    run 2 / 5  request_time_s=1.0052
+    run 3 / 5  request_time_s=1.0131
+    run 4 / 5  request_time_s=1.0233
+    run 5 / 5  request_time_s=1.0306
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.6814
+    run 2 / 5  request_time_s=2.691
+    run 3 / 5  request_time_s=2.6813
+    run 4 / 5  request_time_s=2.7232
+    run 5 / 5  request_time_s=2.6897
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=4.3112
+    run 2 / 5  request_time_s=4.4717
+    run 3 / 5  request_time_s=4.4552
+    run 4 / 5  request_time_s=4.2769
+    run 5 / 5  request_time_s=4.2631
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.756
+    run 2 / 5  request_time_s=0.9098
+    run 3 / 5  request_time_s=0.8809
+    run 4 / 5  request_time_s=0.7162
+    run 5 / 5  request_time_s=0.7134
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.1749
+    run 2 / 5  request_time_s=1.1295
+    run 3 / 5  request_time_s=1.1705
+    run 4 / 5  request_time_s=1.1648
+    run 5 / 5  request_time_s=1.1568
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.629
+    run 2 / 5  request_time_s=1.6309
+    run 3 / 5  request_time_s=1.5608
+    run 4 / 5  request_time_s=1.5756
+    run 5 / 5  request_time_s=1.6152
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.2176
+    run 2 / 5  request_time_s=3.511
+    run 3 / 5  request_time_s=3.4319
+    run 4 / 5  request_time_s=3.3534
+    run 5 / 5  request_time_s=3.5517
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=4.9405
+    run 2 / 5  request_time_s=4.942
+    run 3 / 5  request_time_s=4.9398
+    run 4 / 5  request_time_s=4.9175
+    run 5 / 5  request_time_s=4.9526
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.6135
+    run 2 / 5  request_time_s=2.6643
+    run 3 / 5  request_time_s=2.6023
+    run 4 / 5  request_time_s=2.6046
+    run 5 / 5  request_time_s=2.6044
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.89
+    run 2 / 5  request_time_s=3.833
+    run 3 / 5  request_time_s=3.8138
+    run 4 / 5  request_time_s=3.9431
+    run 5 / 5  request_time_s=3.7889
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.9397
+    run 2 / 5  request_time_s=4.9727
+    run 3 / 5  request_time_s=4.8842
+    run 4 / 5  request_time_s=4.931
+    run 5 / 5  request_time_s=4.8712
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=9.4794
+    run 2 / 5  request_time_s=9.5494
+    run 3 / 5  request_time_s=9.5016
+    run 4 / 5  request_time_s=9.384
+    run 5 / 5  request_time_s=9.4639
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=14.0436
+    run 2 / 5  request_time_s=14.0964
+    run 3 / 5  request_time_s=13.9187
+    run 4 / 5  request_time_s=13.9673
+    run 5 / 5  request_time_s=14.0754
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.8219
+    run 2 / 5  request_time_s=4.7503
+    run 3 / 5  request_time_s=4.7373
+    run 4 / 5  request_time_s=4.7438
+    run 5 / 5  request_time_s=4.752
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=7.7851
+    run 2 / 5  request_time_s=7.7837
+    run 3 / 5  request_time_s=7.8824
+    run 4 / 5  request_time_s=7.5633
+    run 5 / 5  request_time_s=7.8529
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=10.588
+    run 2 / 5  request_time_s=10.5384
+    run 3 / 5  request_time_s=10.4508
+    run 4 / 5  request_time_s=10.566
+    run 5 / 5  request_time_s=10.2438
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=21.1144
+    run 2 / 5  request_time_s=21.1723
+    run 3 / 5  request_time_s=21.379
+    run 4 / 5  request_time_s=21.3932
+    run 5 / 5  request_time_s=21.1915
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=31.9225
+    run 2 / 5  request_time_s=31.9318
+    run 3 / 5  request_time_s=31.9904
+    run 4 / 5  request_time_s=31.8218
+    run 5 / 5  request_time_s=32.0826
+  [配置 11] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 12：启动 pgid=3955660，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 12] 就绪 ready_poll=105s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=20.253
+    run 2 / 5  request_time_s=0.2706
+    run 3 / 5  request_time_s=0.2675
+    run 4 / 5  request_time_s=0.2685
+    run 5 / 5  request_time_s=0.2591
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.7592
+    run 2 / 5  request_time_s=0.7397
+    run 3 / 5  request_time_s=0.7314
+    run 4 / 5  request_time_s=0.7121
+    run 5 / 5  request_time_s=0.7446
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.3519
+    run 2 / 5  request_time_s=1.4176
+    run 3 / 5  request_time_s=1.3941
+    run 4 / 5  request_time_s=1.161
+    run 5 / 5  request_time_s=1.1598
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=3.2279
+    run 2 / 5  request_time_s=3.1999
+    run 3 / 5  request_time_s=3.3379
+    run 4 / 5  request_time_s=3.167
+    run 5 / 5  request_time_s=3.1783
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=5.2609
+    run 2 / 5  request_time_s=5.2845
+    run 3 / 5  request_time_s=5.2785
+    run 4 / 5  request_time_s=5.3045
+    run 5 / 5  request_time_s=5.2375
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2606
+    run 2 / 5  request_time_s=0.2482
+    run 3 / 5  request_time_s=0.2911
+    run 4 / 5  request_time_s=0.2424
+    run 5 / 5  request_time_s=0.2443
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.6819
+    run 2 / 5  request_time_s=0.6804
+    run 3 / 5  request_time_s=0.6862
+    run 4 / 5  request_time_s=0.6929
+    run 5 / 5  request_time_s=0.68
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.2194
+    run 2 / 5  request_time_s=1.2049
+    run 3 / 5  request_time_s=1.2165
+    run 4 / 5  request_time_s=1.2179
+    run 5 / 5  request_time_s=1.2187
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=3.2779
+    run 2 / 5  request_time_s=3.5541
+    run 3 / 5  request_time_s=3.3696
+    run 4 / 5  request_time_s=3.4861
+    run 5 / 5  request_time_s=3.2596
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=5.4476
+    run 2 / 5  request_time_s=5.2478
+    run 3 / 5  request_time_s=5.4457
+    run 4 / 5  request_time_s=5.1896
+    run 5 / 5  request_time_s=5.3615
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.776
+    run 2 / 5  request_time_s=0.8078
+    run 3 / 5  request_time_s=0.7511
+    run 4 / 5  request_time_s=0.7454
+    run 5 / 5  request_time_s=0.7553
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.2969
+    run 2 / 5  request_time_s=1.3024
+    run 3 / 5  request_time_s=1.2776
+    run 4 / 5  request_time_s=1.2675
+    run 5 / 5  request_time_s=1.279
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.8313
+    run 2 / 5  request_time_s=2.0253
+    run 3 / 5  request_time_s=1.8921
+    run 4 / 5  request_time_s=1.8381
+    run 5 / 5  request_time_s=1.8392
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=4.0415
+    run 2 / 5  request_time_s=3.9575
+    run 3 / 5  request_time_s=3.9448
+    run 4 / 5  request_time_s=3.9244
+    run 5 / 5  request_time_s=4.0128
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=6.5393
+    run 2 / 5  request_time_s=5.9708
+    run 3 / 5  request_time_s=6.0356
+    run 4 / 5  request_time_s=6.3055
+    run 5 / 5  request_time_s=6.1477
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.5748
+    run 2 / 5  request_time_s=2.5835
+    run 3 / 5  request_time_s=2.6161
+    run 4 / 5  request_time_s=2.5566
+    run 5 / 5  request_time_s=2.587
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.4791
+    run 2 / 5  request_time_s=3.5304
+    run 3 / 5  request_time_s=3.4823
+    run 4 / 5  request_time_s=3.632
+    run 5 / 5  request_time_s=3.5337
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.328
+    run 2 / 5  request_time_s=4.2924
+    run 3 / 5  request_time_s=4.2029
+    run 4 / 5  request_time_s=4.1513
+    run 5 / 5  request_time_s=4.193
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=7.3062
+    run 2 / 5  request_time_s=7.1617
+    run 3 / 5  request_time_s=7.0884
+    run 4 / 5  request_time_s=7.284
+    run 5 / 5  request_time_s=7.2029
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=10.0989
+    run 2 / 5  request_time_s=10.0958
+    run 3 / 5  request_time_s=10.1375
+    run 4 / 5  request_time_s=10.1291
+    run 5 / 5  request_time_s=9.9991
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.636
+    run 2 / 5  request_time_s=4.7431
+    run 3 / 5  request_time_s=4.7641
+    run 4 / 5  request_time_s=4.6435
+    run 5 / 5  request_time_s=4.7142
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=6.8211
+    run 2 / 5  request_time_s=7.0293
+    run 3 / 5  request_time_s=6.535
+    run 4 / 5  request_time_s=6.7536
+    run 5 / 5  request_time_s=6.8425
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=8.5689
+    run 2 / 5  request_time_s=8.427
+    run 3 / 5  request_time_s=8.5139
+    run 4 / 5  request_time_s=8.5994
+    run 5 / 5  request_time_s=8.2427
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=14.935
+    run 2 / 5  request_time_s=14.8645
+    run 3 / 5  request_time_s=15.1183
+    run 4 / 5  request_time_s=14.6961
+    run 5 / 5  request_time_s=14.8208
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=21.3205
+    run 2 / 5  request_time_s=21.4092
+    run 3 / 5  request_time_s=21.3877
+    run 4 / 5  request_time_s=21.2951
+    run 5 / 5  request_time_s=21.3045
+  [配置 12] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 13：启动 pgid=3962009，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 13] 就绪 ready_poll=90s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=0.2686
+    run 2 / 5  request_time_s=0.1972
+    run 3 / 5  request_time_s=0.196
+    run 4 / 5  request_time_s=0.1949
+    run 5 / 5  request_time_s=0.2072
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6285
+    run 2 / 5  request_time_s=0.6195
+    run 3 / 5  request_time_s=0.6038
+    run 4 / 5  request_time_s=0.5237
+    run 5 / 5  request_time_s=0.5146
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.0554
+    run 2 / 5  request_time_s=1.067
+    run 3 / 5  request_time_s=1.097
+    run 4 / 5  request_time_s=1.0973
+    run 5 / 5  request_time_s=1.1053
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=3.0718
+    run 2 / 5  request_time_s=3.0486
+    run 3 / 5  request_time_s=2.5747
+    run 4 / 5  request_time_s=2.7549
+    run 5 / 5  request_time_s=2.6633
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=4.1428
+    run 2 / 5  request_time_s=4.1671
+    run 3 / 5  request_time_s=4.3372
+    run 4 / 5  request_time_s=4.2302
+    run 5 / 5  request_time_s=4.0673
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2034
+    run 2 / 5  request_time_s=0.1922
+    run 3 / 5  request_time_s=0.201
+    run 4 / 5  request_time_s=0.1981
+    run 5 / 5  request_time_s=0.1983
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.5523
+    run 2 / 5  request_time_s=0.5662
+    run 3 / 5  request_time_s=0.5608
+    run 4 / 5  request_time_s=0.5492
+    run 5 / 5  request_time_s=0.5884
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.116
+    run 2 / 5  request_time_s=1.105
+    run 3 / 5  request_time_s=1.0015
+    run 4 / 5  request_time_s=0.953
+    run 5 / 5  request_time_s=0.9619
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=2.5648
+    run 2 / 5  request_time_s=2.578
+    run 3 / 5  request_time_s=2.5634
+    run 4 / 5  request_time_s=2.6571
+    run 5 / 5  request_time_s=2.942
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=4.1485
+    run 2 / 5  request_time_s=4.1375
+    run 3 / 5  request_time_s=4.1107
+    run 4 / 5  request_time_s=4.3673
+    run 5 / 5  request_time_s=4.2018
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7493
+    run 2 / 5  request_time_s=0.7141
+    run 3 / 5  request_time_s=0.7199
+    run 4 / 5  request_time_s=0.709
+    run 5 / 5  request_time_s=0.7929
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.3887
+    run 2 / 5  request_time_s=1.3114
+    run 3 / 5  request_time_s=1.354
+    run 4 / 5  request_time_s=1.3301
+    run 5 / 5  request_time_s=1.3781
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.7015
+    run 2 / 5  request_time_s=1.5519
+    run 3 / 5  request_time_s=1.594
+    run 4 / 5  request_time_s=1.6374
+    run 5 / 5  request_time_s=1.6118
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.1997
+    run 2 / 5  request_time_s=3.3581
+    run 3 / 5  request_time_s=3.1574
+    run 4 / 5  request_time_s=3.1729
+    run 5 / 5  request_time_s=3.408
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.0873
+    run 2 / 5  request_time_s=4.9175
+    run 3 / 5  request_time_s=4.7852
+    run 4 / 5  request_time_s=4.9928
+    run 5 / 5  request_time_s=5.2729
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.8962
+    run 2 / 5  request_time_s=2.818
+    run 3 / 5  request_time_s=2.4674
+    run 4 / 5  request_time_s=2.48
+    run 5 / 5  request_time_s=2.4655
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.5634
+    run 2 / 5  request_time_s=3.6796
+    run 3 / 5  request_time_s=3.6017
+    run 4 / 5  request_time_s=3.5919
+    run 5 / 5  request_time_s=3.5713
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.3397
+    run 2 / 5  request_time_s=4.3646
+    run 3 / 5  request_time_s=4.1572
+    run 4 / 5  request_time_s=4.3143
+    run 5 / 5  request_time_s=4.3166
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=6.7983
+    run 2 / 5  request_time_s=6.5971
+    run 3 / 5  request_time_s=6.9361
+    run 4 / 5  request_time_s=6.6536
+    run 5 / 5  request_time_s=6.9021
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=9.2443
+    run 2 / 5  request_time_s=9.2171
+    run 3 / 5  request_time_s=9.2467
+    run 4 / 5  request_time_s=9.3289
+    run 5 / 5  request_time_s=9.2744
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.5971
+    run 2 / 5  request_time_s=4.5086
+    run 3 / 5  request_time_s=4.478
+    run 4 / 5  request_time_s=4.5861
+    run 5 / 5  request_time_s=4.4856
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=6.9604
+    run 2 / 5  request_time_s=6.9512
+    run 3 / 5  request_time_s=6.9472
+    run 4 / 5  request_time_s=7.1323
+    run 5 / 5  request_time_s=7.4974
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=8.8306
+    run 2 / 5  request_time_s=8.7575
+    run 3 / 5  request_time_s=8.668
+    run 4 / 5  request_time_s=8.7438
+    run 5 / 5  request_time_s=8.6569
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=14.3971
+    run 2 / 5  request_time_s=14.2558
+    run 3 / 5  request_time_s=14.3517
+    run 4 / 5  request_time_s=14.6215
+    run 5 / 5  request_time_s=14.5741
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=20.0664
+    run 2 / 5  request_time_s=20.3674
+    run 3 / 5  request_time_s=20.4422
+    run 4 / 5  request_time_s=20.3063
+    run 5 / 5  request_time_s=20.1304
+  [配置 13] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 14：启动 pgid=3965418，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 14] 就绪 ready_poll=110s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=0.3037
+    run 2 / 5  request_time_s=0.2333
+    run 3 / 5  request_time_s=0.2276
+    run 4 / 5  request_time_s=0.2359
+    run 5 / 5  request_time_s=0.2248
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6337
+    run 2 / 5  request_time_s=0.6929
+    run 3 / 5  request_time_s=0.7086
+    run 4 / 5  request_time_s=0.6276
+    run 5 / 5  request_time_s=0.6176
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.1105
+    run 2 / 5  request_time_s=1.1153
+    run 3 / 5  request_time_s=1.1257
+    run 4 / 5  request_time_s=1.1553
+    run 5 / 5  request_time_s=1.1146
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=3.1135
+    run 2 / 5  request_time_s=3.1744
+    run 3 / 5  request_time_s=3.2604
+    run 4 / 5  request_time_s=3.4956
+    run 5 / 5  request_time_s=3.1007
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=5.4557
+    run 2 / 5  request_time_s=5.1894
+    run 3 / 5  request_time_s=5.6132
+    run 4 / 5  request_time_s=5.1764
+    run 5 / 5  request_time_s=5.1399
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2206
+    run 2 / 5  request_time_s=0.2153
+    run 3 / 5  request_time_s=0.2204
+    run 4 / 5  request_time_s=0.2223
+    run 5 / 5  request_time_s=0.2161
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.6586
+    run 2 / 5  request_time_s=0.6622
+    run 3 / 5  request_time_s=0.6684
+    run 4 / 5  request_time_s=0.7031
+    run 5 / 5  request_time_s=0.7323
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.3249
+    run 2 / 5  request_time_s=1.3435
+    run 3 / 5  request_time_s=1.1645
+    run 4 / 5  request_time_s=1.1525
+    run 5 / 5  request_time_s=1.1676
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=3.1912
+    run 2 / 5  request_time_s=3.5011
+    run 3 / 5  request_time_s=3.1714
+    run 4 / 5  request_time_s=3.1838
+    run 5 / 5  request_time_s=3.1182
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=5.2644
+    run 2 / 5  request_time_s=5.457
+    run 3 / 5  request_time_s=5.5479
+    run 4 / 5  request_time_s=5.0989
+    run 5 / 5  request_time_s=5.2622
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7551
+    run 2 / 5  request_time_s=0.7395
+    run 3 / 5  request_time_s=0.7188
+    run 4 / 5  request_time_s=0.734
+    run 5 / 5  request_time_s=0.717
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.5463
+    run 2 / 5  request_time_s=1.5456
+    run 3 / 5  request_time_s=1.3496
+    run 4 / 5  request_time_s=1.2938
+    run 5 / 5  request_time_s=1.4157
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=2.069
+    run 2 / 5  request_time_s=1.8439
+    run 3 / 5  request_time_s=1.7908
+    run 4 / 5  request_time_s=1.8055
+    run 5 / 5  request_time_s=1.7971
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=4.1922
+    run 2 / 5  request_time_s=3.7781
+    run 3 / 5  request_time_s=4.0751
+    run 4 / 5  request_time_s=4.1841
+    run 5 / 5  request_time_s=3.8354
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.9027
+    run 2 / 5  request_time_s=5.8052
+    run 3 / 5  request_time_s=6.1223
+    run 4 / 5  request_time_s=6.0684
+    run 5 / 5  request_time_s=6.1362
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.4818
+    run 2 / 5  request_time_s=2.549
+    run 3 / 5  request_time_s=2.5247
+    run 4 / 5  request_time_s=2.5303
+    run 5 / 5  request_time_s=2.5394
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.6845
+    run 2 / 5  request_time_s=3.4996
+    run 3 / 5  request_time_s=3.6852
+    run 4 / 5  request_time_s=3.5173
+    run 5 / 5  request_time_s=3.6688
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=3.9692
+    run 2 / 5  request_time_s=4.0657
+    run 3 / 5  request_time_s=4.087
+    run 4 / 5  request_time_s=4.1424
+    run 5 / 5  request_time_s=4.2321
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=6.1548
+    run 2 / 5  request_time_s=6.071
+    run 3 / 5  request_time_s=6.1883
+    run 4 / 5  request_time_s=6.0853
+    run 5 / 5  request_time_s=6.1917
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=8.4441
+    run 2 / 5  request_time_s=8.3062
+    run 3 / 5  request_time_s=8.6067
+    run 4 / 5  request_time_s=8.1074
+    run 5 / 5  request_time_s=8.3472
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.439
+    run 2 / 5  request_time_s=4.6368
+    run 3 / 5  request_time_s=4.6084
+    run 4 / 5  request_time_s=4.6116
+    run 5 / 5  request_time_s=4.5712
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=7.0452
+    run 2 / 5  request_time_s=6.5123
+    run 3 / 5  request_time_s=6.4893
+    run 4 / 5  request_time_s=6.9504
+    run 5 / 5  request_time_s=6.8749
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=7.9106
+    run 2 / 5  request_time_s=7.701
+    run 3 / 5  request_time_s=7.8539
+    run 4 / 5  request_time_s=7.8057
+    run 5 / 5  request_time_s=7.7199
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=11.1611
+    run 2 / 5  request_time_s=11.3606
+    run 3 / 5  request_time_s=11.2067
+    run 4 / 5  request_time_s=11.5786
+    run 5 / 5  request_time_s=11.1038
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=14.9142
+    run 2 / 5  request_time_s=15.3758
+    run 3 / 5  request_time_s=14.9227
+    run 4 / 5  request_time_s=14.6796
+    run 5 / 5  request_time_s=15.0587
+  [配置 14] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 15：启动 pgid=3970683，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 15] 就绪 ready_poll=92s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=6.2375
+    run 2 / 5  request_time_s=0.2422
+    run 3 / 5  request_time_s=0.2453
+    run 4 / 5  request_time_s=0.2488
+    run 5 / 5  request_time_s=0.2473
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.6385
+    run 2 / 5  request_time_s=0.645
+    run 3 / 5  request_time_s=0.652
+    run 4 / 5  request_time_s=0.6448
+    run 5 / 5  request_time_s=0.6504
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.2094
+    run 2 / 5  request_time_s=1.1779
+    run 3 / 5  request_time_s=1.091
+    run 4 / 5  request_time_s=1.08
+    run 5 / 5  request_time_s=1.0211
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=2.9305
+    run 2 / 5  request_time_s=2.7682
+    run 3 / 5  request_time_s=2.6857
+    run 4 / 5  request_time_s=2.6942
+    run 5 / 5  request_time_s=2.6752
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=4.3851
+    run 2 / 5  request_time_s=4.5572
+    run 3 / 5  request_time_s=4.3413
+    run 4 / 5  request_time_s=4.4464
+    run 5 / 5  request_time_s=4.3012
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2266
+    run 2 / 5  request_time_s=0.2265
+    run 3 / 5  request_time_s=0.2236
+    run 4 / 5  request_time_s=0.2241
+    run 5 / 5  request_time_s=0.2261
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.596
+    run 2 / 5  request_time_s=0.5869
+    run 3 / 5  request_time_s=0.5991
+    run 4 / 5  request_time_s=0.6062
+    run 5 / 5  request_time_s=0.5973
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.0615
+    run 2 / 5  request_time_s=1.1106
+    run 3 / 5  request_time_s=1.1156
+    run 4 / 5  request_time_s=1.0128
+    run 5 / 5  request_time_s=1.0121
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=3.0567
+    run 2 / 5  request_time_s=2.7382
+    run 3 / 5  request_time_s=2.687
+    run 4 / 5  request_time_s=2.6879
+    run 5 / 5  request_time_s=2.9175
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=4.8127
+    run 2 / 5  request_time_s=4.6235
+    run 3 / 5  request_time_s=4.4096
+    run 4 / 5  request_time_s=4.7394
+    run 5 / 5  request_time_s=4.5166
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7536
+    run 2 / 5  request_time_s=0.7281
+    run 3 / 5  request_time_s=0.731
+    run 4 / 5  request_time_s=0.739
+    run 5 / 5  request_time_s=0.7298
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.2018
+    run 2 / 5  request_time_s=1.2443
+    run 3 / 5  request_time_s=1.2166
+    run 4 / 5  request_time_s=1.1777
+    run 5 / 5  request_time_s=1.2287
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.6874
+    run 2 / 5  request_time_s=1.7733
+    run 3 / 5  request_time_s=1.7659
+    run 4 / 5  request_time_s=1.594
+    run 5 / 5  request_time_s=1.6138
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.3706
+    run 2 / 5  request_time_s=3.3219
+    run 3 / 5  request_time_s=3.437
+    run 4 / 5  request_time_s=3.346
+    run 5 / 5  request_time_s=3.3512
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.2736
+    run 2 / 5  request_time_s=5.2247
+    run 3 / 5  request_time_s=5.2982
+    run 4 / 5  request_time_s=4.9639
+    run 5 / 5  request_time_s=5.0299
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.547
+    run 2 / 5  request_time_s=2.5609
+    run 3 / 5  request_time_s=2.727
+    run 4 / 5  request_time_s=2.5149
+    run 5 / 5  request_time_s=2.5382
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.5426
+    run 2 / 5  request_time_s=3.5096
+    run 3 / 5  request_time_s=3.3744
+    run 4 / 5  request_time_s=3.5258
+    run 5 / 5  request_time_s=3.4285
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.0946
+    run 2 / 5  request_time_s=4.0583
+    run 3 / 5  request_time_s=3.9896
+    run 4 / 5  request_time_s=4.0361
+    run 5 / 5  request_time_s=4.0001
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=6.6655
+    run 2 / 5  request_time_s=6.7238
+    run 3 / 5  request_time_s=6.6215
+    run 4 / 5  request_time_s=6.64
+    run 5 / 5  request_time_s=6.6204
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=9.2169
+    run 2 / 5  request_time_s=9.263
+    run 3 / 5  request_time_s=9.2703
+    run 4 / 5  request_time_s=9.2586
+    run 5 / 5  request_time_s=9.3738
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.5785
+    run 2 / 5  request_time_s=4.5656
+    run 3 / 5  request_time_s=4.5828
+    run 4 / 5  request_time_s=4.5521
+    run 5 / 5  request_time_s=4.5407
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=6.5164
+    run 2 / 5  request_time_s=6.4701
+    run 3 / 5  request_time_s=6.5689
+    run 4 / 5  request_time_s=6.5236
+    run 5 / 5  request_time_s=6.6012
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=8.2969
+    run 2 / 5  request_time_s=8.3425
+    run 3 / 5  request_time_s=8.3731
+    run 4 / 5  request_time_s=8.0826
+    run 5 / 5  request_time_s=8.0842
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=14.0742
+    run 2 / 5  request_time_s=14.179
+    run 3 / 5  request_time_s=13.7765
+    run 4 / 5  request_time_s=14.219
+    run 5 / 5  request_time_s=13.9603
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=19.911
+    run 2 / 5  request_time_s=20.3089
+    run 3 / 5  request_time_s=19.8413
+    run 4 / 5  request_time_s=19.9689
+    run 5 / 5  request_time_s=19.9335
+  [配置 15] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 16：启动 pgid=3975994，将测全部 25 个数据项 ==========
+    wait_ready 60s...
+  [配置 16] 就绪 ready_poll=103s，开始遍历数据项并发请求
+  --- 数据项 1 / 25  size=128x128 steps=1 ---
+    run 1 / 5  request_time_s=0.2909
+    run 2 / 5  request_time_s=0.2749
+    run 3 / 5  request_time_s=0.2089
+    run 4 / 5  request_time_s=0.2098
+    run 5 / 5  request_time_s=0.2111
+  --- 数据项 2 / 25  size=128x128 steps=5 ---
+    run 1 / 5  request_time_s=0.5684
+    run 2 / 5  request_time_s=0.6183
+    run 3 / 5  request_time_s=0.6092
+    run 4 / 5  request_time_s=0.6023
+    run 5 / 5  request_time_s=0.6354
+  --- 数据项 3 / 25  size=128x128 steps=10 ---
+    run 1 / 5  request_time_s=1.1114
+    run 2 / 5  request_time_s=1.1338
+    run 3 / 5  request_time_s=1.1059
+    run 4 / 5  request_time_s=0.9698
+    run 5 / 5  request_time_s=0.9676
+  --- 数据项 4 / 25  size=128x128 steps=30 ---
+    run 1 / 5  request_time_s=3.004
+    run 2 / 5  request_time_s=2.6217
+    run 3 / 5  request_time_s=2.6398
+    run 4 / 5  request_time_s=2.6065
+    run 5 / 5  request_time_s=2.756
+  --- 数据项 5 / 25  size=128x128 steps=50 ---
+    run 1 / 5  request_time_s=4.288
+    run 2 / 5  request_time_s=4.5838
+    run 3 / 5  request_time_s=4.7541
+    run 4 / 5  request_time_s=4.4081
+    run 5 / 5  request_time_s=4.3247
+  --- 数据项 6 / 25  size=256x256 steps=1 ---
+    run 1 / 5  request_time_s=0.2088
+    run 2 / 5  request_time_s=0.2018
+    run 3 / 5  request_time_s=0.2053
+    run 4 / 5  request_time_s=0.2209
+    run 5 / 5  request_time_s=0.2196
+  --- 数据项 7 / 25  size=256x256 steps=5 ---
+    run 1 / 5  request_time_s=0.6714
+    run 2 / 5  request_time_s=0.7016
+    run 3 / 5  request_time_s=0.7308
+    run 4 / 5  request_time_s=0.6979
+    run 5 / 5  request_time_s=0.6834
+  --- 数据项 8 / 25  size=256x256 steps=10 ---
+    run 1 / 5  request_time_s=1.179
+    run 2 / 5  request_time_s=1.1704
+    run 3 / 5  request_time_s=1.1914
+    run 4 / 5  request_time_s=1.0852
+    run 5 / 5  request_time_s=1.0876
+  --- 数据项 9 / 25  size=256x256 steps=30 ---
+    run 1 / 5  request_time_s=3.0762
+    run 2 / 5  request_time_s=2.969
+    run 3 / 5  request_time_s=2.669
+    run 4 / 5  request_time_s=2.629
+    run 5 / 5  request_time_s=2.8769
+  --- 数据项 10 / 25  size=256x256 steps=50 ---
+    run 1 / 5  request_time_s=4.6664
+    run 2 / 5  request_time_s=4.26
+    run 3 / 5  request_time_s=4.3193
+    run 4 / 5  request_time_s=4.3363
+    run 5 / 5  request_time_s=4.532
+  --- 数据项 11 / 25  size=512x512 steps=1 ---
+    run 1 / 5  request_time_s=0.7677
+    run 2 / 5  request_time_s=0.7448
+    run 3 / 5  request_time_s=0.7421
+    run 4 / 5  request_time_s=0.779
+    run 5 / 5  request_time_s=0.749
+  --- 数据项 12 / 25  size=512x512 steps=5 ---
+    run 1 / 5  request_time_s=1.3055
+    run 2 / 5  request_time_s=1.3167
+    run 3 / 5  request_time_s=1.2631
+    run 4 / 5  request_time_s=1.3601
+    run 5 / 5  request_time_s=1.3478
+  --- 数据项 13 / 25  size=512x512 steps=10 ---
+    run 1 / 5  request_time_s=1.6686
+    run 2 / 5  request_time_s=1.7018
+    run 3 / 5  request_time_s=1.6268
+    run 4 / 5  request_time_s=1.6863
+    run 5 / 5  request_time_s=1.6705
+  --- 数据项 14 / 25  size=512x512 steps=30 ---
+    run 1 / 5  request_time_s=3.6766
+    run 2 / 5  request_time_s=3.3431
+    run 3 / 5  request_time_s=3.353
+    run 4 / 5  request_time_s=3.3151
+    run 5 / 5  request_time_s=3.3295
+  --- 数据项 15 / 25  size=512x512 steps=50 ---
+    run 1 / 5  request_time_s=5.1626
+    run 2 / 5  request_time_s=5.2892
+    run 3 / 5  request_time_s=5.0021
+    run 4 / 5  request_time_s=5.3483
+    run 5 / 5  request_time_s=5.1366
+  --- 数据项 16 / 25  size=1024x1024 steps=1 ---
+    run 1 / 5  request_time_s=2.6132
+    run 2 / 5  request_time_s=2.6021
+    run 3 / 5  request_time_s=2.6089
+    run 4 / 5  request_time_s=2.6023
+    run 5 / 5  request_time_s=2.6086
+  --- 数据项 17 / 25  size=1024x1024 steps=5 ---
+    run 1 / 5  request_time_s=3.7387
+    run 2 / 5  request_time_s=3.5297
+    run 3 / 5  request_time_s=3.5701
+    run 4 / 5  request_time_s=3.7692
+    run 5 / 5  request_time_s=3.7764
+  --- 数据项 18 / 25  size=1024x1024 steps=10 ---
+    run 1 / 5  request_time_s=4.0787
+    run 2 / 5  request_time_s=4.1265
+    run 3 / 5  request_time_s=4.1565
+    run 4 / 5  request_time_s=4.142
+    run 5 / 5  request_time_s=4.1079
+  --- 数据项 19 / 25  size=1024x1024 steps=30 ---
+    run 1 / 5  request_time_s=5.9145
+    run 2 / 5  request_time_s=5.9424
+    run 3 / 5  request_time_s=5.7618
+    run 4 / 5  request_time_s=5.8333
+    run 5 / 5  request_time_s=5.8917
+  --- 数据项 20 / 25  size=1024x1024 steps=50 ---
+    run 1 / 5  request_time_s=7.6616
+    run 2 / 5  request_time_s=7.8023
+    run 3 / 5  request_time_s=7.5154
+    run 4 / 5  request_time_s=7.7012
+    run 5 / 5  request_time_s=7.5759
+  --- 数据项 21 / 25  size=1536x1536 steps=1 ---
+    run 1 / 5  request_time_s=4.6928
+    run 2 / 5  request_time_s=4.6591
+    run 3 / 5  request_time_s=4.6649
+    run 4 / 5  request_time_s=4.6533
+    run 5 / 5  request_time_s=4.6353
+  --- 数据项 22 / 25  size=1536x1536 steps=5 ---
+    run 1 / 5  request_time_s=7.1095
+    run 2 / 5  request_time_s=7.0866
+    run 3 / 5  request_time_s=7.1319
+    run 4 / 5  request_time_s=7.1136
+    run 5 / 5  request_time_s=7.1356
+  --- 数据项 23 / 25  size=1536x1536 steps=10 ---
+    run 1 / 5  request_time_s=7.8577
+    run 2 / 5  request_time_s=7.8909
+    run 3 / 5  request_time_s=7.9355
+    run 4 / 5  request_time_s=7.8877
+    run 5 / 5  request_time_s=7.9751
+  --- 数据项 24 / 25  size=1536x1536 steps=30 ---
+    run 1 / 5  request_time_s=11.2239
+    run 2 / 5  request_time_s=11.2814
+    run 3 / 5  request_time_s=11.4102
+    run 4 / 5  request_time_s=10.9779
+    run 5 / 5  request_time_s=11.1528
+  --- 数据项 25 / 25  size=1536x1536 steps=50 ---
+    run 1 / 5  request_time_s=14.663
+    run 2 / 5  request_time_s=14.468
+    run 3 / 5  request_time_s=14.5296
+    run 4 / 5  request_time_s=14.8424
+    run 5 / 5  request_time_s=14.7917
+  [配置 16] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+  已按数据项汇总并追加到 /home/xhf/xhf/vllm-omni/switch_time/logs/qwen_profile_result_10709_20260310_233958.log

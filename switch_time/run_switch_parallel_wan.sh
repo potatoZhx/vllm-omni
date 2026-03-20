@@ -19,7 +19,7 @@
 set -e
 export PYTHONUNBUFFERED=1
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
-if [ -z "$HF_HOME" ]; then
+if [ -z "${HF_HOME:-}" ]; then
   _G=$(groups 2>/dev/null | awk '{print $1}')
   _U=$(whoami)
   if [ -n "$_G" ] && [ -d "/data2/$_G/$_U" ] && [ -w "/data2/$_G/$_U" ]; then
@@ -29,7 +29,7 @@ if [ -z "$HF_HOME" ]; then
   fi
 fi
 
-if [ -n "${SLURM_SUBMIT_DIR}" ]; then
+if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
   WORK_DIR="${SLURM_SUBMIT_DIR}"
 else
   WORK_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -65,16 +65,15 @@ exec > >(tee -a "$RUN_LOG") 2>&1
 echo "===== switch_time 并行组合测试（Wan2.2）：TP 套件 + Ring 冒烟 + HSDP P0，共 ${NUM_CONFIGS} 种配置，每配置 1 次首次 + ${NUM_SAMPLES} 次停→起 ====="
 echo "REPO_DIR=$REPO_DIR  NUM_SAMPLES=$NUM_SAMPLES  START_CONFIG=$START_CONFIG  单配置错误上限=$CONFIG_ERROR_LIMIT  日志累计 ERROR 上限=$LOG_ERROR_LIMIT（本配置超限则放弃整个配置）"
 
-module purge 2>/dev/null || true
-module load Anaconda3/2025.06 2>/dev/null || true
-module load cuda/12.9.1 2>/dev/null || true
-if [ "${SKIP_SETUP_ENV:-0}" != "1" ]; then
+# 直接使用 conda 环境，不再依赖 module
+if [ "${SKIP_SETUP_ENV:-0}" != "1" ] && [ -f "$WORK_DIR/setup_env.sh" ]; then
   bash "$WORK_DIR/setup_env.sh"
 fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate $CONDA_ENV
 cd "$REPO_DIR"
-python3 -c "import vllm_omni" || { echo "ERROR: vllm_omni not importable."; exit 1; }
+SKIP_BENCH=0
+python3 -c "import vllm_omni" || { echo "ERROR: vllm_omni not importable，跳过全部测试。" >&2; SKIP_BENCH=1; }
 
 # 《并行测试表_wan》23 种组合：1–16 为 Ulysses+TP 套件，17–19 为 Ring 冒烟（ulysses=1, ring=2/4/8），20–23 为 HSDP 套件 P0。
 # HSDP 高阶组合（24–35 行，预期列为 SKIP）暂不在本脚本中覆盖。
@@ -135,7 +134,7 @@ start_config_id() {
   local port="$2"
   local log="$3"
   eval "$(get_config_params "$id")"
-  setsid vllm serve "$MODEL" --omni --port "$port" $CONFIG_EXTRA >> "$log" 2>&1 &
+  setsid vllm serve "$MODEL" --omni --port "$port" --vae-use-slicing --vae-use-tiling $CONFIG_EXTRA >> "$log" 2>&1 &
   local leader_pid=$!
   local pgid
   pgid=$(ps -o pgid= -p "$leader_pid" 2>/dev/null | tr -d ' ')
@@ -214,13 +213,13 @@ cleanup_gpu_residuals() {
 force_kill_port() {
   local port="$1"
   fuser -k "${port}/tcp" 2>/dev/null || true
-  lsof -t -i ":${port}" 2>/dev/null | while read -r p; do kill -9 "$p" 2>/dev/null; done
+  lsof -t -i ":${port}" 2>/dev/null | while read -r p; do kill -9 "$p" 2>/dev/null || true; done
   sleep 2
 }
 
 wait_port_released() {
   local port="$1"
-  local max_wait=120
+  local max_wait=800
   local i=0
   while [ $i -lt "$max_wait" ]; do
     if ! ss -ltnp 2>/dev/null | grep -q ":${port} "; then
@@ -230,11 +229,11 @@ wait_port_released() {
     i=$((i + 1))
     [ $((i % 30)) -eq 0 ] && [ $i -gt 0 ] && echo "    wait_port_released ${i}s..." >&2
   done
-  echo "  [最后尝试] 按端口强制清理后退出" >&2
-  force_kill_port "$port"
-  cleanup_gpu_residuals
-  echo "ERROR: 端口 ${port} 在 ${max_wait}s 内未释放，退出" >&2
-  exit 1
+  echo "ERROR: 端口 ${port} 在 ${max_wait}s 内未释放，强制清理后 return 1，不退出脚本。" >&2
+  cleanup_gpu_residuals || true
+  force_kill_port "$port" || true
+  cleanup_gpu_residuals || true
+  return 1
 }
 
 # 统计 server 日志中 ERROR 行数（只输出一个整数，避免多行/空导致 $(( )) 报错）
@@ -266,6 +265,7 @@ log_error_full() {
 
 echo "config_id,run,first_startup_s,stop_s,startup_s,switch_s,ready_poll_s" >> "$CSV"
 
+if [ "$SKIP_BENCH" != "1" ]; then
 for config_id in $(seq "$START_CONFIG" "$NUM_CONFIGS"); do
   config_errors=0
   log_err_prev=0
@@ -290,8 +290,8 @@ for config_id in $(seq "$START_CONFIG" "$NUM_CONFIGS"); do
   if [ "$wait_poll" = "-1" ]; then
     config_errors=$((config_errors + 1))
     kill -KILL -"$pgid" 2>/dev/null || true
-    force_kill_port "$PORT"
-    cleanup_gpu_residuals
+    force_kill_port "$PORT" || true
+    cleanup_gpu_residuals || true
     log_error_full "config $config_id 首次启动 failed to become ready" "$SERVER_LOG"
     echo "$config_id,0,ERROR,,,,$wait_poll" >> "$CSV"
     echo "  [错误累计] config $config_id 当前 $config_errors 次"
@@ -310,8 +310,8 @@ for config_id in $(seq "$START_CONFIG" "$NUM_CONFIGS"); do
     echo "$config_id,0,ERROR,,,,$wait_poll" >> "$CSV"
     if [ -n "$pgid" ]; then
       kill -KILL -"$pgid" 2>/dev/null || true
-      force_kill_port "$PORT"
-      cleanup_gpu_residuals
+      force_kill_port "$PORT" || true
+      cleanup_gpu_residuals || true
       wait_port_released "$PORT" 2>/dev/null || true
     fi
     pgid=""
@@ -331,9 +331,9 @@ for config_id in $(seq "$START_CONFIG" "$NUM_CONFIGS"); do
     echo "  --- 样本 $run / $NUM_SAMPLES ---"
     if [ -n "$pgid" ]; then
       stop_s=$(stop_server_and_measure "$pgid")
-      cleanup_gpu_residuals
-      force_kill_port "$PORT"
-      wait_port_released "$PORT"
+      cleanup_gpu_residuals || true
+      force_kill_port "$PORT" || true
+      wait_port_released "$PORT" || true
       sleep 2
     else
       stop_s=""
@@ -351,8 +351,8 @@ for config_id in $(seq "$START_CONFIG" "$NUM_CONFIGS"); do
     if [ "$wait_poll" = "-1" ]; then
       config_errors=$((config_errors + 1))
       kill -KILL -"$pgid" 2>/dev/null || true
-      force_kill_port "$PORT"
-      cleanup_gpu_residuals
+      force_kill_port "$PORT" || true
+      cleanup_gpu_residuals || true
       log_error_full "config $config_id run $run failed to become ready" "$SERVER_LOG"
       echo "$config_id,$run,,ERROR,ERROR,ERROR,ERROR" >> "$CSV"
       echo "  [错误累计] config $config_id 当前 $config_errors 次"
@@ -383,12 +383,18 @@ for config_id in $(seq "$START_CONFIG" "$NUM_CONFIGS"); do
 
   if [ -n "$pgid" ]; then
     stop_server_and_measure "$pgid" >/dev/null
-    cleanup_gpu_residuals
-    force_kill_port "$PORT"
-    wait_port_released "$PORT"
+    cleanup_gpu_residuals || true
+    force_kill_port "$PORT" || true
+    wait_port_released "$PORT" || true
   fi
   sleep 2
 done
+fi
+
+if [ "$SKIP_BENCH" = "1" ]; then
+  echo "===== Done（未运行测试，vllm_omni 未导入成功）====="
+  exit 0
+fi
 
 echo "===== 统计（按 config_id 聚合，run 1..${NUM_SAMPLES} 样本）=====" | tee "$STATS_LOG"
 python3 - "$CSV" "$NUM_SAMPLES" << 'PYSTATS' | tee -a "$STATS_LOG"

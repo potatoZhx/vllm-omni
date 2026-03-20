@@ -1,0 +1,7 @@
+# 所有 switch_time 脚本共用的环境默认值（先加载此文件，再加载各脚本自己的 yaml）
+# 迁移设备时优先改此处；各脚本 yaml 仅保留脚本专用项
+
+HF_ENDPOINT: "https://hf-mirror.com"
+HF_HOME: ""
+CONDA_ENV: "vllm_omni"
+REPO_DIR: ""

@@ -1,0 +1,461 @@
+===== Qwen-Image 文生图性能画像（profile.md）=====
+dataset_mode=random  数据项：4 种，配置项：16 个，每 (数据项, 配置) 发 5 次请求
+REPO_DIR=  PORT=8101
+CSV=/home/xhf/xhf/vllm-omni/switch_time/logs/qwen_profile_11252_20260317_213945.csv  JSON_OUT=/home/xhf/xhf/vllm-omni/switch_time/logs/qwen_profile_11252_20260317_213945.json  RESULT_LOG(追加)=/home/xhf/xhf/vllm-omni/switch_time/logs/qwen_profile_result_11252_20260317_213945.log
+Unexpected error writing token file:
+  path: /home/xhf/.conda/aau_token_host
+  exception: write() argument must be str, not None
+/home/xhf/.conda/envs/vllm_omni/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+WARNING 03-17 21:40:07 [envs.py:94] No Flash Attention backend found, using pytorch SDPA implementation
+========== 配置 1：启动 pgid=1387511，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+    wait_ready 120s...
+    wait_ready 180s...
+  [配置 1] 就绪 ready_poll=227s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=8.3066
+    run 2 / 5  request_time_s=2.7021
+    run 3 / 5  request_time_s=2.7126
+    run 4 / 5  request_time_s=2.6941
+    run 5 / 5  request_time_s=2.6992
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=5.2299
+    run 2 / 5  request_time_s=5.1831
+    run 3 / 5  request_time_s=5.1011
+    run 4 / 5  request_time_s=5.1862
+    run 5 / 5  request_time_s=5.168
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=11.7031
+    run 2 / 5  request_time_s=11.8679
+    run 3 / 5  request_time_s=11.6716
+    run 4 / 5  request_time_s=11.6731
+    run 5 / 5  request_time_s=11.6192
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=37.4182
+    run 2 / 5  request_time_s=37.4485
+    run 3 / 5  request_time_s=37.563
+    run 4 / 5  request_time_s=37.0603
+    run 5 / 5  request_time_s=37.1434
+  [配置 1] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 2：启动 pgid=1389411，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 2] 就绪 ready_poll=88s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=8.3489
+    run 2 / 5  request_time_s=2.5905
+    run 3 / 5  request_time_s=2.2721
+    run 4 / 5  request_time_s=2.2879
+    run 5 / 5  request_time_s=2.2353
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.9294
+    run 2 / 5  request_time_s=3.9174
+    run 3 / 5  request_time_s=3.9436
+    run 4 / 5  request_time_s=3.8696
+    run 5 / 5  request_time_s=3.8229
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=8.2846
+    run 2 / 5  request_time_s=8.2973
+    run 3 / 5  request_time_s=8.2295
+    run 4 / 5  request_time_s=8.2648
+    run 5 / 5  request_time_s=8.2267
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=24.1709
+    run 2 / 5  request_time_s=24.0648
+    run 3 / 5  request_time_s=24.206
+    run 4 / 5  request_time_s=24.2246
+    run 5 / 5  request_time_s=23.9015
+  [配置 2] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 3：启动 pgid=1391255，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 3] 就绪 ready_poll=89s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=8.6572
+    run 2 / 5  request_time_s=2.2546
+    run 3 / 5  request_time_s=2.2263
+    run 4 / 5  request_time_s=2.2102
+    run 5 / 5  request_time_s=2.2125
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.347
+    run 2 / 5  request_time_s=3.3123
+    run 3 / 5  request_time_s=3.1918
+    run 4 / 5  request_time_s=3.2101
+    run 5 / 5  request_time_s=3.2126
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=6.5204
+    run 2 / 5  request_time_s=6.2862
+    run 3 / 5  request_time_s=6.2822
+    run 4 / 5  request_time_s=6.3834
+    run 5 / 5  request_time_s=6.3559
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=16.9894
+    run 2 / 5  request_time_s=17.1962
+    run 3 / 5  request_time_s=17.0958
+    run 4 / 5  request_time_s=17.0917
+    run 5 / 5  request_time_s=17.1842
+  [配置 3] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 4：启动 pgid=1393931，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 4] 就绪 ready_poll=94s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=9.0339
+    run 2 / 5  request_time_s=2.2629
+    run 3 / 5  request_time_s=2.2711
+    run 4 / 5  request_time_s=2.4627
+    run 5 / 5  request_time_s=2.4313
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.2257
+    run 2 / 5  request_time_s=3.0751
+    run 3 / 5  request_time_s=2.9168
+    run 4 / 5  request_time_s=2.9795
+    run 5 / 5  request_time_s=2.9401
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=5.8266
+    run 2 / 5  request_time_s=5.7021
+    run 3 / 5  request_time_s=5.6176
+    run 4 / 5  request_time_s=5.8163
+    run 5 / 5  request_time_s=5.5922
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=14.0079
+    run 2 / 5  request_time_s=14.0541
+    run 3 / 5  request_time_s=14.1089
+    run 4 / 5  request_time_s=14.1703
+    run 5 / 5  request_time_s=14.1878
+  [配置 4] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 5：启动 pgid=1398197，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 5] 就绪 ready_poll=92s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=8.4776
+    run 2 / 5  request_time_s=2.7018
+    run 3 / 5  request_time_s=2.7406
+    run 4 / 5  request_time_s=2.6976
+    run 5 / 5  request_time_s=2.6956
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=5.2869
+    run 2 / 5  request_time_s=5.1622
+    run 3 / 5  request_time_s=5.1782
+    run 4 / 5  request_time_s=5.1696
+    run 5 / 5  request_time_s=5.227
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=11.9287
+    run 2 / 5  request_time_s=11.9354
+    run 3 / 5  request_time_s=11.8063
+    run 4 / 5  request_time_s=11.8926
+    run 5 / 5  request_time_s=11.8804
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=37.6672
+    run 2 / 5  request_time_s=37.4265
+    run 3 / 5  request_time_s=37.7636
+    run 4 / 5  request_time_s=37.7345
+    run 5 / 5  request_time_s=37.8934
+  [配置 5] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 6：启动 pgid=1399867，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 6] 就绪 ready_poll=92s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=8.4362
+    run 2 / 5  request_time_s=2.4239
+    run 3 / 5  request_time_s=2.2307
+    run 4 / 5  request_time_s=2.2077
+    run 5 / 5  request_time_s=2.2181
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.8332
+    run 2 / 5  request_time_s=3.8775
+    run 3 / 5  request_time_s=3.8079
+    run 4 / 5  request_time_s=3.8582
+    run 5 / 5  request_time_s=3.8363
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=8.3455
+    run 2 / 5  request_time_s=8.2805
+    run 3 / 5  request_time_s=8.3561
+    run 4 / 5  request_time_s=8.3752
+    run 5 / 5  request_time_s=8.2769
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=23.7126
+    run 2 / 5  request_time_s=23.959
+    run 3 / 5  request_time_s=23.7641
+    run 4 / 5  request_time_s=23.9679
+    run 5 / 5  request_time_s=23.8583
+  [配置 6] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 7：启动 pgid=1402335，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 7] 就绪 ready_poll=98s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=9.6242
+    run 2 / 5  request_time_s=2.7111
+    run 3 / 5  request_time_s=2.3319
+    run 4 / 5  request_time_s=2.3402
+    run 5 / 5  request_time_s=2.4435
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.3837
+    run 2 / 5  request_time_s=3.3814
+    run 3 / 5  request_time_s=3.3479
+    run 4 / 5  request_time_s=3.3941
+    run 5 / 5  request_time_s=3.4025
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=6.5943
+    run 2 / 5  request_time_s=6.5386
+    run 3 / 5  request_time_s=6.508
+    run 4 / 5  request_time_s=6.5795
+    run 5 / 5  request_time_s=6.4734
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=17.5777
+    run 2 / 5  request_time_s=17.4732
+    run 3 / 5  request_time_s=17.488
+    run 4 / 5  request_time_s=17.0372
+    run 5 / 5  request_time_s=17.0391
+  [配置 7] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 8：启动 pgid=1406300，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 8] 就绪 ready_poll=89s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=15.1229
+    run 2 / 5  request_time_s=2.4866
+    run 3 / 5  request_time_s=2.4084
+    run 4 / 5  request_time_s=2.4811
+    run 5 / 5  request_time_s=2.3826
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.9127
+    run 2 / 5  request_time_s=3.9362
+    run 3 / 5  request_time_s=3.8861
+    run 4 / 5  request_time_s=3.8631
+    run 5 / 5  request_time_s=3.8808
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=8.4461
+    run 2 / 5  request_time_s=8.3753
+    run 3 / 5  request_time_s=8.3683
+    run 4 / 5  request_time_s=8.2345
+    run 5 / 5  request_time_s=8.3673
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=23.6513
+    run 2 / 5  request_time_s=24.3414
+    run 3 / 5  request_time_s=24.0344
+    run 4 / 5  request_time_s=24.383
+    run 5 / 5  request_time_s=24.059
+  [配置 8] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 9：启动 pgid=1408037，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 9] 就绪 ready_poll=95s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=16.9585
+    run 2 / 5  request_time_s=2.7297
+    run 3 / 5  request_time_s=3.0646
+    run 4 / 5  request_time_s=2.8745
+    run 5 / 5  request_time_s=2.7596
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.361
+    run 2 / 5  request_time_s=3.3446
+    run 3 / 5  request_time_s=3.3706
+    run 4 / 5  request_time_s=3.369
+    run 5 / 5  request_time_s=3.4863
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=6.4315
+    run 2 / 5  request_time_s=6.4299
+    run 3 / 5  request_time_s=6.4088
+    run 4 / 5  request_time_s=6.5869
+    run 5 / 5  request_time_s=6.4298
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=16.8137
+    run 2 / 5  request_time_s=16.6277
+    run 3 / 5  request_time_s=16.93
+    run 4 / 5  request_time_s=16.6938
+    run 5 / 5  request_time_s=16.8527
+  [配置 9] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 10：启动 pgid=1410896，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 10] 就绪 ready_poll=105s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=16.9144
+    run 2 / 5  request_time_s=2.7957
+    run 3 / 5  request_time_s=2.9881
+    run 4 / 5  request_time_s=2.8021
+    run 5 / 5  request_time_s=2.7835
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.5144
+    run 2 / 5  request_time_s=3.3895
+    run 3 / 5  request_time_s=3.419
+    run 4 / 5  request_time_s=3.4509
+    run 5 / 5  request_time_s=3.5624
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=5.7449
+    run 2 / 5  request_time_s=5.8005
+    run 3 / 5  request_time_s=5.5139
+    run 4 / 5  request_time_s=5.7274
+    run 5 / 5  request_time_s=5.8736
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=13.1988
+    run 2 / 5  request_time_s=13.3283
+    run 3 / 5  request_time_s=12.8937
+    run 4 / 5  request_time_s=13.1827
+    run 5 / 5  request_time_s=13.2748
+  [配置 10] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 11：启动 pgid=1415496，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 11] 就绪 ready_poll=87s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=19.8625
+    run 2 / 5  request_time_s=2.6967
+    run 3 / 5  request_time_s=2.3708
+    run 4 / 5  request_time_s=2.829
+    run 5 / 5  request_time_s=2.8197
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.9986
+    run 2 / 5  request_time_s=4.0506
+    run 3 / 5  request_time_s=4.0357
+    run 4 / 5  request_time_s=4.0079
+    run 5 / 5  request_time_s=4.101
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=8.4449
+    run 2 / 5  request_time_s=8.5368
+    run 3 / 5  request_time_s=8.5307
+    run 4 / 5  request_time_s=8.3906
+    run 5 / 5  request_time_s=8.608
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=24.1243
+    run 2 / 5  request_time_s=23.7517
+    run 3 / 5  request_time_s=24.1487
+    run 4 / 5  request_time_s=24.2792
+    run 5 / 5  request_time_s=23.813
+  [配置 11] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 12：启动 pgid=1417747，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 12] 就绪 ready_poll=109s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=21.5269
+    run 2 / 5  request_time_s=3.1665
+    run 3 / 5  request_time_s=2.7606
+    run 4 / 5  request_time_s=2.9095
+    run 5 / 5  request_time_s=2.8156
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.5271
+    run 2 / 5  request_time_s=3.4815
+    run 3 / 5  request_time_s=3.427
+    run 4 / 5  request_time_s=3.4514
+    run 5 / 5  request_time_s=3.4284
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=6.5149
+    run 2 / 5  request_time_s=6.629
+    run 3 / 5  request_time_s=6.5297
+    run 4 / 5  request_time_s=6.4196
+    run 5 / 5  request_time_s=6.5152
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=16.9948
+    run 2 / 5  request_time_s=16.7785
+    run 3 / 5  request_time_s=16.8556
+    run 4 / 5  request_time_s=16.6415
+    run 5 / 5  request_time_s=16.8294
+  [配置 12] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 13：启动 pgid=1421945，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 13] 就绪 ready_poll=87s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=2.443
+    run 2 / 5  request_time_s=2.5359
+    run 3 / 5  request_time_s=2.4335
+    run 4 / 5  request_time_s=2.3901
+    run 5 / 5  request_time_s=2.4884
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.4745
+    run 2 / 5  request_time_s=3.3918
+    run 3 / 5  request_time_s=3.4035
+    run 4 / 5  request_time_s=3.3415
+    run 5 / 5  request_time_s=3.3981
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=6.2094
+    run 2 / 5  request_time_s=6.0825
+    run 3 / 5  request_time_s=6.4853
+    run 4 / 5  request_time_s=6.4557
+    run 5 / 5  request_time_s=6.4641
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=15.8875
+    run 2 / 5  request_time_s=16.2278
+    run 3 / 5  request_time_s=16.0842
+    run 4 / 5  request_time_s=16.0353
+    run 5 / 5  request_time_s=15.914
+  [配置 13] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 14：启动 pgid=1424084，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 14] 就绪 ready_poll=108s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=2.8699
+    run 2 / 5  request_time_s=2.9255
+    run 3 / 5  request_time_s=2.831
+    run 4 / 5  request_time_s=2.7868
+    run 5 / 5  request_time_s=2.8133
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.6604
+    run 2 / 5  request_time_s=3.6088
+    run 3 / 5  request_time_s=3.5194
+    run 4 / 5  request_time_s=3.4176
+    run 5 / 5  request_time_s=3.4923
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=5.4274
+    run 2 / 5  request_time_s=5.8823
+    run 3 / 5  request_time_s=5.4778
+    run 4 / 5  request_time_s=5.5002
+    run 5 / 5  request_time_s=5.6504
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=12.0914
+    run 2 / 5  request_time_s=12.4294
+    run 3 / 5  request_time_s=12.4546
+    run 4 / 5  request_time_s=12.1298
+    run 5 / 5  request_time_s=12.559
+  [配置 14] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 15：启动 pgid=1427938，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 15] 就绪 ready_poll=109s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=9.4054
+    run 2 / 5  request_time_s=2.741
+    run 3 / 5  request_time_s=2.5486
+    run 4 / 5  request_time_s=2.4741
+    run 5 / 5  request_time_s=2.4687
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.3923
+    run 2 / 5  request_time_s=3.453
+    run 3 / 5  request_time_s=3.3393
+    run 4 / 5  request_time_s=3.3497
+    run 5 / 5  request_time_s=3.3814
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=6.1597
+    run 2 / 5  request_time_s=6.0575
+    run 3 / 5  request_time_s=6.1328
+    run 4 / 5  request_time_s=6.1947
+    run 5 / 5  request_time_s=6.1027
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=15.7418
+    run 2 / 5  request_time_s=15.5164
+    run 3 / 5  request_time_s=15.5045
+    run 4 / 5  request_time_s=15.5623
+    run 5 / 5  request_time_s=15.7068
+  [配置 15] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+========== 配置 16：启动 pgid=1432531，将测全部 4 个数据项 ==========
+    wait_ready 60s...
+  [配置 16] 就绪 ready_poll=117s，开始遍历数据项并发请求
+  --- 数据项 1 / 4  size=512x512 steps=20 ---
+    run 1 / 5  request_time_s=2.7017
+    run 2 / 5  request_time_s=2.4314
+    run 3 / 5  request_time_s=2.46
+    run 4 / 5  request_time_s=2.4576
+    run 5 / 5  request_time_s=2.7489
+  --- 数据项 2 / 4  size=768x768 steps=20 ---
+    run 1 / 5  request_time_s=3.438
+    run 2 / 5  request_time_s=3.0465
+    run 3 / 5  request_time_s=3.4185
+    run 4 / 5  request_time_s=3.4279
+    run 5 / 5  request_time_s=3.5661
+  --- 数据项 3 / 4  size=1024x1024 steps=25 ---
+    run 1 / 5  request_time_s=5.3361
+    run 2 / 5  request_time_s=5.3407
+    run 3 / 5  request_time_s=5.4039
+    run 4 / 5  request_time_s=5.3078
+    run 5 / 5  request_time_s=5.1954
+  --- 数据项 4 / 4  size=1536x1536 steps=35 ---
+    run 1 / 5  request_time_s=11.8953
+    run 2 / 5  request_time_s=11.6982
+    run 3 / 5  request_time_s=11.8785
+    run 4 / 5  request_time_s=11.595
+    run 5 / 5  request_time_s=11.5363
+  [配置 16] 已按 pgid 停服，接下来清理端口并杀死本用户在 GPU 上的全部进程...
+  已按数据项汇总并追加到 /home/xhf/xhf/vllm-omni/switch_time/logs/qwen_profile_result_11252_20260317_213945.log

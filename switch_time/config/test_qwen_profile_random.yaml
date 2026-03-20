@@ -1,0 +1,51 @@
+# test_qwen_profile.sh 专用（公共环境见 config/common_env.yaml）
+#
+# random 模式：仅覆盖 random dataset 会用到的 4 种请求类型（size, steps）
+
+dataset_mode: "random"
+
+model: "Qwen/Qwen-Image"
+port: 8101
+log_subdir: "qwen_profile_log"
+requests_per_config: 5
+
+# 正负 prompt（CFG=2 的配置会同时带 prompt + negative_prompt）
+prompt: "A realistic photo of a close-up of a violin on velvet fabric, warm studio lighting, fine wood grain"
+negative_prompt: "low quality, blurry"
+cfg_scale: 4.0
+
+start_data_item: 1
+start_config: 1
+
+# 待测配置 ID：与 run_switch_parallel_qwen 一致的 16 种（全部）
+config_ids: "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16"
+# CFG>1 的配置在请求中带 negative_prompt（与下表 cfg>1 对应）
+configs_with_cfg: "5 6 7 11 12 15"
+
+# 测试配置表（供 common.sh 的 get_config_params 使用）
+# GPU=SP×CFG×TP，与 run_switch_parallel_qwen 的 configs 表一致
+configs:
+  - { id: 1,  gpu: 1, sp: 1, cfg: 1, tp: 1 }   # 1×1×1
+  - { id: 2,  gpu: 2, sp: 1, cfg: 1, tp: 2 }   # 1×1×2
+  - { id: 3,  gpu: 4, sp: 1, cfg: 1, tp: 4 }   # 1×1×4
+  - { id: 4,  gpu: 8, sp: 1, cfg: 1, tp: 8 }   # 1×1×8
+  - { id: 5,  gpu: 2, sp: 1, cfg: 2, tp: 1 }   # 1×2×1
+  - { id: 6,  gpu: 4, sp: 1, cfg: 2, tp: 2 }   # 1×2×2
+  - { id: 7,  gpu: 8, sp: 1, cfg: 2, tp: 4 }   # 1×2×4
+  - { id: 8,  gpu: 2, sp: 2, cfg: 1, tp: 1 }   # 2×1×1
+  - { id: 9,  gpu: 4, sp: 2, cfg: 1, tp: 2 }   # 2×1×2
+  - { id: 10, gpu: 8, sp: 2, cfg: 1, tp: 4 }   # 2×1×4
+  - { id: 11, gpu: 4, sp: 2, cfg: 2, tp: 1 }   # 2×2×1
+  - { id: 12, gpu: 8, sp: 2, cfg: 2, tp: 2 }   # 2×2×2
+  - { id: 13, gpu: 4, sp: 4, cfg: 1, tp: 1 }   # 4×1×1
+  - { id: 14, gpu: 8, sp: 4, cfg: 1, tp: 2 }   # 4×1×2
+  - { id: 15, gpu: 8, sp: 4, cfg: 2, tp: 1 }   # 4×2×1
+  - { id: 16, gpu: 8, sp: 8, cfg: 1, tp: 1 }   # 8×1×1
+
+# random 中会涉及的请求类型：每行 "size steps"
+data_items:
+  - "512x512 20"
+  - "768x768 20"
+  - "1024x1024 25"
+  - "1536x1536 35"
+

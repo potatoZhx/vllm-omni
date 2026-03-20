@@ -3,7 +3,7 @@
 
 需要测试的数据项,由四个部分组成, 正prompt(每个请求一致),negative prompt(只有开了CFG的才考虑, 别的不考虑) steps,分辨率
 正负prompt统一采用: prompt='A realistic photo of a close-up of a violin on velvet fabric, warm studio lighting, fine wood grain', negative_prompt='low quality, blurry'
-分辨率有五种 128x128  256x256 512x512 1024x1024 1536x1536, steps有四档, 1 5 10 50, 所以数据项一共有20种
+分辨率有五种 128x128  256x256 512x512 1024x1024 1536x1536, steps有五档, 1 5 10 30 50, 所以数据项一共有25种
 
 项目的原生数据集的格式为
 Request(request_id=0, timestamp=0.0, height=256, width=256, num_frames=1, prompt='A realistic photo of a close-up of a violin on velvet fabric, warm studio lighting, fine wood grain', negative_prompt='low quality, blurry', num_inference_steps=50)

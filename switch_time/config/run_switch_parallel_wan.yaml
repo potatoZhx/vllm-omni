@@ -1,0 +1,37 @@
+# run_switch_parallel_wan.sh 专用（公共环境见 config/common_env.yaml）
+
+model: "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+port: 8100
+log_subdir: "wan_parallel_log"
+num_samples: 5
+start_config: 1
+
+# 待测配置 ID：按下方 configs 表顺序，可只填要测的子集（如 "17 18 19" 只测 Ring 冒烟）
+config_ids: "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"
+
+# 测试配置表：脚本据此生成 vllm serve 参数，不写 bash
+# gpu: 卡数; ulysses/ring: SP 维度（ulysses>1 或 ring>1 时生效）; cfg/tp: CFG/TP; use_hsdp + hsdp_shard/hsdp_rep: HSDP
+configs:
+  - { id: 1,  gpu: 1, ulysses: 1, ring: 1, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 2,  gpu: 2, ulysses: 1, ring: 1, cfg: 1, tp: 2, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 3,  gpu: 4, ulysses: 1, ring: 1, cfg: 1, tp: 4, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 4,  gpu: 8, ulysses: 1, ring: 1, cfg: 1, tp: 8, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 5,  gpu: 2, ulysses: 1, ring: 1, cfg: 2, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 6,  gpu: 4, ulysses: 1, ring: 1, cfg: 2, tp: 2, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 7,  gpu: 8, ulysses: 1, ring: 1, cfg: 2, tp: 4, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 8,  gpu: 2, ulysses: 2, ring: 1, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 9,  gpu: 4, ulysses: 2, ring: 1, cfg: 1, tp: 2, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 10, gpu: 8, ulysses: 2, ring: 1, cfg: 1, tp: 4, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 11, gpu: 4, ulysses: 2, ring: 1, cfg: 2, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 12, gpu: 8, ulysses: 2, ring: 1, cfg: 2, tp: 2, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 13, gpu: 4, ulysses: 4, ring: 1, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 14, gpu: 8, ulysses: 4, ring: 1, cfg: 1, tp: 2, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 15, gpu: 8, ulysses: 4, ring: 1, cfg: 2, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 16, gpu: 8, ulysses: 8, ring: 1, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 17, gpu: 2, ulysses: 1, ring: 2, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 18, gpu: 4, ulysses: 1, ring: 4, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 19, gpu: 8, ulysses: 1, ring: 8, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 20, gpu: 1, ulysses: 1, ring: 1, cfg: 1, tp: 1, use_hsdp: 0, hsdp_shard: 1, hsdp_rep: 1 }
+  - { id: 21, gpu: 2, ulysses: 1, ring: 1, cfg: 1, tp: 1, use_hsdp: 1, hsdp_shard: 2, hsdp_rep: 1 }
+  - { id: 22, gpu: 4, ulysses: 1, ring: 1, cfg: 1, tp: 1, use_hsdp: 1, hsdp_shard: 4, hsdp_rep: 1 }
+  - { id: 23, gpu: 8, ulysses: 1, ring: 1, cfg: 1, tp: 1, use_hsdp: 1, hsdp_shard: 8, hsdp_rep: 1 }

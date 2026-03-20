@@ -1,5 +1,16 @@
 # 离散事件模拟器设计说明
 
+## 快速开始
+
+```bash
+cd simulation
+python simulation.py config/simulation_config.yaml
+```
+
+**配置**：`config/simulation_config.yaml`（主配置，含 rps、worker、算法、profile 路径、请求 mix 等）。其他预设：`simulation_config_qwen14.yaml`、`simulation_config_single.yaml` 等。
+
+**输出**：`output/{profile名}/` 下生成各算法的 JSON 与 CSV，跑完自动画图到同目录。
+
 ---
 
 ## 一、设计思路（放前面）
@@ -43,10 +54,49 @@
 - **模拟参数**：模拟时长 `T_end`、**rps 列表**（如 `[0.5, 1.0, 1.5]`；对每个算法在每个 rps 下各跑一轮，得到横轴为 rps 的曲线数据）、SLO 相关（见下）。
 - **Worker 列表**：每个 worker 用三个整数 `sp`、`cfg`、`tp` 表示，程序内部拼接为完整 config_id（见下节）。
 - **调度算法**：要参与测试的算法列表（可多选）；调度逻辑为可插拔模块。
-- **输入/输出**：profile 路径、**请求 trace 路径**（可选；如 `sd3_trace_redistributed.txt`，仅用其请求顺序对应的 size、steps，**请求发送唯一逻辑为 rps**，timestamp 不使用）、输出目录；多算法时可指定输出多个 JSON 或单 JSON 带 `algorithm` 字段。
+- **输入/输出**：profile 路径、**请求数据集来源与 trace/random 配置**、输出目录；多算法时可指定输出多个 JSON 或单 JSON 带 `algorithm` 字段。
 - **画图**（可选）：跑完后是否自动画图、默认画图指标（每个指标单独一张图）、图保存目录与前缀。
 
 **SLO**：`slo_scale` 默认 **3**（即 `slo_ms = 预估执行时间_ms * slo_scale`）。与画图无关的字段（如显存占用）不输出。
+
+---
+
+### 请求数据集与 random-request-config 等价物
+
+#### 数据集来源选择（dataset）
+
+在 `simulation.simulation` 段中，可通过 `dataset` 字段选择请求数据集来源：
+
+- `trace`（默认行为）：  
+  - 若 `trace_path` 存在，则从 trace 文件解析出一系列 `(size, steps)`，**仅用于请求类型顺序**；  
+  - 注入时刻仍为 `t = 0, 1/rps, 2/rps, ...`，trace 中的 timestamp 不使用。
+- `default`：  
+  - 忽略 `trace_path`，所有请求都使用 `default_request` 中配置的单一 `(size, steps, num_frames, task_type)`。
+- `random`：  
+  - 使用 `random_request_config` 中配置的多种请求类型，并按 `weight` 做加权随机采样，模拟 `benchmarks/diffusion/diffusion_benchmark_serving.py` 中的 `--random-request-config` 行为。
+
+若未显式配置 `dataset`，则保持兼容旧行为：若 `trace_path` 存在等价于 `trace`，否则等价于 `default`。
+
+#### random_request_config：对齐 benchmark 的 random 数据集
+
+当 `dataset: random` 时，simulation 使用 `simulation.random_request_config` 作为“请求类型池”：
+
+```yaml
+simulation:
+  dataset: "random"
+  random_request_config:
+    - { width: 512,  height: 512,  steps: 20, num_frames: 1, task_type: "image", weight: 0.15 }
+    - { width: 768,  height: 768,  steps: 20, num_frames: 1, task_type: "image", weight: 0.25 }
+    - { width: 1024, height: 1024, steps: 25, num_frames: 1, task_type: "image", weight: 0.45 }
+    - { width: 1536, height: 1536, steps: 35, num_frames: 1, task_type: "image", weight: 0.15 }
+  random_request_seed: 42
+```
+
+- 每次请求注入时，先按 `weight` 使用伪随机数（`random_request_seed`）从列表中抽取一个 profile，得到该请求的 `width/height/steps/num_frames/task_type`；  
+- 然后按 rps 规则决定 `arrival_time`；  
+- 请求的执行时间仍然通过 profile（CSV 或 JSON）查表得到。
+
+这样可以在仿真层面构造与 benchmark random 数据集**一致或相近的请求分布**，再配合 `profile_source=json + profile_path=../profile/qwen_profile_random.json` 复用真实测得的运行时间。
 
 ---
 
@@ -222,22 +272,35 @@ scheduler:
 
 ### 8. 使用方式（单 YAML + 单 Python）
 
-**运行前检查**：已安装 `pyyaml`；`simulation_config.yaml` 中的 `profile_path` 指向的 CSV 存在且含列 `size, steps, config_id, request_time_s`；workers 的 (sp, cfg, tp) 在 profile 中有对应 config_id；默认请求的 size/steps 在 profile 中有对应行。若使用 trace（如 `sd3_trace_redistributed.txt`），将 `trace_path` 设为该文件路径（相对本 yaml 所在目录，例如 `../../sd3_trace_redistributed.txt`）。trace 格式为每行 `Request(..., height=..., width=..., num_inference_steps=...)`；**模拟器只用到请求顺序对应的 size、steps**；**请求发送唯一逻辑是 rps**：调度器发起第 i 个请求时自己的时点即为该请求的 `arrival_time`（= i/rps），**数据集中的 timestamp 不使用**。其余字段（prompt、negative_prompt、timestamp 等）不解析、不使用。
+**运行前检查**：已安装 `pyyaml`；配置文件中的 `profile_path` 指向的 profile 文件存在（CSV 需含列 `size, steps, config_id, request_time_s`；JSON 需含 `profiles` 列表）；workers 的 (sp, cfg, tp) 或 `instance_type` 在 profile 中有对应项；默认请求的 size/steps 在 profile 中有对应行。若使用 trace（如 `sd3_trace_redistributed.txt`），将 `trace_path` 设为该文件路径（相对本 yaml 所在目录）。trace 格式为每行 `Request(..., height=..., width=..., num_inference_steps=...)`；**模拟器只用到请求顺序对应的 size、steps**；**请求发送唯一逻辑是 rps**：调度器发起第 i 个请求时自己的时点即为该请求的 `arrival_time`（= i/rps），**数据集中的 timestamp 不使用**。其余字段（prompt、negative_prompt、timestamp 等）不解析、不使用。
 
 **依赖**：`pip install pyyaml`（自动画图需在项目根目录运行并已安装 matplotlib）。
 
-**配置文件**：`simulation_config.yaml`（可放在任意路径；其中 `profile_path`、`output_dir`、`trace_path`、`plot.output_dir` 相对该 yaml 所在目录解析）。
+**目录结构**：
+
+```
+simulation/
+├── config/          # YAML 配置文件（profile_path/output_dir/trace_path 均相对 config/ 解析）
+├── profile/         # profile 数据（JSON/CSV）
+├── tools/           # profile 转换工具（csv_to_profiles.py 等）及源数据
+├── output/          # 仿真输出
+└── simulation.py
+```
+
+**配置文件**：`config/simulation_config.yaml` 等（其中 `profile_path`、`output_dir`、`trace_path`、`plot.output_dir` 相对该 yaml 所在目录 `config/` 解析）。
 
 **运行**（在项目根目录 `vllm-omni` 下）：
 
 ```bash
-python simulation/simulation.py simulation/simulation_config.yaml
+python simulation/simulation.py simulation/config/simulation_config.yaml
 ```
 
 或在 `simulation/` 目录下：
 
 ```bash
-python simulation.py simulation_config.yaml
+cd simulation && python simulation.py config/simulation_config.yaml
+# 或省略 config 参数，默认使用 config/simulation_config.yaml
+python simulation.py
 ```
 
 **输出**：
@@ -249,7 +312,7 @@ python simulation.py simulation_config.yaml
 **手动画图**（多算法对比）：
 
 ```bash
-python diffusion_bench/plot_results.py --input-dir simulation/output --algorithms round_robin fcfs -o figs/compare --split-by-type
+python diffusion_bench/plot_results.py --input-dir simulation/output --algorithms round_robin fcfs short_queue_runtime -o figs/compare --split-by-type
 ```
 
 ---

@@ -1,0 +1,29 @@
+# run_switch_parallel_qwen.sh 专用（公共环境见 config/common_env.yaml）
+
+model: "Qwen/Qwen-Image"
+port: 8099
+log_subdir: "qwen_parallel_log"
+num_samples: 5
+start_config: 1
+
+# 待测配置 ID：按下方 configs 表，可只填要测的子集
+config_ids: "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16"
+
+# 测试配置表：脚本据此生成 vllm serve 参数（GPU=SP×CFG×TP，无 cache/cpu_off/fp8）
+configs:
+  - { id: 1,  gpu: 1, sp: 1, cfg: 1, tp: 1 }
+  - { id: 2,  gpu: 2, sp: 1, cfg: 1, tp: 2 }
+  - { id: 3,  gpu: 4, sp: 1, cfg: 1, tp: 4 }
+  - { id: 4,  gpu: 8, sp: 1, cfg: 1, tp: 8 }
+  - { id: 5,  gpu: 2, sp: 1, cfg: 2, tp: 1 }
+  - { id: 6,  gpu: 4, sp: 1, cfg: 2, tp: 2 }
+  - { id: 7,  gpu: 8, sp: 1, cfg: 2, tp: 4 }
+  - { id: 8,  gpu: 2, sp: 2, cfg: 1, tp: 1 }
+  - { id: 9,  gpu: 4, sp: 2, cfg: 1, tp: 2 }
+  - { id: 10, gpu: 8, sp: 2, cfg: 1, tp: 4 }
+  - { id: 11, gpu: 4, sp: 2, cfg: 2, tp: 1 }
+  - { id: 12, gpu: 8, sp: 2, cfg: 2, tp: 2 }
+  - { id: 13, gpu: 4, sp: 4, cfg: 1, tp: 1 }
+  - { id: 14, gpu: 8, sp: 4, cfg: 1, tp: 2 }
+  - { id: 15, gpu: 8, sp: 4, cfg: 2, tp: 1 }
+  - { id: 16, gpu: 8, sp: 8, cfg: 1, tp: 1 }
