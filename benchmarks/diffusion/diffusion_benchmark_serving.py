@@ -63,6 +63,7 @@ Usage:
 import argparse
 import ast
 import asyncio
+import base64
 import glob
 import json
 import logging
@@ -813,6 +814,95 @@ def calculate_metrics(
     return metrics
 
 
+def _decode_data_url(url: str) -> tuple[str, bytes] | None:
+    if not isinstance(url, str) or not url.startswith("data:") or "," not in url:
+        return None
+
+    header, payload = url.split(",", 1)
+    mime = header[5:].split(";", 1)[0].lower()
+    ext = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/jpg": "jpg",
+        "image/webp": "webp",
+        "video/mp4": "mp4",
+    }.get(mime)
+    if ext is None:
+        return None
+
+    try:
+        return ext, base64.b64decode(payload)
+    except Exception:
+        return None
+
+
+def _extract_generated_media(response_json: dict[str, Any], task: str) -> list[tuple[str, bytes]]:
+    media: list[tuple[str, bytes]] = []
+
+    data = response_json.get("data")
+    if isinstance(data, list):
+        default_ext = "mp4" if task in {"t2v", "i2v", "ti2v"} else "png"
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            payload = item.get("b64_json")
+            if not isinstance(payload, str) or not payload:
+                continue
+            try:
+                media.append((default_ext, base64.b64decode(payload)))
+            except Exception as exc:
+                logger.warning("Failed to decode b64_json payload: %s", exc)
+
+    choices = response_json.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "image_url":
+                    continue
+                image_url = item.get("image_url")
+                if not isinstance(image_url, dict):
+                    continue
+                decoded = _decode_data_url(image_url.get("url", ""))
+                if decoded is not None:
+                    media.append(decoded)
+
+    return media
+
+
+def save_generated_outputs(
+    requests_list: list[RequestFuncInput],
+    outputs: list[RequestFuncOutput],
+    save_dir: str,
+    task: str,
+) -> int:
+    os.makedirs(save_dir, exist_ok=True)
+
+    saved_count = 0
+    for req_idx, (req, out) in enumerate(zip(requests_list, outputs, strict=False)):
+        if not out.success:
+            continue
+
+        generated_media = _extract_generated_media(out.response_body, task)
+        for item_idx, (ext, payload) in enumerate(generated_media):
+            file_name = f"{req_idx:05d}_{req.request_id}"
+            if item_idx > 0:
+                file_name += f"_{item_idx}"
+            file_path = os.path.join(save_dir, f"{file_name}.{ext}")
+            with open(file_path, "wb") as f:
+                f.write(payload)
+            saved_count += 1
+
+    return saved_count
+
+
 def wait_for_service(base_url: str, timeout: int = 120) -> None:
     print(f"Waiting for service at {base_url}...")
     start_time = time.time()
@@ -920,6 +1010,15 @@ async def benchmark(args):
         total_duration = time.perf_counter() - start_time
 
     pbar.close()
+
+    if args.save_output_dir:
+        saved_count = save_generated_outputs(
+            requests_list=requests_list,
+            outputs=outputs,
+            save_dir=args.save_output_dir,
+            task=args.task,
+        )
+        print(f"Saved {saved_count} output file(s) to {os.path.abspath(args.save_output_dir)}")
 
     # Calculate metrics
     metrics = calculate_metrics(outputs, total_duration, requests_list, args, args.slo)
@@ -1066,6 +1165,12 @@ if __name__ == "__main__":
         help="Random seed (for diffusion models).",
     )
     parser.add_argument("--fps", type=int, default=None, help="FPS (for video).")
+    parser.add_argument(
+        "--save-output-dir",
+        type=str,
+        default=None,
+        help="If set, save generated image/video outputs from benchmark responses into this directory.",
+    )
     parser.add_argument("--output-file", type=str, default=None, help="Output JSON file for metrics.")
     parser.add_argument(
         "--slo",
