@@ -18,8 +18,6 @@ from urllib import request as urllib_request
 
 import yaml
 
-from vllm_omni.global_scheduler.config import load_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_RESULTS_ROOT = REPO_ROOT / 'benchmarks' / 'diffusion' / 'results'
@@ -76,13 +74,21 @@ def split_worker_ids(raw: str) -> list[str]:
 
 
 def resolve_case_name(config_path: Path) -> str:
-    config = load_config(config_path)
-    selected_ids = set(config.benchmark.worker_ids or [instance.id for instance in config.instances])
-    launch_args = [
-        list(instance.launch.args)
-        for instance in config.instances
-        if instance.id in selected_ids and instance.launch is not None
-    ]
+    payload = read_yaml(config_path)
+    benchmark = payload.get('benchmark') if isinstance(payload.get('benchmark'), dict) else {}
+    instances = payload.get('instances') if isinstance(payload.get('instances'), list) else []
+
+    selected_ids = set(benchmark.get('worker_ids') or [instance.get('id') for instance in instances if isinstance(instance, dict)])
+    launch_args = []
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        if instance.get('id') not in selected_ids:
+            continue
+        launch = instance.get('launch')
+        if not isinstance(launch, dict):
+            continue
+        launch_args.append([str(item) for item in launch.get('args', [])])
 
     def get_flag(args: list[str], flag: str) -> str | None:
         idx = 0
@@ -117,8 +123,12 @@ def resolve_case_name(config_path: Path) -> str:
         if len(chunk_preemptions) == 1:
             chunk_preemption = next(iter(chunk_preemptions))
 
+    policy = payload.get('policy') if isinstance(payload.get('policy'), dict) else {}
+    baseline = policy.get('baseline') if isinstance(policy.get('baseline'), dict) else {}
+    global_policy = baseline.get('algorithm', 'fcfs')
+
     return (
-        f'global_{config.policy.baseline.algorithm}'
+        f'global_{global_policy}'
         f'__instance_{instance_policy}'
         f'__chunk_{step_chunk}'
         f'__preempt_{chunk_preemption}'
@@ -166,6 +176,7 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
     worker_ids = split_worker_ids(options.get('WORKER_IDS', ''))
 
     benchmark = payload.setdefault('benchmark', {})
+    existing_random_request_config = str(benchmark.get('random_request_config') or '').strip()
     benchmark['output_file'] = str(benchmark_output_file.resolve())
     if worker_ids:
         benchmark['worker_ids'] = worker_ids
@@ -176,11 +187,14 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
         ('BENCHMARK_TASK', 'task'),
         ('BENCHMARK_DATASET', 'dataset'),
         ('BENCHMARK_DATASET_PATH', 'dataset_path'),
-        ('BENCHMARK_RANDOM_REQUEST_CONFIG', 'random_request_config'),
     ]:
         value = options.get(env_name, '').strip()
         if value:
             benchmark[config_key] = value
+
+    resolved_random_request_config = options.get('BENCHMARK_RANDOM_REQUEST_CONFIG', '').strip() or existing_random_request_config
+    options['__RESOLVED_RANDOM_REQUEST_CONFIG'] = resolved_random_request_config
+    benchmark.pop('random_request_config', None)
 
     for env_name, config_key in [
         ('BENCHMARK_MAX_CONCURRENCY', 'max_concurrency'),
@@ -257,55 +271,62 @@ def normalize_shell_value(value: str | None) -> str:
     return ' '.join(str(value).split())
 
 
-def resolve_benchmark_runtime(config_path: Path) -> dict[str, Any]:
-    config = load_config(config_path)
-    benchmark = config.benchmark
-    instances_by_id = {instance.id: instance for instance in config.instances}
-    worker_ids = benchmark.worker_ids or [instance.id for instance in config.instances]
+def resolve_benchmark_runtime(config_path: Path, options: dict[str, str]) -> dict[str, Any]:
+    payload = read_yaml(config_path)
+    server = payload.get('server') if isinstance(payload.get('server'), dict) else {}
+    benchmark = payload.get('benchmark') if isinstance(payload.get('benchmark'), dict) else {}
+    instances = payload.get('instances') if isinstance(payload.get('instances'), list) else []
+
+    instances_by_id = {
+        str(instance.get('id')): instance
+        for instance in instances
+        if isinstance(instance, dict) and instance.get('id')
+    }
+    worker_ids = benchmark.get('worker_ids') or list(instances_by_id.keys())
     missing = [worker_id for worker_id in worker_ids if worker_id not in instances_by_id]
     if missing:
         raise ValueError(f"benchmark.worker_ids contains unknown instances: {', '.join(missing)}")
 
-    model = benchmark.model
-    if model is None:
-        launch_models = {
-            instance.launch.model
-            for worker_id in worker_ids
-            for instance in [instances_by_id[worker_id]]
-            if instance.launch is not None and instance.launch.model
-        }
+    model = benchmark.get('model')
+    if not model:
+        launch_models = set()
+        for worker_id in worker_ids:
+            launch = instances_by_id[worker_id].get('launch')
+            if isinstance(launch, dict) and launch.get('model'):
+                launch_models.add(str(launch.get('model')))
         if len(launch_models) != 1:
-            raise ValueError(
-                'benchmark.model is required when selected workers do not share exactly one launch.model'
-            )
+            raise ValueError('benchmark.model is required when selected workers do not share exactly one launch.model')
         model = next(iter(launch_models))
 
-    host = config.server.host
+    host = str(server.get('host', '0.0.0.0'))
     if host in {'0.0.0.0', '::'}:
         host = '127.0.0.1'
+    port = int(server.get('port', 8089))
 
     def resolve_config_path(value: str | None) -> str:
         if not value:
             return ''
-        path = Path(value)
+        path = Path(str(value))
         if not path.is_absolute():
             path = (config_path.parent / path).resolve()
         return str(path)
 
+    random_request_config = normalize_shell_value(options.get('__RESOLVED_RANDOM_REQUEST_CONFIG', ''))
+
     return {
-        'scheduler_url': f'http://{host}:{config.server.port}',
-        'worker_ids': worker_ids,
-        'worker_ready_timeout_s': benchmark.worker_ready_timeout_s,
-        'model': model,
-        'backend': benchmark.backend,
-        'task': benchmark.task,
-        'dataset': benchmark.dataset,
-        'dataset_path': resolve_config_path(benchmark.dataset_path),
-        'random_request_config': normalize_shell_value(benchmark.random_request_config),
-        'max_concurrency': benchmark.max_concurrency,
-        'warmup_requests': benchmark.warmup_requests,
-        'warmup_num_inference_steps': benchmark.warmup_num_inference_steps,
-        'output_file': resolve_config_path(benchmark.output_file),
+        'scheduler_url': f'http://{host}:{port}',
+        'worker_ids': [str(worker_id) for worker_id in worker_ids],
+        'worker_ready_timeout_s': int(benchmark.get('worker_ready_timeout_s', 600)),
+        'model': str(model),
+        'backend': str(benchmark.get('backend', 'vllm-omni')),
+        'task': str(benchmark.get('task', 't2i')),
+        'dataset': str(benchmark.get('dataset', 'trace')),
+        'dataset_path': resolve_config_path(benchmark.get('dataset_path')),
+        'random_request_config': random_request_config,
+        'max_concurrency': int(benchmark.get('max_concurrency', 20)),
+        'warmup_requests': int(benchmark.get('warmup_requests', 0)),
+        'warmup_num_inference_steps': int(benchmark.get('warmup_num_inference_steps', 1)),
+        'output_file': resolve_config_path(benchmark.get('output_file')),
     }
 
 
@@ -547,7 +568,7 @@ def run_case(options: dict[str, str]) -> Path:
         if not options['SCHEDULER_LOG_FILE'].strip():
             scheduler_log_file = out_dir / 'global_scheduler_server.log'
 
-    runtime = resolve_benchmark_runtime(generated_config)
+    runtime = resolve_benchmark_runtime(generated_config, options)
     if not options['BENCH_OUTPUT_FILE'].strip():
         runtime['output_file'] = str(bench_output_file.resolve())
 
