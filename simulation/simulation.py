@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 import sys
 import random
@@ -23,22 +24,6 @@ except ImportError:
     yaml = None
 
 INF = float("inf")
-PROFILE_STEPS = (1, 5, 10, 30, 50)
-
-
-def bucket_steps(steps: int) -> int:
-    """将请求的 steps 映射到 profile 档位。查不到则报错。"""
-    if steps <= 1:
-        return 1
-    if 2 <= steps <= 6:
-        return 5
-    if 7 <= steps <= 24:
-        return 10
-    if 25 <= steps <= 35:
-        return 30
-    if 36 <= steps <= 50:
-        return 50
-    raise ValueError(f"steps={steps} 超出支持的档位范围，请使用 1 或 4-50 以内")
 
 
 def worker_config_id(w: dict) -> str:
@@ -54,20 +39,15 @@ def _parse_size(size: str) -> tuple[int, int]:
     return int(m.group(1)), int(m.group(2))
 
 
-def _instance_type_to_config_id(instance_type: str) -> str | None:
-    """将 profile 的 instance_type（如 sp1-cfg1-tp1-baseline）转为 config_id 格式（sp1_cfg1_tp1）。"""
-    m = re.match(r"sp(\d+)-cfg(\d+)-tp(\d+)(?:-.*)?", instance_type, re.IGNORECASE)
-    if m:
-        return f"sp{m.group(1)}_cfg{m.group(2)}_tp{m.group(3)}"
-    return None
+REQUIRED_PROFILE_KEYS = ("instance_type", "task_type", "width", "height", "num_frames", "steps", "latency_s")
 
 
 def load_profile_json(profile_path: Path) -> dict[tuple[str, str, int, int, int, int], float]:
     """
-    加载 profile JSON，键:
-    (instance_type, task_type, width, height, num_frames, steps) -> request_time_s
-    对 spX-cfgY-tpZ-* 格式的 instance_type 会额外注册 config_id 别名（spX_cfgY_tpZ），
-    以便 worker 用 config_id 查表时能命中。
+    加载 profile JSON，与 newest_profile_A100.json 格式严格对齐。
+    键: (instance_type, task_type, width, height, num_frames, steps) -> request_time_s
+    必含字段: instance_type, task_type, width, height, num_frames, steps, latency_s
+    字段缺失或格式不符则 fail-fast。
     """
     with open(profile_path, encoding="utf-8") as f:
         data = json.load(f)
@@ -75,20 +55,34 @@ def load_profile_json(profile_path: Path) -> dict[tuple[str, str, int, int, int,
     if not isinstance(profiles, list):
         raise ValueError("JSON profile 格式错误：顶层需要 'profiles' 列表")
     table = {}
-    for p in profiles:
+    for idx, p in enumerate(profiles):
+        if not isinstance(p, dict):
+            raise ValueError(f"Profile 条目 {idx} 须为对象，得到 {type(p)}")
+        # 严格校验：必须含 latency_s，禁止使用 latency_ms（避免单位混淆）
+        if "latency_ms" in p:
+            raise ValueError(
+                f"Profile 条目 {idx}: 禁止 latency_ms，请使用 latency_s（秒）以对齐 newest_profile 格式"
+            )
+        for key in REQUIRED_PROFILE_KEYS:
+            if key not in p:
+                raise ValueError(
+                    f"Profile 条目 {idx} 缺少必填字段 {key!r}。"
+                    "需与 newest_profile_A100.json 格式对齐"
+                )
         instance_type = str(p["instance_type"]).strip()
         task_type = str(p["task_type"]).strip().lower()
         width = int(p["width"])
         height = int(p["height"])
         num_frames = int(p["num_frames"])
         steps = int(p["steps"])
-        latency_ms = float(p["latency_ms"])
+        try:
+            latency_s = float(p["latency_s"])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Profile 条目 {idx}: latency_s 须为数值，得到 {p['latency_s']!r}") from e
         key = (instance_type, task_type, width, height, num_frames, steps)
-        table[key] = latency_ms / 1000.0
-        # 兼容：worker 用 config_id（sp1_cfg1_tp1）查表时，profile 可能是 sp1-cfg1-tp1-baseline
-        alias = _instance_type_to_config_id(instance_type)
-        if alias and alias != instance_type:
-            table[(alias, task_type, width, height, num_frames, steps)] = latency_ms / 1000.0
+        if key in table:
+            raise ValueError(f"Profile 存在重复键 {key}")
+        table[key] = latency_s
     return table
 
 
@@ -99,11 +93,15 @@ def load_profile(profile_path: Path) -> dict:
 
 
 def lookup(profile_data: dict, request: dict, worker: dict) -> float:
-    """按 profile 查表得到 request_time_s。"""
+    """
+    按 profile 精确查表得到 request_time_s。
+    字段（instance_type, width, height, num_frames, steps）必须与 profile 完全匹配，否则 fail-fast。
+    task_type 由请求推断，也须在 profile 中存在对应条目。
+    """
     table = profile_data["json_table"]
     instance_type = str(worker.get("instance_type") or worker.get("config_id") or "").strip()
     if not instance_type:
-        raise KeyError("profile 查表失败：worker 缺少 instance_type")
+        raise KeyError("profile 查表失败：worker 缺少 instance_type 或 config_id")
     width = request.get("width")
     height = request.get("height")
     if width is None or height is None:
@@ -113,25 +111,14 @@ def lookup(profile_data: dict, request: dict, worker: dict) -> float:
     task_type = str(request.get("task_type") or ("video" if num_frames > 1 else "image")).lower().strip()
     steps = int(request["steps"])
 
-    exact_key = (instance_type, task_type, width, height, num_frames, steps)
-    if exact_key in table:
-        return table[exact_key]
-
-    # 兼容历史步数分档：无精确 steps 时尝试档位匹配
-    try:
-        bucketed = bucket_steps(steps)
-    except ValueError:
-        bucketed = None
-    if bucketed is not None:
-        bucketed_key = (instance_type, task_type, width, height, num_frames, bucketed)
-        if bucketed_key in table:
-            return table[bucketed_key]
-
-    raise KeyError(
-        "profile 中无匹配: "
-        f"instance_type={instance_type!r}, task_type={task_type!r}, "
-        f"width={width}, height={height}, num_frames={num_frames}, steps={steps}"
-    )
+    key = (instance_type, task_type, width, height, num_frames, steps)
+    if key not in table:
+        raise KeyError(
+            "profile 中无精确匹配，请检查 instance_type/width/height/num_frames/steps 与 profile 是否一致: "
+            f"instance_type={instance_type!r}, task_type={task_type!r}, "
+            f"width={width}, height={height}, num_frames={num_frames}, steps={steps}"
+        )
+    return table[key]
 
 
 def load_config(config_path: Path) -> dict:
@@ -201,12 +188,14 @@ def load_trace_template(trace_path: Path) -> list[dict]:
 def build_requests(cfg: dict, rps: float, t_end: float) -> list[dict]:
     """生成请求列表。
 
-    时间驱动：t=0, 1/rps, 2/rps, ... 当 t <= T_end 时生成该请求（与 README 一致）。
+    与 diffusion_benchmark_serving + run_global_scheduler_benchmark (fixed_duration) 对齐：
+    - 请求数 N = ceil(t_end * rps)，到达时间 t = 0, 1/rps, 2/rps, ..., (N-1)/rps
+    - random 数据集：一次性 rng.choices(template, weights, k=N) 预采样，与 benchmark 一致
 
     数据集来源由 simulation.dataset 决定：
-      - trace  : 使用 trace_path 提供的 size/steps 序列，仅用于请求类型顺序；arrival_time 仍按 rps 均匀注入
+      - trace  : 使用 trace_path 提供的 size/steps 序列；arrival_time 仍按 rps 均匀注入
       - default: 使用 default_request 中配置的单一请求类型
-      - random : 使用 random_request_config，模拟 benchmarks/diffusion 中的 --random-request-config（按 weight 采样）
+      - random : 使用 random_request_config，按 weight 预采样 N 个（与 benchmark RandomDataset 一致）
     """
     sim = cfg["simulation"]
     default = cfg.get("default_request", {})
@@ -239,7 +228,7 @@ def build_requests(cfg: dict, rps: float, t_end: float) -> list[dict]:
             h = int(item.get("height", height_default))
             nf = int(item.get("num_frames", num_frames_default))
             tt = str(item.get("task_type") or ("video" if nf > 1 else "image")).lower().strip()
-            st = int(item.get("steps", steps_default))
+            st = int(item.get("steps", item.get("num_inference_steps", steps_default)))
             wt = float(item.get("weight", 1.0))
             if wt <= 0:
                 continue
@@ -282,25 +271,21 @@ def build_requests(cfg: dict, rps: float, t_end: float) -> list[dict]:
             }]
         else:
             raise ValueError(f"不支持的 dataset 类型: {dataset!r}，可选: trace, default, random")
+
+    # 与 benchmark 一致：N = ceil(t_end * rps)，到达时间 t = 0, 1/rps, ..., (N-1)/rps
+    n_requests = max(1, math.ceil(t_end * rps)) if rps > 0 else 0
+    if dataset == "random" and rng is not None and weights is not None:
+        sampled = rng.choices(template, weights=weights, k=n_requests)
+    else:
+        sampled = None
+
     requests = []
-    i = 0
-    t = 0.0
-    while t <= t_end and rps > 0:
-        if dataset == "random" and rng is not None and weights is not None:
-            idx = rng.choices(range(len(template)), weights=weights, k=1)[0]
-            base_req = template[idx]
-        else:
-            base_req = template[i % len(template)]
+    for i in range(n_requests):
+        t = i / rps if rps > 0 else 0.0
+        base_req = sampled[i] if sampled is not None else template[i % len(template)]
         req = base_req.copy()
         req["request_id"] = f"req_{i}"
         req["arrival_time"] = t
-        requests.append(req)
-        i += 1
-        t = i / rps
-    if not requests and rps > 0:
-        req = template[0].copy()
-        req["request_id"] = "req_0"
-        req["arrival_time"] = 0.0
         requests.append(req)
     return requests
 
@@ -322,16 +307,27 @@ def assign_slo(requests: list[dict], profile_data: dict, workers: list[dict], sl
 # ---------- 调度模块（可插拔） ----------
 
 def dispatch_round_robin(request: dict, workers: list, state: dict) -> int:
-    """轮询：若有空闲 worker 则仅在空闲 worker 中轮询；若全部忙碌则在全体 worker 中轮询。"""
+    """轮询：与 vllm_omni.global_scheduler.policies.round_robin.RoundRobinPolicy 对齐。
+
+    维护实例列表上的游标，每次从游标位置起按索引顺序选取首个有效实例（若有空闲则仅在空闲中选，
+    若全忙则在全体中选）。游标按实例顺序推进，保证与 global_scheduler 一致。
+    """
+    del request
     n = len(workers)
+    if n == 0:
+        raise ValueError("No workers configured")
     available = [i for i in range(n) if workers[i]["next_time"] == INF]
+    candidates = available if available else list(range(n))
     cursor = state.setdefault("next_index", 0)
-    if available:
-        selected = available[cursor % len(available)]
-        state["next_index"] = cursor + 1
-        return selected
-    selected = cursor % n
-    state["next_index"] = cursor + 1
+    start = cursor % n
+    selected = start
+    if start not in candidates:
+        for offset in range(1, n):
+            probe = (start + offset) % n
+            if probe in candidates:
+                selected = probe
+                break
+    state["next_index"] = (selected + 1) % n
     return selected
 
 
@@ -382,6 +378,22 @@ DISPATCH = {
     "short_queue_runtime": dispatch_short_queue_runtime,
 }
 
+def _pop_next_from_queue(w: dict, profile_data: dict, instance_policy: str) -> dict | None:
+    """从 worker 队列中取下一个待执行请求。fcfs=队首，sjf=服务时间最短。"""
+    if not w["queue"]:
+        return None
+    if instance_policy == "sjf":
+        best_i = 0
+        best_st = lookup(profile_data, w["queue"][0], w)
+        for i in range(1, len(w["queue"])):
+            st = lookup(profile_data, w["queue"][i], w)
+            if st < best_st:
+                best_st = st
+                best_i = i
+        return w["queue"].pop(best_i)
+    return w["queue"].pop(0)
+
+
 def run_simulation(
     requests: list[dict],
     workers: list[dict],
@@ -389,10 +401,11 @@ def run_simulation(
     rps: float,
     t_end: float,
     algorithm: str,
+    instance_scheduler_policy: str = "fcfs",
 ) -> dict:
     """单次模拟，返回与 plot_results 对齐的指标 + algorithm。
 
-    入队后、立即派工前由调度器对队列排序的扩展点为占位：当前默认行为仅为将任务放到队列末尾，以后可在此处扩展。
+    instance_scheduler_policy: fcfs（队首）或 sjf（最短作业优先），与 benchmark --instance-scheduler-policy 对齐。
     """
     if algorithm not in DISPATCH:
         raise ValueError(f"不支持的算法: {algorithm}，可选: {list(DISPATCH.keys())}")
@@ -467,10 +480,10 @@ def run_simulation(
                     rec["latency"] = t - rec["arrival_time"]
                     completed.append(rec)
 
-        # 立即派工：空闲 worker 从队列取请求，此时才记录 start_time（开始执行时间）
+        # 立即派工：空闲 worker 从队列取请求，fcfs=队首/sjf=最短服务时间
         for w in ws:
             if w["next_time"] == INF and w["queue"]:
-                req = w["queue"].pop(0)
+                req = _pop_next_from_queue(w, profile_data, instance_scheduler_policy)
                 if algorithm == "short_queue_runtime":
                     w["_queued_work"] -= req.get("_svc", 0.0)
                 req["start_time"] = t  # 从本时刻开始执行
@@ -532,10 +545,10 @@ def run_simulation(
         duration = t_last - t_first
         completed_in_window = [r for r in completed if r["finish_time"] <= t_end]
         n_in_window = len(completed_in_window)
-        # 吞吐量 = 总完成请求数 / 总持续时间（首请求到达至末请求完成的时长）
+        # 吞吐量 = 总完成请求数 / 总持续时间（首请求到达至末请求完成的时长），与 benchmark 一致
         throughput_qps = n_ok / duration if duration > 0 else 0.0
-        # 口径对齐：latency/waiting/service/slo 均基于窗口内完成的请求
-        stats_base = completed_in_window if n_in_window > 0 else completed
+        # 口径对齐：latency/waiting/service/slo 基于全部已完成请求，与 diffusion_benchmark_serving 一致
+        stats_base = completed
         latencies = [r["latency"] for r in stats_base if "latency" in r]
         waiting_times = [r["waiting_time"] for r in stats_base if "waiting_time" in r]
         service_times = [r["service_time"] for r in stats_base if "service_time" in r]
@@ -653,7 +666,8 @@ def main() -> None:
             requests = build_requests(cfg, rps, t_end)
             assign_slo(requests, profile_data, workers, slo_scale)
             try:
-                out = run_simulation(requests, workers, profile_data, rps, t_end, algo)
+                instance_policy = str(cfg.get("scheduler", {}).get("instance_scheduler_policy", "fcfs")).strip().lower()
+                out = run_simulation(requests, workers, profile_data, rps, t_end, algo, instance_scheduler_policy=instance_policy)
                 runs_for_algo.append(out)
                 all_runs.append(out)
             except (KeyError, ValueError) as e:
@@ -711,7 +725,6 @@ def main() -> None:
                     metrics=[metric],
                     title="Simulation",
                     split_by_type=True,
-                    group_by="algorithm",
                 )
                 if saved:
                     saved_list.append(saved)

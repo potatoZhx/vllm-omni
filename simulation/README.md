@@ -4,10 +4,10 @@
 
 ```bash
 cd simulation
-python simulation.py config/simulation_config.yaml
+python simulation.py
 ```
 
-**配置**：`config/simulation_config.yaml`（主配置，含 rps、worker、算法、profile 路径、请求 mix 等）。其他预设：`simulation_config_qwen14.yaml`、`simulation_config_single.yaml` 等。
+**配置**：`config/simulation_config.yaml`（主配置，含 rps、worker、算法、profile 路径、请求 mix 等）。
 
 **输出**：`output/{profile名}/` 下生成各算法的 JSON 与 CSV，跑完自动画图到同目录。
 
@@ -92,11 +92,21 @@ simulation:
   random_request_seed: 42
 ```
 
-- 每次请求注入时，先按 `weight` 使用伪随机数（`random_request_seed`）从列表中抽取一个 profile，得到该请求的 `width/height/steps/num_frames/task_type`；  
-- 然后按 rps 规则决定 `arrival_time`；  
-- 请求的执行时间仍然通过 profile（CSV 或 JSON）查表得到。
+- **与 benchmark 对齐**：使用 `rng.choices(config, weights, k=N)` 一次性预采样 N 个 profile（N = ceil(t_end * rps)），与 `diffusion_benchmark_serving.py` 的 `RandomDataset` 一致；  
+- 到达时间 `t = 0, 1/rps, 2/rps, ..., (N-1)/rps`，与 `iter_requests` 一致；  
+- `t_end` 应对齐 benchmark 的 `NUM_PROMPTS_DURATION_SECONDS`（如 1800）；  
+- `steps` 与 `num_inference_steps` 等效，兼容 benchmark 的 `--random-request-config`；  
+- 请求的执行时间通过 profile 查表得到。
 
-这样可以在仿真层面构造与 benchmark random 数据集**一致或相近的请求分布**，再配合 `profile_source=json + profile_path=../profile/qwen_profile_random.json` 复用真实测得的运行时间。
+这样可以在仿真层面构造与 benchmark **完全一致**的请求序列与到达模式。
+
+详见 [BENCHMARK_ALIGNMENT.md](BENCHMARK_ALIGNMENT.md) 地毯式核对报告。
+
+**统计口径**（与 `diffusion_benchmark_serving.calculate_metrics` 对齐）：
+
+- `duration`：首请求到达至末请求完成的时长
+- `throughput_qps`：completed_requests / duration
+- `latency_*` / `waiting_time_*` / `service_time_*` / `slo_attainment_rate`：基于**全部已完成请求**（不按窗口过滤），再配合 `profile_source=json + profile_path=../profile/qwen_profile_random.json` 复用真实测得的运行时间。
 
 ---
 

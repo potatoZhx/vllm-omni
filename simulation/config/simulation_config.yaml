@@ -1,0 +1,79 @@
+# 离散事件模拟器配置
+# 使用：python simulation/simulation.py simulation/config/simulation_config.yaml
+
+simulation:
+  # 模拟时长（秒），与 benchmark NUM_PROMPTS_DURATION_SECONDS 对齐；请求数 N = ceil(t_end * rps)
+  t_end: 1800.0
+  rps: [0.2, 0.4, 0.6, 0.8, 1.0]   # 请求到达速率列表：对每个算法在每个 rps 下各跑一轮，得到曲线数据（横轴 rps，纵轴指标）
+  slo_scale: 3             # SLO 倍数，slo_ms = 预估执行时间(ms) * slo_scale，默认 3
+  profile_path: "../profile/newest_profile_A100.json"   # profile 文件路径
+  # 请求数据集来源：
+  #   - "trace"   : 使用 trace_path（若存在）提供的 size/steps 序列，仅用于请求类型顺序，arrival_time 仍按 rps 均匀注入
+  #   - "random"  : 使用 random_request_config，模拟 benchmarks/diffusion 中的 --random-request-config（按 weight 采样）
+  dataset: "random"
+  # 请求 trace：设为 sd3_trace_redistributed.txt 时按 trace 顺序提供 size/steps；
+  # 路径相对本 yaml 所在目录。
+  # 从 simulation 目录起：实际文件在 benchmarks/dataset/；若从项目根运行可改为 "benchmarks/dataset/sd3_trace_redistributed.txt"
+  trace_path: "../../benchmarks/dataset/sd3_trace_redistributed.txt"
+  # random 数据集配置：用于 dataset=random 时，模拟 --random-request-config
+  # 下面是一个示例（Qwen-Image 文生图），字段含义：
+  #   width/height     : 分辨率
+  #   steps / num_inference_steps : 推理步数（两者等效，兼容 benchmark）
+  #   num_frames       : 帧数（省略时默认 1；>1 时 task_type 自动视为 video）
+  #   task_type        : "image"/"video"；省略时按 num_frames 推断
+  #   weight           : 该请求类型在 random 采样中的权重（省略默认 1）
+  random_request_config:
+    - { width: 512,  height: 512,  steps: 20, num_frames: 1, task_type: "image", weight: 0.15 }
+    - { width: 768,  height: 768,  steps: 20, num_frames: 1, task_type: "image", weight: 0.25 }
+    - { width: 1024, height: 1024, steps: 25, num_frames: 1, task_type: "image", weight: 0.45 }
+    - { width: 1536, height: 1536, steps: 35, num_frames: 1, task_type: "image", weight: 0.15 }
+  # random 采样的伪随机种子（保证多次运行可复现）
+  random_request_seed: 42
+  output_dir: "../output"     # 结果输出目录；为 output 根时自动追加 profile 名子目录 -> output/{profile名}/
+  output_merged: false     # true：多算法合并为一个 JSON；false：每算法一个 JSON 文件
+
+
+# Worker 配置：每个 worker 用三个整数 sp, cfg, tp，程序拼接为 config_id（如 sp1_cfg1_tp1）
+workers:
+  - { sp: 1, cfg: 1, tp: 1}
+  - { sp: 1, cfg: 1, tp: 1}
+  - { sp: 1, cfg: 1, tp: 1}
+  - { sp: 1, cfg: 1, tp: 1}
+  - { sp: 1, cfg: 1, tp: 1}
+  - { sp: 1, cfg: 1, tp: 1}
+  - { sp: 1, cfg: 1, tp: 1}
+  - { sp: 1, cfg: 1, tp: 1}
+  # - { sp: 1, cfg: 1, tp: 1 }
+  # - { sp: 1, cfg: 1, tp: 1 }
+  # - { sp: 1, cfg: 1, tp: 1 }
+  # - { sp: 1, cfg: 1, tp: 2 }
+  # - { sp: 1, cfg: 1, tp: 2 }
+
+# 调度算法
+#   instance_scheduler_policy: fcfs | sjf，与 benchmark --instance-scheduler-policy 对齐
+#     fcfs: 实例内 FCFS（qwen_n8_fcfs_rr）
+#     sjf: 实例内 SJF（qwen_n8_sjf_qz_rr）
+#   algorithms_to_run: 全局调度算法
+scheduler:
+  instance_scheduler_policy: fcfs
+  # algorithms_to_run：要参与测试的算法列表。对每个算法，在 rps 列表的每个取值下各跑一轮模拟，
+  # 得到 (算法, rps) 的指标点，用于画图：横轴 rps、纵轴为延迟/吞吐等，每算法一条曲线。
+  algorithms_to_run:
+    - round_robin          # 轮询
+    # - min_queue_length     # 最小队列长度（仅看等待队列，不计正在运行）
+    # - short_queue_runtime  # 最小队列等待时间（队列中所有请求 service_time 之和）
+
+# 跑完 simulation 后是否自动画图并保存
+plot:
+  after_run: true
+  # 默认画图指标（跑完即画）：可配置，与下方「输出指标字段」名称一致；每个指标单独一张图，每图内为各算法的曲线
+  metrics: [latency_p95, latency_mean, throughput_qps]
+  output_dir: "../output"      # 与 simulation.output_dir 一致时，图也保存到 output/{profile名}/
+  output_prefix: "compare"  # 图文件名前缀，得到 compare_latency_p95.png、compare_latency_mean.png 等（一指标一图）
+
+# 输出 JSON 与画图可用的指标字段（与 plot_results 及本程序输出一致，便于对号，避免写错）：
+#   延迟：latency_mean, latency_median, latency_p50, latency_p95, latency_p99
+#   等待/服务：waiting_time_mean, waiting_time_p95, waiting_time_p99, service_time_mean, service_time_p95, service_time_p99
+#   吞吐与量：throughput_qps, duration, completed_requests, failed_requests
+#   SLO：slo_attainment_rate
+# 画图时 metrics 从上述字段中选，如 [latency_p95, latency_mean]；多图按类型拆为 latency/throughput/slo 三组
