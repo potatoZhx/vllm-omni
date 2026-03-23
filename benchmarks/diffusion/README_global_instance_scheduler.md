@@ -142,7 +142,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "2"
         - --instance-scheduler-policy
         - sjf
@@ -200,14 +200,14 @@ instances:
 
 那么 `sjf` 只能在“新请求进入等待队列”时重排，已经开始跑的长请求不会在执行中途让出机会，实验效果会明显弱很多。
 
-#### `--max-concurrency` 在这里的意义
+#### `--diffusion-engine-max-concurrency` 在这里的意义
 
-在当前 global scheduler 实现里，`launch.args` 里的 `--max-concurrency` 有两个作用：
+在当前 global scheduler 实现里，`launch.args` 里的 `--diffusion-engine-max-concurrency` 有两个作用：
 
 1. 供 scheduler 估算该实例可容纳多少 inflight
 2. 作为实验配置记录的一部分保留在 YAML
 
-当前 scheduler 在真正拉起 `vllm serve` 子进程时，会把 `--max-concurrency` 从启动命令里剥掉，不直接透传给子进程。因此：
+当前 scheduler 在真正拉起 `vllm serve` 子进程时，会把 `--diffusion-engine-max-concurrency` 从启动命令里剥掉，不直接透传给子进程。因此：
 
 - 这个参数目前主要服务于 global scheduler 的运行时状态估计
 - 不是 worker 内核调度逻辑的开关
@@ -231,7 +231,7 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
   ]' \
   --num-prompts 100 \
   --request-rate 0.5 \
-  --max-concurrency 20 \
+  --diffusion-engine-max-concurrency 20 \
   --warmup-requests 1 \
   --warmup-num-inference-steps 1 \
   --output-file ./logs/qwen_global_minqlen_instance_sjf_rps_0p5.json
@@ -244,7 +244,7 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
   - 对应 scheduler 的 `/v1/chat/completions`
 - `--request-rate`
   - 控制目标 RPS
-- `--max-concurrency`
+- `--diffusion-engine-max-concurrency`
   - 控制 client 侧最大并发
 - `--dataset random`
   - 默认通过 `random_request_config` 生成混合 heterogeneous workload
@@ -312,7 +312,7 @@ benchmarks/diffusion/scripts/run_global_instance_scheduler_case.sh
   - `--diffusion-chunk-budget-steps`
 - benchmark 层：
   - `--request-rate`
-  - `--max-concurrency`
+  - `--diffusion-engine-max-concurrency`
   - `--dataset`
   - `--dataset-path` / `--random-request-config`
 
