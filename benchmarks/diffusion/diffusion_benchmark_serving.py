@@ -869,11 +869,15 @@ def _populate_slo_ms_from_warmups(
     updated: list[RequestFuncInput] = []
     if getattr(args, "warmup_request_config", None):
         expected_by_type = _infer_expected_latency_ms_by_request_type(warmup_pairs, args)
+        base_time_ms = _infer_slo_base_time_ms_from_warmups(warmup_pairs, args)
         missing_signatures: set[tuple[int | None, int | None, int | None, int | None, int | None, int]] = set()
         for req in requests_list:
             estimated_cost_s = req.estimated_cost_s
             if estimated_cost_s is None:
-                estimated_ms = expected_by_type.get(_resolve_request_perf_signature(req, args))
+                signature = _resolve_request_perf_signature(req, args)
+                estimated_ms = expected_by_type.get(signature)
+                if estimated_ms is None and base_time_ms is not None:
+                    estimated_ms = _compute_expected_latency_ms_from_base(req, args, base_time_ms)
                 estimated_cost_s = (estimated_ms / 1000.0) if estimated_ms is not None else None
             slo_ms = req.slo_ms if req.slo_ms is not None else (estimated_cost_s * 1000.0 * slo_scale if estimated_cost_s is not None else None)
             if estimated_cost_s is None and req.slo_ms is None:
