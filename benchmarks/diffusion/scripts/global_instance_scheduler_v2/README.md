@@ -191,6 +191,34 @@ benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 - `BENCHMARK_WARMUP_REQUEST_CONFIG` 会直接透传到 `diffusion_benchmark_serving.py --warmup-request-config`。
 - 如果 base YAML 里的 `benchmark.warmup_request_config` 已经配置了，环境变量会覆盖它。
 
+### 单 case，显式指定临时目录和编译缓存目录
+
+当服务端启用了 `torch.compile` / Triton JIT，而机器上的 `/tmp` 空间不足时，可以在启动脚本前显式指定：
+
+- `TMPDIR`
+- `TRITON_CACHE_DIR`
+- `TORCHINDUCTOR_CACHE_DIR`
+
+示例：
+
+```bash
+mkdir -p /data/$USER/tmp /data/$USER/triton_cache /data/$USER/torchinductor_cache
+
+TMPDIR=/data/$USER/tmp \
+TRITON_CACHE_DIR=/data/$USER/triton_cache \
+TORCHINDUCTOR_CACHE_DIR=/data/$USER/torchinductor_cache \
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+REQUEST_RATES=0.2,0.4 \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+语义：
+
+- `TMPDIR` 用于重定向 `gcc` / Python 临时文件目录，避免写到默认 `/tmp`。
+- `TRITON_CACHE_DIR` 用于重定向 Triton 编译缓存。
+- `TORCHINDUCTOR_CACHE_DIR` 用于重定向 TorchInductor 编译缓存。
+- 这几个环境变量会随 `run_case.sh -> orchestrate.py -> global scheduler -> worker` 的进程链路继承下去。
+
 ### 批量 case
 
 ```bash
