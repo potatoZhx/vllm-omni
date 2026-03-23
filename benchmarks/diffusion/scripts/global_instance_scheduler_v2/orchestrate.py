@@ -177,6 +177,7 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
 
     benchmark = payload.setdefault('benchmark', {})
     existing_random_request_config = str(benchmark.get('random_request_config') or '').strip()
+    existing_warmup_request_config = str(benchmark.get('warmup_request_config') or '').strip()
     benchmark['output_file'] = str(benchmark_output_file.resolve())
     if worker_ids:
         benchmark['worker_ids'] = worker_ids
@@ -193,8 +194,11 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
             benchmark[config_key] = value
 
     resolved_random_request_config = options.get('BENCHMARK_RANDOM_REQUEST_CONFIG', '').strip() or existing_random_request_config
+    resolved_warmup_request_config = options.get('BENCHMARK_WARMUP_REQUEST_CONFIG', '').strip() or existing_warmup_request_config
     options['__RESOLVED_RANDOM_REQUEST_CONFIG'] = resolved_random_request_config
+    options['__RESOLVED_WARMUP_REQUEST_CONFIG'] = resolved_warmup_request_config
     benchmark.pop('random_request_config', None)
+    benchmark.pop('warmup_request_config', None)
 
     for env_name, config_key in [
         ('BENCHMARK_MAX_CONCURRENCY', 'max_concurrency'),
@@ -312,6 +316,7 @@ def resolve_benchmark_runtime(config_path: Path, options: dict[str, str]) -> dic
         return str(path)
 
     random_request_config = normalize_shell_value(options.get('__RESOLVED_RANDOM_REQUEST_CONFIG', ''))
+    warmup_request_config = normalize_shell_value(options.get('__RESOLVED_WARMUP_REQUEST_CONFIG', ''))
 
     return {
         'scheduler_url': f'http://{host}:{port}',
@@ -323,6 +328,7 @@ def resolve_benchmark_runtime(config_path: Path, options: dict[str, str]) -> dic
         'dataset': str(benchmark.get('dataset', 'trace')),
         'dataset_path': resolve_config_path(benchmark.get('dataset_path')),
         'random_request_config': random_request_config,
+        'warmup_request_config': warmup_request_config,
         'max_concurrency': int(benchmark.get('max_concurrency', 20)),
         'warmup_requests': int(benchmark.get('warmup_requests', 0)),
         'warmup_num_inference_steps': int(benchmark.get('warmup_num_inference_steps', 1)),
@@ -478,6 +484,8 @@ def build_benchmark_command(runtime: dict[str, Any], rate: str, request_rates: l
         cmd.extend(['--dataset-path', runtime['dataset_path']])
     if runtime['random_request_config']:
         cmd.extend(['--random-request-config', runtime['random_request_config']])
+    if runtime['warmup_request_config']:
+        cmd.extend(['--warmup-request-config', runtime['warmup_request_config']])
     if output_file:
         cmd.extend(['--output-file', output_file])
     return cmd
@@ -691,6 +699,7 @@ def collect_case_options() -> dict[str, str]:
         'BENCHMARK_DATASET': env_str('BENCHMARK_DATASET'),
         'BENCHMARK_DATASET_PATH': env_str('BENCHMARK_DATASET_PATH'),
         'BENCHMARK_RANDOM_REQUEST_CONFIG': env_str('BENCHMARK_RANDOM_REQUEST_CONFIG'),
+        'BENCHMARK_WARMUP_REQUEST_CONFIG': env_str('BENCHMARK_WARMUP_REQUEST_CONFIG'),
         'BENCHMARK_MAX_CONCURRENCY': env_str('BENCHMARK_MAX_CONCURRENCY'),
         'BENCHMARK_WARMUP_REQUESTS': env_str('BENCHMARK_WARMUP_REQUESTS'),
         'BENCHMARK_WARMUP_NUM_INFERENCE_STEPS': env_str('BENCHMARK_WARMUP_NUM_INFERENCE_STEPS'),

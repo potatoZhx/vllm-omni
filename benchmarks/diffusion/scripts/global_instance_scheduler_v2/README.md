@@ -50,7 +50,7 @@
 - 全局调度策略覆盖
 - 实例内调度策略覆盖
 - step chunk / chunk preemption / chunk budget 覆盖
-- benchmark 模型、数据集、随机请求配置覆盖
+- benchmark 模型、数据集、随机请求配置、warmup 请求配置覆盖
 - YAML 优先，显式环境变量覆盖
 - 自动生成结果目录和 summary 汇总
 
@@ -130,6 +130,7 @@ BASE_CONFIG=./global_scheduler.qwen.yaml BENCHMARK_MODE=fixed_num_prompts FIXED_
 - `BENCHMARK_DATASET`
 - `BENCHMARK_DATASET_PATH`
 - `BENCHMARK_RANDOM_REQUEST_CONFIG`
+- `BENCHMARK_WARMUP_REQUEST_CONFIG`
 - `BENCHMARK_MAX_CONCURRENCY`
 - `BENCHMARK_WARMUP_REQUESTS`
 - `BENCHMARK_WARMUP_NUM_INFERENCE_STEPS`
@@ -174,6 +175,21 @@ BASE_CONFIG=./global_scheduler.qwen.yaml REQUEST_RATES=0.2,0.4 benchmarks/diffus
 ```bash
 BASE_CONFIG=./global_scheduler.qwen.yaml GLOBAL_POLICY=round_robin INSTANCE_POLICY=sjf ENABLE_STEP_CHUNK=1 ENABLE_CHUNK_PREEMPTION=1 CHUNK_BUDGET_STEPS=4 REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
+
+### 单 case，显式指定 warmup request config
+
+```bash
+BASE_CONFIG=./global_scheduler.qwen.yaml \
+REQUEST_RATES=0.2,0.4 \
+BENCHMARK_WARMUP_REQUESTS=4 \
+BENCHMARK_WARMUP_REQUEST_CONFIG='[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},{"width":768,"height":768,"num_inference_steps":20,"weight":0.25},{"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},{"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}]' \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+语义：
+
+- `BENCHMARK_WARMUP_REQUEST_CONFIG` 会直接透传到 `diffusion_benchmark_serving.py --warmup-request-config`。
+- 如果 base YAML 里的 `benchmark.warmup_request_config` 已经配置了，环境变量会覆盖它。
 
 ### 批量 case
 
