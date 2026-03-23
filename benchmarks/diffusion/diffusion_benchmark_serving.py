@@ -609,6 +609,170 @@ class RandomDataset(BaseDataset):
         return [self[i] for i in range(len(self))]
 
 
+def _parse_request_profiles(config_str: str | None, arg_name: str) -> list[dict[str, Any]]:
+    if not config_str:
+        return []
+
+    try:
+        profiles = json.loads(config_str)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{arg_name} must be valid JSON: {exc}") from exc
+
+    if not isinstance(profiles, list) or not profiles:
+        raise ValueError(f"{arg_name} must be a non-empty JSON list of request profiles.")
+
+    normalized: list[dict[str, Any]] = []
+    for idx, profile in enumerate(profiles):
+        if not isinstance(profile, dict):
+            raise ValueError(f"{arg_name}[{idx}] must be a JSON object, got {type(profile).__name__}.")
+        normalized.append(dict(profile))
+
+    return normalized
+
+
+def _select_warmup_profiles(
+    profiles: list[dict[str, Any]],
+    warmup_requests: int,
+) -> list[dict[str, Any]]:
+    if warmup_requests <= 0 or not profiles:
+        return []
+
+    cleaned_profiles: list[dict[str, Any]] = []
+    weights: list[float] = []
+    has_weight = False
+    for idx, profile in enumerate(profiles):
+        cleaned = dict(profile)
+        raw_weight = cleaned.pop("weight", None)
+        if raw_weight is None:
+            weights.append(1.0)
+        else:
+            has_weight = True
+            try:
+                weight = float(raw_weight)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"warmup_request_config[{idx}].weight must be numeric, got {raw_weight!r}.") from exc
+            if weight < 0:
+                raise ValueError(f"warmup_request_config[{idx}].weight must be non-negative, got {weight}.")
+            weights.append(weight)
+        cleaned_profiles.append(cleaned)
+
+    if has_weight:
+        positive_total = sum(weights)
+        if positive_total <= 0:
+            raise ValueError("warmup_request_config weights must contain at least one positive value.")
+
+        exact_counts = [(float(weight) * warmup_requests) / positive_total for weight in weights]
+        counts = [int(count) for count in exact_counts]
+        remaining = warmup_requests - sum(counts)
+        if remaining > 0:
+            remainders = sorted(
+                ((exact_counts[i] - counts[i], i) for i in range(len(cleaned_profiles))),
+                key=lambda item: (-item[0], item[1]),
+            )
+            for _, idx in remainders[:remaining]:
+                counts[idx] += 1
+
+        selected: list[dict[str, Any]] = []
+        for idx, count in enumerate(counts):
+            selected.extend([cleaned_profiles[idx]] * count)
+        return selected
+
+    if warmup_requests <= len(cleaned_profiles):
+        return cleaned_profiles[:warmup_requests]
+
+    selected = list(cleaned_profiles)
+    remaining = warmup_requests - len(selected)
+    for i in range(remaining):
+        selected.append(cleaned_profiles[i % len(cleaned_profiles)])
+    return selected
+
+
+def _apply_request_profile(
+    base_req: RequestFuncInput,
+    profile: dict[str, Any],
+    fallback_num_inference_steps: int | None,
+) -> RequestFuncInput:
+    known_fields = {
+        "prompt",
+        "width",
+        "height",
+        "num_frames",
+        "num_inference_steps",
+        "seed",
+        "fps",
+        "slo_ms",
+        "image_paths",
+        "request_id",
+        "extra_body",
+    }
+
+    replace_kwargs: dict[str, Any] = {}
+    for field in known_fields - {"extra_body"}:
+        if field in profile:
+            replace_kwargs[field] = profile[field]
+
+    if "num_inference_steps" not in replace_kwargs and fallback_num_inference_steps is not None:
+        replace_kwargs["num_inference_steps"] = fallback_num_inference_steps
+
+    extra_body = dict(base_req.extra_body)
+    extra_body_profile = profile.get("extra_body")
+    if extra_body_profile is not None:
+        if not isinstance(extra_body_profile, dict):
+            raise ValueError("warmup_request_config.extra_body must be a JSON object when provided.")
+        extra_body.update(extra_body_profile)
+
+    for key, value in profile.items():
+        if key not in known_fields and key != "weight":
+            extra_body[key] = value
+
+    replace_kwargs["extra_body"] = extra_body
+    return replace(base_req, **replace_kwargs)
+
+
+def _build_warmup_requests(
+    requests_list: list[RequestFuncInput],
+    args,
+) -> list[RequestFuncInput]:
+    if not requests_list or args.warmup_requests <= 0:
+        return []
+
+    profiles = _parse_request_profiles(getattr(args, "warmup_request_config", None), "warmup_request_config")
+    if profiles:
+        selected_profiles = _select_warmup_profiles(profiles, args.warmup_requests)
+        return [
+            _apply_request_profile(
+                base_req=requests_list[i % len(requests_list)],
+                profile=selected_profiles[i],
+                fallback_num_inference_steps=args.warmup_num_inference_steps,
+            )
+            for i in range(len(selected_profiles))
+        ]
+
+    warmup_requests: list[RequestFuncInput] = []
+    for i in range(args.warmup_requests):
+        warmup_requests.append(
+            _apply_request_profile(
+                base_req=requests_list[i % len(requests_list)],
+                profile={},
+                fallback_num_inference_steps=args.warmup_num_inference_steps,
+            )
+        )
+    return warmup_requests
+
+
+def _resolve_request_perf_signature(
+    req: RequestFuncInput,
+    args,
+) -> tuple[int | None, int | None, int | None, int | None, int | None, int]:
+    width = req.width if req.width is not None else args.width
+    height = req.height if req.height is not None else args.height
+    num_frames = req.num_frames if req.num_frames is not None else args.num_frames
+    num_inference_steps = req.num_inference_steps if req.num_inference_steps is not None else args.num_inference_steps
+    fps = req.fps if req.fps is not None else args.fps
+    image_count = len(req.image_paths) if req.image_paths else 0
+    return (width, height, num_frames, num_inference_steps, fps, image_count)
+
+
 def _compute_expected_latency_ms_from_base(req: RequestFuncInput, args, base_time_ms: float | None) -> float | None:
     """Compute expected execution time (ms) based on a base per-step-per-frame unit time.
 
@@ -673,26 +837,29 @@ def _infer_slo_base_time_ms_from_warmups(
     return float(np.median(candidates_ms))
 
 
+def _infer_expected_latency_ms_by_request_type(
+    warmup_pairs: list[tuple[RequestFuncInput, RequestFuncOutput]],
+    args,
+) -> dict[tuple[int | None, int | None, int | None, int | None, int | None, int], float]:
+    grouped_latencies_ms: dict[tuple[int | None, int | None, int | None, int | None, int | None, int], list[float]] = {}
+    for req, out in warmup_pairs:
+        if not out.success or out.latency <= 0:
+            continue
+        signature = _resolve_request_perf_signature(req, args)
+        grouped_latencies_ms.setdefault(signature, []).append(out.latency * 1000.0)
+
+    return {signature: float(np.mean(latencies_ms)) for signature, latencies_ms in grouped_latencies_ms.items()}
+
+
 def _populate_slo_ms_from_warmups(
     requests_list: list[RequestFuncInput],
     warmup_pairs: list[tuple[RequestFuncInput, RequestFuncOutput]],
     args,
 ) -> list[RequestFuncInput]:
-    """Populate missing RequestFuncInput.slo_ms using warmup outputs.
+    """Populate missing per-request latency estimates and slo_ms using warmup outputs."""
 
-    - If a request already has slo_ms (e.g., trace-provided), it is kept as-is.
-    - If any request has slo_ms is None and we can infer base time from warmups,
-      we estimate each missing request's expected execution time and set:
-        req.slo_ms = expected_latency_ms * args.slo_scale
-
-    Returns updated requests_list.
-    """
-
-    if not any(req.slo_ms is None for req in requests_list):
-        return requests_list
-
-    base_time_ms = _infer_slo_base_time_ms_from_warmups(warmup_pairs, args)
-    if base_time_ms is None:
+    needs_estimate = any(req.slo_ms is None or req.estimated_cost_s is None for req in requests_list)
+    if not needs_estimate:
         return requests_list
 
     slo_scale = float(getattr(args, "slo_scale", 3.0))
@@ -700,12 +867,38 @@ def _populate_slo_ms_from_warmups(
         raise ValueError(f"slo_scale must be positive, got {slo_scale}.")
 
     updated: list[RequestFuncInput] = []
+    if getattr(args, "warmup_request_config", None):
+        expected_by_type = _infer_expected_latency_ms_by_request_type(warmup_pairs, args)
+        missing_signatures: set[tuple[int | None, int | None, int | None, int | None, int | None, int]] = set()
+        for req in requests_list:
+            estimated_cost_s = req.estimated_cost_s
+            if estimated_cost_s is None:
+                estimated_ms = expected_by_type.get(_resolve_request_perf_signature(req, args))
+                estimated_cost_s = (estimated_ms / 1000.0) if estimated_ms is not None else None
+            slo_ms = req.slo_ms if req.slo_ms is not None else (estimated_cost_s * 1000.0 * slo_scale if estimated_cost_s is not None else None)
+            if estimated_cost_s is None and req.slo_ms is None:
+                missing_signatures.add(_resolve_request_perf_signature(req, args))
+            updated.append(replace(req, estimated_cost_s=estimated_cost_s, slo_ms=slo_ms))
+
+        if missing_signatures:
+            logger.warning(
+                "No warmup estimate found for %d request type(s): %s",
+                len(missing_signatures),
+                sorted(missing_signatures),
+            )
+        return updated
+
+    base_time_ms = _infer_slo_base_time_ms_from_warmups(warmup_pairs, args)
+    if base_time_ms is None:
+        return requests_list
+
     for req in requests_list:
-        if req.slo_ms is not None:
-            updated.append(req)
-            continue
-        expected_ms = _compute_expected_latency_ms_from_base(req, args, base_time_ms)
-        updated.append(replace(req, slo_ms=(expected_ms * slo_scale) if expected_ms is not None else None))
+        estimated_cost_s = req.estimated_cost_s
+        if estimated_cost_s is None:
+            estimated_ms = _compute_expected_latency_ms_from_base(req, args, base_time_ms)
+            estimated_cost_s = (estimated_ms / 1000.0) if estimated_ms is not None else None
+        slo_ms = req.slo_ms if req.slo_ms is not None else (estimated_cost_s * 1000.0 * slo_scale if estimated_cost_s is not None else None)
+        updated.append(replace(req, estimated_cost_s=estimated_cost_s, slo_ms=slo_ms))
 
     return updated
 
@@ -731,8 +924,10 @@ def _inject_scheduler_slo_fields(
         if req.slo_ms is not None:
             extra_body.setdefault("slo_ms", req.slo_ms)
             extra_body.setdefault("slo_target_ms", req.slo_ms)
-            if slo_scale > 0:
-                extra_body.setdefault("estimated_cost_s", float(req.slo_ms) / 1000.0 / slo_scale)
+        if req.estimated_cost_s is not None:
+            extra_body.setdefault("estimated_cost_s", req.estimated_cost_s)
+        elif req.slo_ms is not None and slo_scale > 0:
+            extra_body.setdefault("estimated_cost_s", float(req.slo_ms) / 1000.0 / slo_scale)
         updated.append(replace(req, extra_body=extra_body))
 
     return updated
@@ -976,17 +1171,16 @@ async def benchmark(args):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180000)) as session:
         warmup_pairs: list[tuple[RequestFuncInput, RequestFuncOutput]] = []
         if args.warmup_requests and requests_list:
+            warmup_requests = _build_warmup_requests(requests_list, args)
             print(
-                f"Running {args.warmup_requests} warmup request(s) \
-                with num_inference_steps={args.warmup_num_inference_steps}..."
+                f"Running {len(warmup_requests)} warmup request(s)"
+                + (
+                    " from --warmup-request-config..."
+                    if args.warmup_request_config
+                    else f" with num_inference_steps={args.warmup_num_inference_steps}..."
+                )
             )
-            for i in range(args.warmup_requests):
-                warm_req = requests_list[i % len(requests_list)]
-                if args.warmup_num_inference_steps is not None:
-                    warm_req = replace(
-                        warm_req,
-                        num_inference_steps=args.warmup_num_inference_steps,
-                    )
+            for warm_req in warmup_requests:
                 warm_out = await limited_request_func(warm_req, session, None)
                 warmup_pairs.append((warm_req, warm_out))
 
@@ -1149,6 +1343,22 @@ if __name__ == "__main__":
         default=1,
         help="num_inference_steps used for warmup requests.",
     )
+    parser.add_argument(
+        "--warmup-request-config",
+        type=str,
+        default=None,
+        help=(
+            "JSON string defining warmup request profiles. "
+            "Each profile may contain width, height, num_inference_steps, num_frames, fps, seed, extra_body, etc. "
+            "If provided, warmup requests are built from dataset requests and then overridden by these profile values. "
+            "The 'weight' field is optional; when provided, warmup requests are deterministically expanded "
+            "according to weight. Example: "
+            '[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},'
+            '{"width":768,"height":768,"num_inference_steps":20,"weight":0.25},'
+            '{"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},'
+            '{"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}]'
+        ),
+    )
     parser.add_argument("--width", type=int, default=None, help="Image/Video width.")
     parser.add_argument("--height", type=int, default=None, help="Image/Video height.")
     parser.add_argument("--num-frames", type=int, default=None, help="Number of frames (for video).")
@@ -1177,23 +1387,23 @@ if __name__ == "__main__":
         action="store_true",
         help=(
             "Enable SLO calculation and reporting. If trace provides per-request slo_ms, it is used. "
-            "Otherwise, warmup request(s) are used to infer expected execution time assuming linear "
-            "scaling by resolution, frames, and steps, then slo_ms = expected_time * --slo-scale."
+            "Otherwise, warmup request(s) are used to infer expected execution time. With "
+            "--warmup-request-config, matching request types reuse their measured warmup average; otherwise the script "
+            "falls back to linear scaling by resolution, frames, and steps. Then slo_ms = expected_time * --slo-scale."
         ),
     )
     parser.add_argument(
         "--slo-scale",
         type=float,
         default=3.0,
-        help="SLO target multiplier: slo_ms = estimated_exec_time_ms * slo_scale (default: 3).",
+        help="SLO target multiplier: slo_ms = estimated_cost_s * 1000 * slo_scale (default: 3).",
     )
     parser.add_argument(
         "--inject-scheduler-slo",
         action="store_true",
         help=(
-            "Inject per-request slo_ms into the server request payload for scheduler use. "
-            "When enabled, the benchmark reuses trace-provided slo_ms or populates missing "
-            "values as estimated_exec_time_ms * --slo-scale before sending requests."
+            "Inject per-request scheduler fields into the server request payload. "
+            "When enabled, the benchmark sends slo_ms, slo_target_ms, and estimated_cost_s when available."
         ),
     )
     parser.add_argument("--disable-tqdm", action="store_true", help="Disable progress bar.")

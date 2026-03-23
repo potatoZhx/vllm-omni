@@ -103,13 +103,26 @@ Precedence rules for `trace` (i.e., what actually gets sent):
 Enable SLO evaluation with `--slo`.
 
 - If a request in the trace already has `slo_ms`, that value is used.
-- Otherwise, the script runs warmup requests to infer a base unit time, estimates `expected_ms` by linearly scaling with area/frames/steps, and then sets `slo_ms = expected_ms * --slo-scale`.
+- Otherwise, the script runs warmup requests to infer `expected_ms`. With `--warmup-request-config`, requests reuse the measured average latency of their matching warmup type; otherwise the script falls back to linear scaling from an inferred base unit time. Then `slo_ms = expected_ms * --slo-scale`, while scheduler-facing cost uses `estimated_cost_s = expected_ms / 1000`.
 
 Warmup flags:
 
 - `--warmup-requests`: Number of warmup requests.
-- `--warmup-num-inference-steps`: Steps used during warmup.
-- For `--task t2v`: warmup requests are forced to use `num_frames=1` to make warmup faster and less noisy.
+- `--warmup-num-inference-steps`: Fallback steps used during warmup when `--warmup-request-config` does not provide `num_inference_steps`.
+- `--warmup-request-config`: Optional JSON list of warmup request profiles. Warmup requests are built from dataset requests and then overridden by these profile values, so prompt/image inputs stay aligned with the dataset while resolution / frames / steps can match your expected serving mix.
+- If `weight` is provided inside warmup profiles, `--warmup-requests` is deterministically expanded according to weight using a fixed integer allocation.
+
+Example warmup config for fixed-size image traffic:
+
+```bash
+--warmup-requests 4 \
+--warmup-request-config '[
+  {"width":512,"height":512,"num_inference_steps":20,"weight":0.15},
+  {"width":768,"height":768,"num_inference_steps":20,"weight":0.25},
+  {"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},
+  {"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}
+]'
+```
 
 Traffic / concurrency flags:
 
