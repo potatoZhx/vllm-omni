@@ -49,7 +49,7 @@ instances:
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
-      args: ["--omni", "--max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
+      args: ["--omni", "--diffusion-engine-max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
       env:
         CUDA_VISIBLE_DEVICES: "0,1"
     stop:
@@ -63,7 +63,7 @@ instances:
     launch:
       executable: vllm
       model: Wan/Wan2.2
-      args: ["--omni", "--max-concurrency", "2"]
+      args: ["--omni", "--diffusion-engine-max-concurrency", "2"]
       env:
         CUDA_VISIBLE_DEVICES: "2,3"
 ```
@@ -292,7 +292,7 @@ curl -sS -X POST http://127.0.0.1:8089/instances/probe
 
 - `short_queue_runtime` 和 `estimated_completion_time` 会在 profile 缺失时回退到实例 EWMA
 - profile JSON 需要 `profiles` 数组，记录里使用 `latency_ms`
-- `--max-concurrency` 会被 scheduler 用来推导实例并发容量，但不会透传给实际的 `vllm serve` 子进程
+- `--diffusion-engine-max-concurrency` 表示实例真实并发上限；scheduler 会直接读取这个值做容量判断，并在所有实例达到上限时于 global 层等待，而不是继续把请求转发给已满实例
 
 ## 4. 错误语义
 
@@ -336,7 +336,7 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
   --task t2i \
   --dataset vbench \
   --num-prompts 20 \
-  --max-concurrency 4
+  --diffusion-engine-max-concurrency 4
 ```
 
 完整路径：

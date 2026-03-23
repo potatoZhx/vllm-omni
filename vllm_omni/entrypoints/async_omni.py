@@ -191,6 +191,7 @@ class AsyncOmni(OmniBase):
                     "instance_scheduler_aging_factor": kwargs.get("instance_scheduler_aging_factor", 0.0),
                     "instance_runtime_profile_path": kwargs.get("instance_runtime_profile_path", None),
                     "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
+                    "diffusion_engine_max_concurrency": kwargs.get("diffusion_engine_max_concurrency", 32),
                     "diffusion_enable_step_chunk": kwargs.get("diffusion_enable_step_chunk", False),
                     "diffusion_enable_chunk_preemption": kwargs.get("diffusion_enable_chunk_preemption", False),
                     "diffusion_chunk_budget_steps": kwargs.get("diffusion_chunk_budget_steps", 4),

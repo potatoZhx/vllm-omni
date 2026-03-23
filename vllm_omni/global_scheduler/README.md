@@ -50,7 +50,7 @@ instances:
     launch:
       executable: vllm
       model: Qwen/Qwen-Image
-      args: ["--omni", "--max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
+      args: ["--omni", "--diffusion-engine-max-concurrency", "2", "--ulysses-degree", "2", "--cfg-parallel-size", "2", "--hsdp"]
       env:
         CUDA_VISIBLE_DEVICES: "0,1"
     stop:
@@ -64,7 +64,7 @@ instances:
     launch:
       executable: vllm
       model: Wan/Wan2.2
-      args: ["--omni", "--max-concurrency", "2"]
+      args: ["--omni", "--diffusion-engine-max-concurrency", "2"]
       env:
         CUDA_VISIBLE_DEVICES: "2,3"
 ```
@@ -293,7 +293,7 @@ Additional notes:
 
 - `short_queue_runtime` and `estimated_completion_time` fall back to EWMA if profile data is missing
 - runtime profile JSON must contain a `profiles` array and use `latency_ms`
-- `--max-concurrency` is used by scheduler to infer per-instance routing capacity, but is stripped before spawning the real `vllm serve` child process
+- `--diffusion-engine-max-concurrency` is the real per-instance concurrency limit; the scheduler reads it directly for capacity checks and waits globally instead of forwarding to a full instance
 
 ## 4. Error Semantics
 
@@ -337,7 +337,7 @@ python3 benchmarks/diffusion/diffusion_benchmark_serving.py \
   --task t2i \
   --dataset vbench \
   --num-prompts 20 \
-  --max-concurrency 4
+  --diffusion-engine-max-concurrency 4
 ```
 
 Full path:

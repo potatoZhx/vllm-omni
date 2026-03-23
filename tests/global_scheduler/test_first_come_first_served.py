@@ -13,7 +13,7 @@ def test_fcfs_selects_first_available_instance():
     policy = FirstComeFirstServedPolicy(tie_breaker="lexical")
     request = RequestMeta(request_id="r1")
     instances = [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", launch_args=["--max-concurrency", "2"]),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", launch_args=["--diffusion-engine-max-concurrency", "2"]),
         InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002"),
     ]
     runtime_stats = {

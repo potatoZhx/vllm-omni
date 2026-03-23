@@ -1,6 +1,7 @@
 """Runtime state store concurrency and reconciliation tests."""
 
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 import pytest
 
@@ -131,7 +132,7 @@ def test_start_over_capacity_tracks_fifo_waiting_queue():
             InstanceSpec(
                 id="worker-0",
                 endpoint="http://127.0.0.1:9001",
-                launch_args=["--max-concurrency", "2"],
+                launch_args=["--diffusion-engine-max-concurrency", "2"],
             )
         ]
     )
@@ -152,7 +153,7 @@ def test_finish_promotes_waiting_request_to_inflight():
             InstanceSpec(
                 id="worker-0",
                 endpoint="http://127.0.0.1:9001",
-                launch_args=["--max-concurrency", "1"],
+                launch_args=["--diffusion-engine-max-concurrency", "1"],
             )
         ]
     )
@@ -164,3 +165,25 @@ def test_finish_promotes_waiting_request_to_inflight():
     assert stats.inflight == 1
     assert stats.queue_len == 0
     assert stats.waiting_requests == ()
+
+
+def test_wait_for_available_capacity_unblocks_after_finish():
+    """Capacity wait should block on full worker and unblock after finish."""
+    store = RuntimeStateStore(
+        instances=[
+            InstanceSpec(
+                id="worker-0",
+                endpoint="http://127.0.0.1:9001",
+                launch_args=["--diffusion-engine-max-concurrency", "1"],
+            )
+        ]
+    )
+
+    store.on_request_start("worker-0", _request("r1"))
+    assert store.wait_for_available_capacity(["worker-0"], timeout_s=0.01) is False
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(store.wait_for_available_capacity, ["worker-0"], 1.0)
+        time.sleep(0.05)
+        store.on_request_finish("worker-0", latency_s=0.2, ok=True)
+        assert future.result(timeout=1.0) is True

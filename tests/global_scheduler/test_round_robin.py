@@ -10,9 +10,9 @@ pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 def _instances() -> list[InstanceSpec]:
     return [
-        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", launch_args=["--max-concurrency", "1"]),
-        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", launch_args=["--max-concurrency", "1"]),
-        InstanceSpec(id="worker-2", endpoint="http://127.0.0.1:9003", launch_args=["--max-concurrency", "1"]),
+        InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001", launch_args=["--diffusion-engine-max-concurrency", "1"]),
+        InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", launch_args=["--diffusion-engine-max-concurrency", "1"]),
+        InstanceSpec(id="worker-2", endpoint="http://127.0.0.1:9003", launch_args=["--diffusion-engine-max-concurrency", "1"]),
     ]
 
 

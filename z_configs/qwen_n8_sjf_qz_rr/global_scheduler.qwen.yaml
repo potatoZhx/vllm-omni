@@ -71,7 +71,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf
@@ -109,7 +109,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf
@@ -147,7 +147,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf
@@ -185,7 +185,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf
@@ -223,7 +223,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf
@@ -261,7 +261,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf
@@ -299,7 +299,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf
@@ -337,7 +337,7 @@ instances:
       model: Qwen/Qwen-Image
       args:
         - --omni
-        - --max-concurrency
+        - --diffusion-engine-max-concurrency
         - "16"
         - --instance-scheduler-policy
         - sjf

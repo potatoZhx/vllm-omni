@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import time
 from dataclasses import replace
-from threading import RLock
+from threading import Condition, RLock
 
 from .types import InstanceSpec, RequestMeta, RuntimeStats
 
@@ -36,6 +37,7 @@ class RuntimeStateStore:
 
         self._ewma_alpha = ewma_alpha
         self._lock = RLock()
+        self._capacity_cv = Condition(self._lock)
         self._default_ewma_service_time_s = default_ewma_service_time_s
         self._draining_instance_ids: set[str] = set()
         self._instance_specs: dict[str, InstanceSpec] = {instance.id: instance for instance in instances}
@@ -97,6 +99,8 @@ class RuntimeStateStore:
                 if instance_id not in desired_ids and instance_id not in self._stats:
                     del self._instance_specs[instance_id]
 
+            self._capacity_cv.notify_all()
+
     def on_request_start(self, instance_id: str, request: RequestMeta) -> RuntimeStats:
         """Apply start-of-request counters for one instance.
 
@@ -150,14 +154,48 @@ class RuntimeStateStore:
                 self._draining_instance_ids.remove(instance_id)
                 del self._stats[instance_id]
                 self._instance_specs.pop(instance_id, None)
+                self._capacity_cv.notify_all()
                 return RuntimeStats(queue_len=0, inflight=0, ewma_service_time_s=stats.ewma_service_time_s)
 
+            self._capacity_cv.notify_all()
             return replace(stats)
+
+    def instance_has_capacity(
+        self,
+        instance_id: str,
+        runtime_snapshot: dict[str, RuntimeStats] | None = None,
+    ) -> bool:
+        """Return whether one instance currently has spare request capacity."""
+        if runtime_snapshot is not None:
+            if instance_id not in runtime_snapshot:
+                raise KeyError(f"Unknown instance id: {instance_id}")
+            return runtime_snapshot[instance_id].inflight < self._max_concurrency(instance_id)
+
+        with self._lock:
+            stats = self._get_stats(instance_id)
+            return stats.inflight < self._max_concurrency(instance_id)
+
+    def wait_for_available_capacity(self, instance_ids: list[str], timeout_s: float | None = None) -> bool:
+        """Block until any tracked instance has spare request capacity."""
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        with self._capacity_cv:
+            while not self._has_available_capacity_locked(instance_ids):
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._capacity_cv.wait(timeout=remaining)
+            return True
 
     def _get_stats(self, instance_id: str) -> RuntimeStats:
         if instance_id not in self._stats:
             raise KeyError(f"Unknown instance id: {instance_id}")
         return self._stats[instance_id]
+
+    def _has_available_capacity_locked(self, instance_ids: list[str]) -> bool:
+        return any(
+            instance_id in self._stats and self._stats[instance_id].inflight < self._max_concurrency(instance_id)
+            for instance_id in instance_ids
+        )
 
     def _max_concurrency(self, instance_id: str) -> int:
         instance = self._instance_specs.get(instance_id)
@@ -167,7 +205,7 @@ class RuntimeStateStore:
 
     @staticmethod
     def _max_concurrency_from_args(args: list[str]) -> int:
-        keys = {"--max-concurrency"}
+        keys = {"--diffusion-engine-max-concurrency"}
         for idx, item in enumerate(args):
             if "=" in item:
                 key, value = item.split("=", 1)

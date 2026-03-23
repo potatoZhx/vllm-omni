@@ -335,6 +335,12 @@ class OmniServeCommand(CLISubcommand):
             default=None,
             help="Requests with estimated remaining latency below this threshold run to completion without re-chunking.",
         )
+        omni_config_group.add_argument(
+            "--diffusion-engine-max-concurrency",
+            type=int,
+            default=32,
+            help="Maximum number of diffusion requests admitted concurrently by the instance-local async worker wrapper.",
+        )
 
         # VAE memory optimization parameters
         omni_config_group.add_argument(

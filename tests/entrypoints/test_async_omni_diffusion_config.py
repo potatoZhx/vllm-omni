@@ -19,6 +19,7 @@ def test_default_stage_config_includes_cache_backend():
     """Ensure cache_backend/cache_config are preserved in default diffusion stage."""
     stage_cfg = _build_stage_cfg(
         model=MODEL,
+        diffusion_engine_max_concurrency=7,
         cache_backend="cache_dit",
         cache_config='{"Fn_compute_blocks": 2}',
         vae_use_slicing=True,
@@ -47,6 +48,7 @@ def test_default_stage_config_includes_cache_backend():
     assert engine_args["instance_scheduler_aging_factor"] == 0.25
     assert engine_args["instance_runtime_profile_path"] == "/profile/runtime.json"
     assert engine_args["instance_runtime_profile_name"] == "img-a"
+    assert engine_args["diffusion_engine_max_concurrency"] == 7
     assert engine_args["diffusion_enable_step_chunk"] is True
     assert engine_args["diffusion_enable_chunk_preemption"] is True
     assert engine_args["diffusion_chunk_budget_steps"] == 6
@@ -85,6 +87,7 @@ def test_default_cache_config_used_when_missing():
     """Ensure default cache_config is applied when cache_backend is set."""
     stage_cfg = _build_stage_cfg(
         model=MODEL,
+        diffusion_engine_max_concurrency=7,
         cache_backend="cache_dit",
     )
 

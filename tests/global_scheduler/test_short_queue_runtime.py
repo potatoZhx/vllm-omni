@@ -128,7 +128,7 @@ def test_short_queue_runtime_includes_running_request_time():
             id="worker-0",
             endpoint="http://127.0.0.1:9001",
             instance_type="wan-video-tp2",
-            launch_args=["--max-concurrency", "2"],
+            launch_args=["--diffusion-engine-max-concurrency", "2"],
         ),
         InstanceSpec(id="worker-1", endpoint="http://127.0.0.1:9002", instance_type="wan-video-tp2"),
     ]
@@ -160,13 +160,13 @@ def test_short_queue_runtime_uses_inflight_runtime_to_break_zero_waiting_tie():
             id="worker-0",
             endpoint="http://127.0.0.1:9001",
             instance_type="wan-video-tp2",
-            launch_args=["--max-concurrency", "1000"],
+            launch_args=["--diffusion-engine-max-concurrency", "1000"],
         ),
         InstanceSpec(
             id="worker-1",
             endpoint="http://127.0.0.1:9002",
             instance_type="wan-video-tp2",
-            launch_args=["--max-concurrency", "1000"],
+            launch_args=["--diffusion-engine-max-concurrency", "1000"],
         ),
     ]
     runtime_stats = {

@@ -39,7 +39,7 @@ class PolicyBase(ABC):
 
     @staticmethod
     def _max_concurrency_from_args(args: list[str]) -> int:
-        keys = {"--max-concurrency"}
+        keys = {"--diffusion-engine-max-concurrency"}
         for idx, item in enumerate(args):
             if "=" in item:
                 key, value = item.split("=", 1)
