@@ -1997,6 +1997,12 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
                 seed=seed,
             )
 
+            # Preserve scheduler-facing request metadata for diffusion schedulers.
+            for key in ("slo_ms", "slo_target_ms", "deadline_ts", "estimated_cost_s"):
+                value = extra_body.get(key)
+                if value is not None:
+                    gen_params.extra_args[key] = value
+
             if guidance_scale is not None:
                 gen_params.guidance_scale = guidance_scale
 
