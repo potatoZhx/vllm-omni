@@ -47,17 +47,30 @@ workers:
 
 # 调度算法
 #   instance_scheduler_policies：实例内调度策略，与 algorithms_to_run 做笛卡尔乘积，每个组合一条曲线画在一起
+#     fcfs: 先到先服务
+#     sjf: 最短作业优先（长作业易饥饿，P95 差）
+#     sjf_aging: SJF+老化，等待越久优先级越高，缓解长作业饥饿，改善 P95
+#     sjf_preempt: SJF+chunk 抢占，每 chunk_budget_steps 步可抢占重入队，实现 SRPT；剩余时间 <= threshold 时直接跑完
+#   sjf_aging_factors: 展开为多条曲线；0.15 推荐
+#   sjf_preempt_chunk_budgets: 展开为 sjf_preempt_4 等；与 instance_local_schd 的 chunk_preemption 对应
+#   sjf_preempt_small_request_threshold_ms: 剩余预估时间 <= 该值(ms)时直接跑完不抢占；不设或 null 则始终按 chunk 切
 #   algorithms_to_run：全局调度算法
 scheduler:
   instance_scheduler_policies:
     - fcfs                # 实例内 FCFS（qwen_n8_fcfs_rr）
     - sjf                 # 实例内 SJF（qwen_n8_sjf_qz_rr）
+    # - sjf_aging           # SJF+老化，score=service_time-aging_factor*waiting_time，score 越低越先调度
+    - sjf_preempt         # SJF+chunk 抢占，SRPT 语义，按 sjf_preempt_chunk_budgets 展开
+  # sjf_aging_factors: [0.15]  # 对比选优
+  sjf_preempt_chunk_budgets: [8]  # 每 chunk 最多执行步数，与 diffusion chunk_preemption 对齐
+  sjf_preempt_small_request_threshold_ms: 3000  # 剩余预估 <= 阈值时直接跑完不抢占，与 diffusion_small_request_latency_threshold_ms 对齐
   # algorithms_to_run：要参与测试的算法列表。对每个算法，在 rps 列表的每个取值下各跑一轮模拟，
   # 得到 (算法, rps) 的指标点，用于画图：横轴 rps、纵轴为延迟/吞吐等，每算法一条曲线。
   algorithms_to_run:
     # - round_robin          # 轮询
-    - min_queue_length     # 最小队列长度（仅看等待队列，不计正在运行）
-    # - short_queue_runtime  # 最小队列等待时间（队列中所有请求 service_time 之和）
+    # - min_queue_length     # 最小队列长度（仅看等待队列，不计正在运行）
+    - short_queue_runtime  # 最小队列等待时间（队列中所有请求 service_time 之和）
+    # - short_queue_runtime_max_class_balanced  # 上者 + 最大类作业强制均衡分布
 
 # 跑完 simulation 后是否自动画图并保存
 plot:

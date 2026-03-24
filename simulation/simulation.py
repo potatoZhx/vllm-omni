@@ -352,7 +352,7 @@ def dispatch_round_robin(request: dict, workers: list, state: dict) -> int:
 
 
 def dispatch_min_queue_length(request: dict, workers: list, state: dict) -> int:
-    """最小队列长度：优先在空闲实例中选择队列长度（不含正在运行请求）最小者；若全部忙碌，则在全体实例中选队列长度最小者。"""
+    """最小队列长度：选 inflight+queue_len 最小的实例，与 instance_local_schd MinQueueLengthPolicy 对齐。"""
     del request, state
     n = len(workers)
     if n == 0:
@@ -360,33 +360,79 @@ def dispatch_min_queue_length(request: dict, workers: list, state: dict) -> int:
     available = [i for i, w in enumerate(workers) if w["next_time"] == INF]
     indices = available if available else list(range(n))
     best = indices[0]
-    best_len = len(workers[best]["queue"])
+    inflight = 1 if workers[best].get("current_request") else 0
+    best_score = len(workers[best]["queue"]) + inflight
     for i in indices[1:]:
-        qlen = len(workers[i]["queue"])
-        if qlen < best_len:
-            best_len = qlen
+        inflight_i = 1 if workers[i].get("current_request") else 0
+        score = len(workers[i]["queue"]) + inflight_i
+        if score < best_score:
+            best_score = score
             best = i
     return best
 
 
 def _queued_work_s(worker: dict, profile_data: dict, current_time: float) -> float:
-    """该 worker 队列中的剩余总工作量（秒），不包含当前正在运行请求。查不到配置即报错（fail-fast）。"""
+    """该 worker 队列中的剩余总工作量（秒），不包含当前正在运行请求。对已抢占请求用 _remaining_latency_s。"""
     del current_time
     queued = 0.0
     for r in worker["queue"]:
-        queued += lookup(profile_data, r, worker)
+        queued += _remaining_latency_s(r, profile_data, worker)
     return queued
 
 
+def _total_outstanding_work_s(
+    w: dict, profile_data: dict, state: dict
+) -> float:
+    """worker 总未完成工作量（秒）= 队列剩余 + 正在运行请求的剩余。与 instance_local_schd ShortQueueRuntimePolicy 对齐。"""
+    base = w.get("_queued_work")
+    if base is None:
+        base = _queued_work_s(w, profile_data, state.get("current_time", 0.0))
+    cur = w.get("current_request")
+    if cur is not None:
+        base += _remaining_latency_s(cur, profile_data, w)
+    return base
+
+
 def dispatch_short_queue_runtime(request: dict, workers: list, state: dict) -> int:
-    """最短队列预估时间：选当前队列中预估总工作量（秒）最小的实例（不计正在运行请求）。"""
+    """最短队列预估时间：选总未完成工作量（队列+inflight 剩余）最小的实例，与 instance_local_schd 对齐。"""
     best = 0
     best_work = INF
     for i, w in enumerate(workers):
-        work = w.get("_queued_work")
-        if work is None:
-            work = _queued_work_s(w, state["profile_data"], state.get("current_time", 0.0))
+        work = _total_outstanding_work_s(w, state["profile_data"], state)
         if work < best_work:
+            best_work = work
+            best = i
+    return best
+
+
+def _max_service_time(profile_data: dict) -> float:
+    """从 profile 中取最大服务时间（用于识别最大类作业）。"""
+    return max(profile_data["json_table"].values())
+
+
+def dispatch_short_queue_runtime_max_class_balanced(request: dict, workers: list, state: dict) -> int:
+    """short_queue_runtime + 最大类作业均衡：最大类作业强制轮转分布到各 worker，其余同 short_queue_runtime。
+
+    最大类 = profile 中 service_time 最大的请求类型（如 1536×1536）。均衡策略：选当前最大类作业数最少的 worker；
+    同数时按 short_queue_runtime 选队列工作量最小的。
+    """
+    profile_data = state["profile_data"]
+    max_st = state.setdefault("_max_st", _max_service_time(profile_data))
+    ref = workers[0] if workers else {}
+    is_max = lookup(profile_data, request, ref) >= max_st * 0.99
+
+    if not is_max:
+        return dispatch_short_queue_runtime(request, workers, state)
+
+    # 最大类：选 _max_class_count 最小的；同数时按总未完成工作量（队列+inflight）最小
+    best = 0
+    best_count = workers[0].get("_max_class_count", 0)
+    best_work = _total_outstanding_work_s(workers[0], profile_data, state)
+    for i, w in enumerate(workers):
+        cnt = w.get("_max_class_count", 0)
+        work = _total_outstanding_work_s(w, profile_data, state)
+        if cnt < best_count or (cnt == best_count and work < best_work):
+            best_count = cnt
             best_work = work
             best = i
     return best
@@ -396,12 +442,64 @@ DISPATCH = {
     "round_robin": dispatch_round_robin,
     "min_queue_length": dispatch_min_queue_length,
     "short_queue_runtime": dispatch_short_queue_runtime,
+    "short_queue_runtime_max_class_balanced": dispatch_short_queue_runtime_max_class_balanced,
 }
 
-def _pop_next_from_queue(w: dict, profile_data: dict, instance_policy: str) -> dict | None:
-    """从 worker 队列中取下一个待执行请求。fcfs=队首，sjf=服务时间最短。"""
+
+def _remaining_latency_s(request: dict, profile_data: dict, worker: dict) -> float:
+    """请求剩余预估服务时间（秒）。未开始则返回全量；已执行部分则按 steps 比例估算。"""
+    total_s = lookup(profile_data, request, worker)
+    total_steps = max(int(request.get("steps", 1) or 1), 1)
+    executed = int(request.get("_executed_steps", 0) or 0)
+    remaining_steps = max(total_steps - executed, 0)
+    if remaining_steps <= 0:
+        return 0.0
+    return total_s * remaining_steps / total_steps
+
+
+def _chunk_duration_s(
+    request: dict,
+    profile_data: dict,
+    worker: dict,
+    chunk_budget_steps: int,
+    small_request_threshold_ms: float | None = None,
+) -> tuple[float, int]:
+    """本次 chunk 预估耗时（秒）与本次执行的 steps 数。返回 (duration_s, chunk_steps)。
+
+    若 small_request_threshold_ms 已设置且剩余预估时间 <= 阈值，则直接跑完剩余 steps，不再切 chunk。
+    与 instance_local_schd 的 diffusion_small_request_latency_threshold_ms 对应。
+    """
+    remaining_s = _remaining_latency_s(request, profile_data, worker)
+    total_steps = max(int(request.get("steps", 1) or 1), 1)
+    executed = int(request.get("_executed_steps", 0) or 0)
+    remaining_steps = max(total_steps - executed, 0)
+    if remaining_steps <= 0:
+        return 0.0, 0
+    # 小请求优化：剩余时间过短则直接跑完，不再抢占
+    if small_request_threshold_ms is not None and small_request_threshold_ms > 0:
+        if remaining_s * 1000.0 <= float(small_request_threshold_ms):
+            return remaining_s, remaining_steps
+    chunk_steps = min(chunk_budget_steps, remaining_steps)
+    duration = remaining_s * chunk_steps / remaining_steps
+    return duration, chunk_steps
+
+
+def _pop_next_from_queue(
+    w: dict, profile_data: dict, instance_policy: str, current_time: float = 0.0,
+) -> dict | None:
+    """从 worker 队列中取下一个待执行请求。fcfs=队首，sjf=最短服务时间，sjf_aging=SJF+老化，sjf_preempt=SRPT（chunk 边界抢占）。"""
     if not w["queue"]:
         return None
+    if instance_policy.startswith("sjf_preempt"):
+        # SRPT：选剩余服务时间最短的，与 instance_local_schd 的 sjf+chunk_preemption 对应
+        best_i = 0
+        best_rem = _remaining_latency_s(w["queue"][0], profile_data, w)
+        for i in range(1, len(w["queue"])):
+            rem = _remaining_latency_s(w["queue"][i], profile_data, w)
+            if rem < best_rem:
+                best_rem = rem
+                best_i = i
+        return w["queue"].pop(best_i)
     if instance_policy == "sjf":
         best_i = 0
         best_st = lookup(profile_data, w["queue"][0], w)
@@ -409,6 +507,29 @@ def _pop_next_from_queue(w: dict, profile_data: dict, instance_policy: str) -> d
             st = lookup(profile_data, w["queue"][i], w)
             if st < best_st:
                 best_st = st
+                best_i = i
+        return w["queue"].pop(best_i)
+    if instance_policy.startswith("sjf_aging"):
+        # SJF + 老化：effective_st = service_time - factor * waiting_time，等待越久优先级越高
+        # policy 格式：sjf_aging 或 sjf_aging_0.15（后者指定 factor）
+        aging_factor = 0.1
+        if "_" in instance_policy and instance_policy != "sjf_aging":
+            try:
+                aging_factor = float(instance_policy.split("_")[-1])
+            except ValueError:
+                pass
+        best_i = 0
+        r0 = w["queue"][0]
+        st0 = lookup(profile_data, r0, w)
+        wait0 = current_time - r0.get("arrival_time", 0.0)
+        best_score = st0 - aging_factor * max(0, wait0)
+        for i in range(1, len(w["queue"])):
+            r = w["queue"][i]
+            st = lookup(profile_data, r, w)
+            wait = current_time - r.get("arrival_time", 0.0)
+            score = st - aging_factor * max(0, wait)
+            if score < best_score:
+                best_score = score
                 best_i = i
         return w["queue"].pop(best_i)
     return w["queue"].pop(0)
@@ -422,6 +543,7 @@ def run_simulation(
     t_end: float,
     algorithm: str,
     instance_scheduler_policy: str = "fcfs",
+    sjf_preempt_small_request_threshold_ms: float | None = None,
 ) -> dict:
     """单次模拟，返回与 plot_results 对齐的指标 + algorithm。
 
@@ -442,8 +564,10 @@ def run_simulation(
             "queue": [],
             "next_time": INF,
         }
-        if algorithm == "short_queue_runtime":
+        if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
             wr["_queued_work"] = 0.0  # 增量维护队列总工作量，避免 O(n^2)
+        if algorithm == "short_queue_runtime_max_class_balanced":
+            wr["_max_class_count"] = 0  # 最大类作业数（队列+运行中），用于均衡
         ws.append(wr)
     n_workers = len(ws)
     # 调度器下一事件 = 下一请求的到达时间（请求发起时间），不是 rps 均匀间隔
@@ -482,32 +606,75 @@ def run_simulation(
                 req["assigned_worker_index"] = wi
                 req["assigned_worker_config"] = ws[wi]["config_id"]
                 # 默认行为：任务放到队列末尾。入队后、立即派工前由调度器对队列排序为占位，以后可在此扩展。
-                if algorithm == "short_queue_runtime":
+                if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
                     st = lookup(profile_data, req, ws[wi])
                     req["_svc"] = st
                     ws[wi]["_queued_work"] += st
+                if algorithm == "short_queue_runtime_max_class_balanced":
+                    max_st = _max_service_time(profile_data)
+                    if st >= max_st * 0.99:
+                        ws[wi]["_max_class_count"] += 1
                 ws[wi]["queue"].append(req)
             scheduler_next = scheduler_next_time()
 
         # Worker 完成：request_time_s 为从开始执行到执行结束的时间，finish_time = 当前时钟
+        # sjf_preempt：chunk 完成时若未跑完则重新入队（抢占）
+        chunk_budget = 4
+        if instance_scheduler_policy.startswith("sjf_preempt") and "_" in instance_scheduler_policy:
+            try:
+                chunk_budget = int(instance_scheduler_policy.split("_")[-1])
+            except ValueError:
+                pass
+
         for w in ws:
             if w["next_time"] == t:
                 rec = w.get("current_request")
                 w["next_time"] = INF
                 w["current_request"] = None
                 if rec is not None:
-                    rec["finish_time"] = t
-                    rec["latency"] = t - rec["arrival_time"]
-                    completed.append(rec)
+                    is_preempt = instance_scheduler_policy.startswith("sjf_preempt")
+                    total_steps = max(int(rec.get("steps", 1) or 1), 1)
+                    executed_before = int(rec.get("_executed_steps", 0) or 0)
+                    chunk_done = int(rec.get("_chunk_steps", 0) or 0)
+                    executed_after = executed_before + chunk_done
+                    if is_preempt and executed_after < total_steps:
+                        # Chunk 完成但请求未完成：重新入队（仍属该 worker，_max_class_count 不变）
+                        rec["_executed_steps"] = executed_after
+                        rem = _remaining_latency_s(rec, profile_data, w)
+                        if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
+                            w["_queued_work"] += rem
+                        w["queue"].append(rec)
+                    else:
+                        # 请求完成：离开 worker，需更新 _max_class_count
+                        if algorithm == "short_queue_runtime_max_class_balanced":
+                            max_st = _max_service_time(profile_data)
+                            if lookup(profile_data, rec, w) >= max_st * 0.99:
+                                w["_max_class_count"] -= 1
+                        rec["finish_time"] = t
+                        rec["latency"] = t - rec["arrival_time"]
+                        completed.append(rec)
 
-        # 立即派工：空闲 worker 从队列取请求，fcfs=队首/sjf=最短服务时间
+        # 立即派工：空闲 worker 从队列取请求，fcfs=队首/sjf=最短服务时间/sjf_aging=防饥饿/sjf_preempt=SRPT
         for w in ws:
             if w["next_time"] == INF and w["queue"]:
-                req = _pop_next_from_queue(w, profile_data, instance_scheduler_policy)
-                if algorithm == "short_queue_runtime":
-                    w["_queued_work"] -= req.get("_svc", 0.0)
-                req["start_time"] = t  # 从本时刻开始执行
-                st = lookup(profile_data, req, w)
+                req = _pop_next_from_queue(w, profile_data, instance_scheduler_policy, current_time=t)
+                if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
+                    sub = _remaining_latency_s(req, profile_data, w) if instance_scheduler_policy.startswith("sjf_preempt") else req.get("_svc", 0.0)
+                    w["_queued_work"] -= sub
+                if "first_start_time" not in req:
+                    req["first_start_time"] = t
+                req["start_time"] = req["first_start_time"]  # 兼容旧字段：表示首次开始执行时间
+                req.setdefault("start_times", []).append(t)
+                if instance_scheduler_policy.startswith("sjf_preempt"):
+                    chunk_dur, chunk_steps = _chunk_duration_s(
+                        req, profile_data, w, chunk_budget,
+                        small_request_threshold_ms=sjf_preempt_small_request_threshold_ms,
+                    )
+                    req["_chunk_steps"] = chunk_steps
+                    st = chunk_dur
+                else:
+                    st = lookup(profile_data, req, w)
+                req.setdefault("chunk_service_times", []).append(st)
                 w["next_time"] = t + st
                 w["current_request"] = req
 
@@ -516,10 +683,13 @@ def run_simulation(
     for r in completed:
         if "latency" not in r and "finish_time" in r and "arrival_time" in r:
             r["latency"] = r["finish_time"] - r["arrival_time"]
-        if "start_time" in r and "arrival_time" in r:
-            r["waiting_time"] = r["start_time"] - r["arrival_time"]
-        if "finish_time" in r and "start_time" in r:
+        chunk_times = r.get("chunk_service_times", [])
+        if chunk_times:
+            r["service_time"] = sum(float(x) for x in chunk_times)
+        elif "finish_time" in r and "start_time" in r:
             r["service_time"] = r["finish_time"] - r["start_time"]
+        if "latency" in r and "service_time" in r:
+            r["waiting_time"] = max(r["latency"] - r["service_time"], 0.0)
 
     # 每个请求的明细：分配给的 worker、发起时间、开始执行时间、完成时间等
     def _round4(x):
@@ -527,16 +697,21 @@ def run_simulation(
 
     per_request = []
     for r in completed:
+        start_times = r.get("start_times", [])
+        chunk_service_times = r.get("chunk_service_times", [])
         per_request.append({
             "request_id": r.get("request_id"),
             "assigned_worker_index": r.get("assigned_worker_index"),
             "assigned_worker_config": r.get("assigned_worker_config"),
             "arrival_time": _round4(r["arrival_time"]),
             "start_time": _round4(r["start_time"]),
+            "first_start_time": _round4(r.get("first_start_time", r.get("start_time"))),
+            "start_times": [_round4(x) for x in start_times],
             "finish_time": _round4(r["finish_time"]),
             "latency": _round4(r["latency"]),
             "waiting_time": _round4(r["waiting_time"]),
             "service_time": _round4(r["service_time"]),
+            "chunk_service_times": [_round4(x) for x in chunk_service_times],
             "size": r.get("size"),
             "steps": r.get("steps"),
         })
@@ -677,11 +852,31 @@ def main() -> None:
     if isinstance(algorithms_to_run, str):
         algorithms_to_run = [algorithms_to_run]
     policies_raw = sched.get("instance_scheduler_policies") or sched.get("instance_scheduler_policy", "fcfs")
-    instance_policies = (
+    policies_flat = (
         [str(p).strip().lower() for p in policies_raw]
         if isinstance(policies_raw, (list, tuple))
         else [str(policies_raw).strip().lower()]
     )
+    # sjf_aging 可展开为多个 factor：sjf_aging_0.05, sjf_aging_0.1, ...
+    sjf_aging_factors = sched.get("sjf_aging_factors")
+    if sjf_aging_factors is None:
+        sjf_aging_factors = [0.1]
+    if not isinstance(sjf_aging_factors, (list, tuple)):
+        sjf_aging_factors = [float(sjf_aging_factors)]
+    # sjf_preempt 可展开为多个 chunk_budget：sjf_preempt_4, sjf_preempt_8, ...
+    sjf_preempt_chunk_budgets = sched.get("sjf_preempt_chunk_budgets")
+    if sjf_preempt_chunk_budgets is None:
+        sjf_preempt_chunk_budgets = [4]
+    if not isinstance(sjf_preempt_chunk_budgets, (list, tuple)):
+        sjf_preempt_chunk_budgets = [int(sjf_preempt_chunk_budgets)]
+    instance_policies = []
+    for p in policies_flat:
+        if p == "sjf_aging":
+            instance_policies.extend(f"sjf_aging_{f}" for f in sjf_aging_factors)
+        elif p == "sjf_preempt":
+            instance_policies.extend(f"sjf_preempt_{b}" for b in sjf_preempt_chunk_budgets)
+        else:
+            instance_policies.append(p)
     # 笛卡尔乘积：(algo, policy) 每个组合视为一个算法，输出 algorithm="{algo}_{policy}"
     algorithm_combos = [(a, p) for a in algorithms_to_run for p in instance_policies]
     combo_names = [f"{a}_{p}" for a, p in algorithm_combos]
@@ -698,9 +893,12 @@ def main() -> None:
             requests = build_requests(cfg, rps, t_end)
             assign_slo(requests, profile_data, workers, slo_scale)
             try:
+                thresh = sched.get("sjf_preempt_small_request_threshold_ms")
+                thresh_f = float(thresh) if thresh not in (None, "") else None
                 out = run_simulation(
                     requests, workers, profile_data, rps, t_end, algo,
                     instance_scheduler_policy=instance_policy,
+                    sjf_preempt_small_request_threshold_ms=thresh_f,
                 )
                 out["algorithm"] = combo_name  # 覆盖为组合名，画图时每条线一个组合
                 runs_for_combo.append(out)
