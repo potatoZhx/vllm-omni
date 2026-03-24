@@ -1,6 +1,10 @@
 import pytest
 
-from vllm_omni.global_scheduler.lifecycle import InstanceLifecycleManager, _probe_http_ready
+from vllm_omni.global_scheduler.lifecycle import (
+    InstanceLifecycleManager,
+    _probe_http_health,
+    _probe_http_ready,
+)
 from vllm_omni.global_scheduler.state import RuntimeStateStore
 from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta
 
@@ -173,3 +177,78 @@ def test_probe_http_ready_reports_empty_models_as_unhealthy(monkeypatch):
 
     assert healthy is False
     assert error == "ready_probe_empty_models"
+
+
+def test_probe_http_health_reports_success_on_http_200(monkeypatch):
+    """Runtime health probe should accept a lightweight HTTP 200 response."""
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    seen = {}
+
+    def _fake_open(request, timeout):
+        seen["url"] = request.full_url
+        seen["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._NO_PROXY_OPENER.open",
+        _fake_open,
+    )
+
+    healthy, error = _probe_http_health("http://127.0.0.1:9001", 0.5)
+
+    assert healthy is True
+    assert error is None
+    assert seen == {"url": "http://127.0.0.1:9001/health", "timeout": 0.5}
+
+
+def test_probe_all_uses_runtime_health_for_steady_state_instance(monkeypatch):
+    """Steady-state instances should use the lightweight runtime probe."""
+    manager = InstanceLifecycleManager(_instances())
+    calls: list[tuple[str, str, float]] = []
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_ready",
+        lambda endpoint, timeout_s: calls.append(("ready", endpoint, timeout_s)) or (True, None),
+    )
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: calls.append(("health", endpoint, timeout_s)) or (True, None),
+    )
+
+    manager.probe_all(0.75)
+
+    assert calls == [
+        ("health", "http://127.0.0.1:9001", 0.75),
+        ("health", "http://127.0.0.1:9002", 0.75),
+    ]
+
+
+def test_probe_all_keeps_newly_started_instance_on_readiness_probe(monkeypatch):
+    """Instances awaiting startup readiness should keep probing `/v1/models`."""
+    manager = InstanceLifecycleManager(_instances())
+    manager.mark_health("worker-0", healthy=False, error="awaiting_http_ready_after_start")
+    manager.mark_health("worker-1", healthy=False, error="awaiting_probe_after_restart")
+    calls: list[tuple[str, str, float]] = []
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_ready",
+        lambda endpoint, timeout_s: calls.append(("ready", endpoint, timeout_s)) or (True, None),
+    )
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: calls.append(("health", endpoint, timeout_s)) or (True, None),
+    )
+
+    manager.probe_all(1.25)
+
+    assert calls == [
+        ("ready", "http://127.0.0.1:9001", 1.25),
+        ("ready", "http://127.0.0.1:9002", 1.25),
+    ]

@@ -13,6 +13,7 @@ from .types import InstanceSpec, RuntimeStats
 
 PROCESS_STATES = {"running", "stopped", "stopping", "starting", "restarting", "error"}
 _READY_PATH = "/v1/models"
+_RUNTIME_HEALTH_PATH = "/health"
 _NO_PROXY_OPENER = urllib_request.build_opener(urllib_request.ProxyHandler({}))
 
 
@@ -150,7 +151,10 @@ class InstanceLifecycleManager:
         for status in statuses:
             if not status.enabled:
                 continue
-            healthy, error = _probe_http_ready(status.instance.endpoint, timeout_s)
+            if _should_use_readiness_probe(status):
+                healthy, error = _probe_http_ready(status.instance.endpoint, timeout_s)
+            else:
+                healthy, error = _probe_http_health(status.instance.endpoint, timeout_s)
             self.mark_health(status.instance.id, healthy=healthy, error=error)
 
     def sync_instances(self, instances: list[InstanceSpec], runtime_snapshot: dict[str, RuntimeStats]) -> None:
@@ -237,6 +241,46 @@ class InstanceLifecycleManager:
             last_check_ts_s=status.last_check_ts_s,
             last_error=status.last_error,
         )
+
+
+def _should_use_readiness_probe(status: InstanceLifecycleStatus) -> bool:
+    """Return whether an instance should be checked via readiness probe.
+
+    Newly started or restarted instances stay on the heavier `/v1/models`
+    readiness check until they first become healthy. Once they have passed
+    readiness, runtime liveness switches to the lighter `/health` endpoint.
+    """
+    if status.last_error == "awaiting_http_ready_after_start":
+        return True
+    return bool(status.last_error and status.last_error.startswith("awaiting_probe_after_"))
+
+
+def _probe_http_health(endpoint: str, timeout_s: float) -> tuple[bool, str | None]:
+    """Probe endpoint runtime health via lightweight `/health` endpoint.
+
+    Args:
+        endpoint: Upstream endpoint in `http://host:port` format.
+        timeout_s: HTTP probe timeout in seconds.
+
+    Returns:
+        Tuple `(healthy, error_message)` where error is `None` on success.
+    """
+    try:
+        parsed = urlparse(endpoint)
+        if parsed.hostname is None or parsed.port is None:
+            return False, "invalid_endpoint"
+        request = urllib_request.Request(url=f"{endpoint.rstrip('/')}" + _RUNTIME_HEALTH_PATH, method="GET")
+        with _NO_PROXY_OPENER.open(request, timeout=timeout_s):  # noqa: S310
+            return True, None
+    except urllib_error.HTTPError as exc:
+        return False, f"http_{exc.code}"
+    except urllib_error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return False, "runtime_probe_timeout"
+        return False, str(reason)
+    except OSError as exc:
+        return False, str(exc)
 
 
 def _probe_http_ready(endpoint: str, timeout_s: float) -> tuple[bool, str | None]:
