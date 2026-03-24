@@ -1,0 +1,68 @@
+server:
+  host: 0.0.0.0
+  port: 8089
+  request_timeout_s: 600
+  instance_health_check_interval_s: 5.0
+  instance_health_check_timeout_s: 1.0
+scheduler:
+  tie_breaker: random
+  ewma_alpha: 0.2
+policy:
+  baseline:
+    algorithm: round_robin
+benchmark:
+  worker_ids:
+  - worker0
+  worker_ready_timeout_s: 1200
+  model: Qwen/Qwen-Image
+  backend: vllm-omni
+  task: t2i
+  dataset: random
+  random_request_config: "[\n  {\"width\":512,\"height\":512,\"num_inference_steps\"\
+    :20,\"weight\":0.15},\n  {\"width\":768,\"height\":768,\"num_inference_steps\"\
+    :20,\"weight\":0.25},\n  {\"width\":1024,\"height\":1024,\"num_inference_steps\"\
+    :25,\"weight\":0.45},\n  {\"width\":1536,\"height\":1536,\"num_inference_steps\"\
+    :35,\"weight\":0.15}\n]"
+  max_concurrency: 20
+  warmup_requests: 1
+  warmup_num_inference_steps: 1
+  output_file: ./logs/global_scheduler_qwen_image_benchmark_metrics.json
+  auto_stop: true
+instances:
+- id: worker0
+  endpoint: http://127.0.0.1:8001
+  instance_type: qwen-image
+  numa_node: 0
+  backends:
+  - vllm-omni
+  - openai
+  launch:
+    executable: vllm
+    model: Qwen/Qwen-Image
+    args:
+    - --omni
+    - --diffusion-engine-max-concurrency
+    - '2'
+    - --instance-scheduler-policy
+    - fcfs
+    - --diffusion-chunk-budget-steps
+    - '4'
+    - --diffusion-image-chunk-budget-steps
+    - '4'
+    - --diffusion-small-request-latency-threshold-ms
+    - '1200'
+    - --ulysses-degree
+    - '1'
+    - --cfg-parallel-size
+    - '1'
+    - --vae-use-slicing
+    - --vae-use-tiling
+    - --num-weight-load-threads
+    - '4'
+    env:
+      CUDA_VISIBLE_DEVICES: '0'
+  stop:
+    executable: pkill
+    args:
+    - -f
+    - vllm serve Qwen/Qwen-Image --port {endpoint_port}

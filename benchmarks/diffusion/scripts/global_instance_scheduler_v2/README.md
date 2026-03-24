@@ -73,7 +73,7 @@
 示例：
 
 ```bash
-BASE_CONFIG=./global_scheduler.qwen.yaml BENCHMARK_MODE=fixed_duration NUM_PROMPTS_DURATION_SECONDS=600 REQUEST_RATES=0.2,0.4,0.6 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml BENCHMARK_MODE=fixed_duration NUM_PROMPTS_DURATION_SECONDS=600 REQUEST_RATES=0.2,0.4,0.6 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
 
 ### 2. 固定总请求数
@@ -91,7 +91,7 @@ BASE_CONFIG=./global_scheduler.qwen.yaml BENCHMARK_MODE=fixed_duration NUM_PROMP
 示例：
 
 ```bash
-BASE_CONFIG=./global_scheduler.qwen.yaml BENCHMARK_MODE=fixed_num_prompts FIXED_NUM_PROMPTS=100 REQUEST_RATES=0.2,0.4,0.6 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml BENCHMARK_MODE=fixed_num_prompts FIXED_NUM_PROMPTS=100 REQUEST_RATES=0.2,0.4,0.6 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
 
 ## 常用环境变量
@@ -167,19 +167,19 @@ qwen_rr_sjf_preempt|round_robin|sjf|1|1|4
 ### 单 case
 
 ```bash
-BASE_CONFIG=./global_scheduler.qwen.yaml REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
 
 ### 单 case，显式覆盖策略
 
 ```bash
-BASE_CONFIG=./global_scheduler.qwen.yaml GLOBAL_POLICY=round_robin INSTANCE_POLICY=sjf ENABLE_STEP_CHUNK=1 ENABLE_CHUNK_PREEMPTION=1 CHUNK_BUDGET_STEPS=4 REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml GLOBAL_POLICY=round_robin INSTANCE_POLICY=sjf ENABLE_STEP_CHUNK=1 ENABLE_CHUNK_PREEMPTION=1 CHUNK_BUDGET_STEPS=4 REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
 
 ### 单 case，显式指定 warmup request config
 
 ```bash
-BASE_CONFIG=./global_scheduler.qwen.yaml \
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
 REQUEST_RATES=0.2,0.4 \
 BENCHMARK_WARMUP_REQUESTS=4 \
 BENCHMARK_WARMUP_REQUEST_CONFIG='[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},{"width":768,"height":768,"num_inference_steps":20,"weight":0.25},{"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},{"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}]' \
@@ -207,7 +207,7 @@ mkdir -p /data/$USER/tmp /data/$USER/triton_cache /data/$USER/torchinductor_cach
 TMPDIR=/data/$USER/tmp \
 TRITON_CACHE_DIR=/data/$USER/triton_cache \
 TORCHINDUCTOR_CACHE_DIR=/data/$USER/torchinductor_cache \
-BASE_CONFIG=./global_scheduler.qwen.yaml \
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
 REQUEST_RATES=0.2,0.4 \
 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
@@ -221,7 +221,24 @@ benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 
 ### 批量 case
 
+下面这个 suite 适合单实例对比实例内调度策略。这里把全局策略统一固定为 `round_robin`，只比较实例内 policy 的差异，并同时覆盖 `slack_age` 和 `slack_cost_age`。
+
 ```bash
-CASE_MATRIX=$'qwen_minqlen_sjf_preempt|min_queue_length|sjf|1|1|4
-qwen_rr_sjf_preempt|round_robin|sjf|1|1|4' BASE_CONFIG=./global_scheduler.qwen.yaml REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_suite.sh
+CASE_MATRIX=$'fcfs|round_robin|fcfs|0|0|4
+sjf|round_robin|sjf|0|0|4
+sjf_preempt|round_robin|sjf|1|1|4
+p95_first|round_robin|p95-first|1|1|4
+slack_age|round_robin|slack_age|0|0|4
+slack_age_preempt|round_robin|slack_age|1|1|4
+slack_cost_age|round_robin|slack_cost_age|0|0|4
+slack_cost_age_preempt|round_robin|slack_cost_age|1|1|4' \
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
+REQUEST_RATES=0.2,0.4 \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_suite.sh
 ```
+
+说明：
+
+- 这个 `single_instance.qwen.yaml` 只保留 `worker0`，适合单实例实验。
+- `p95-first` 会自动开启 `step-chunk + chunk-preemption`，这里显式写 `1|1|4` 只是为了 case 定义清楚。
+- 如果你只想保留一个 `slack` 版本，可以直接删掉对应的两行 case。
