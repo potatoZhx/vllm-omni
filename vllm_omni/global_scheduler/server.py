@@ -1250,6 +1250,14 @@ def create_app(
         response: Response
         ok = False
         try:
+            logger.info(
+                "request.proxy.begin request_id=%s instance_id=%s endpoint=%s path=%s timeout_s=%s",
+                request_id,
+                decision.instance_id,
+                decision.endpoint,
+                "/v1/videos",
+                current_config.server.request_timeout_s,
+            )
             upstream_result = await asyncio.to_thread(
                 _proxy_request,
                 decision.endpoint,
@@ -1266,7 +1274,23 @@ def create_app(
             for key, value in _select_upstream_response_headers(upstream_result.headers).items():
                 response.headers[key] = value
             ok = True
+            logger.info(
+                "request.proxy.ok request_id=%s instance_id=%s path=%s status_code=%s",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+                response.status_code,
+            )
         except UpstreamHTTPError as exc:
+            body_excerpt = exc.body[:256].decode("utf-8", errors="replace") if exc.body else ""
+            logger.warning(
+                "request.proxy.http_error request_id=%s instance_id=%s path=%s status_code=%s upstream_body=%r",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+                exc.status_code,
+                body_excerpt,
+            )
             response = JSONResponse(
                 status_code=exc.status_code,
                 content=_build_error_payload(
@@ -1276,6 +1300,12 @@ def create_app(
                 ),
             )
         except TimeoutError:
+            logger.warning(
+                "request.proxy.timeout request_id=%s instance_id=%s path=%s",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+            )
             response = JSONResponse(
                 status_code=502,
                 content=_build_error_payload(
@@ -1285,6 +1315,13 @@ def create_app(
                 ),
             )
         except OSError as exc:
+            logger.warning(
+                "request.proxy.network_error request_id=%s instance_id=%s path=%s error=%s",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+                str(exc),
+            )
             response = JSONResponse(
                 status_code=502,
                 content=_build_error_payload(
@@ -1294,9 +1331,18 @@ def create_app(
                 ),
             )
         finally:
+            elapsed_s = time.monotonic() - started_at
+            logger.info(
+                "request.finish request_id=%s instance_id=%s stream=%s ok=%s latency_s=%.3f",
+                request_id,
+                decision.instance_id,
+                False,
+                ok,
+                elapsed_s,
+            )
             app.state.runtime_state_store.on_request_finish(
                 decision.instance_id,
-                latency_s=time.monotonic() - started_at,
+                latency_s=elapsed_s,
                 ok=ok,
             )
 

@@ -565,6 +565,60 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
     assert snapshot["worker-0"].inflight == 0
 
 
+def test_videos_http_error_logs_request_context(tmp_path, monkeypatch):
+    """Video upstream 503 should emit request-scoped proxy logs for debugging."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+
+    def _fake_proxy(*_args, **_kwargs):
+        raise UpstreamHTTPError(status_code=503, body=b'{"detail":"busy"}')
+
+    log_messages: list[str] = []
+
+    def _capture_info(message, *args):
+        log_messages.append(message % args)
+
+    def _capture_warning(message, *args):
+        log_messages.append(message % args)
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request", _fake_proxy)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.logger.info", _capture_info)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.logger.warning", _capture_warning)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/videos",
+        headers={"x-request-id": "req-video-log-1"},
+        data={
+            "prompt": "city at sunset",
+            "width": "832",
+            "height": "480",
+            "num_frames": "33",
+            "num_inference_steps": "4",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "GS_UPSTREAM_HTTP_ERROR"
+    assert any("request.proxy.http_error request_id=req-video-log-1 instance_id=worker-0 path=/v1/videos status_code=503" in message for message in log_messages)
+    assert any("request.finish request_id=req-video-log-1 instance_id=worker-0 stream=False ok=False" in message for message in log_messages)
+
+
+
 def test_chat_completions_waits_for_capacity_before_forwarding(tmp_path, monkeypatch):
     """Scheduler should wait in global layer when the only worker is full."""
     config_path = tmp_path / "scheduler.yaml"
