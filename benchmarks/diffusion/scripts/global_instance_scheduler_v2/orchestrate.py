@@ -491,11 +491,15 @@ def build_benchmark_command(runtime: dict[str, Any], rate: str, request_rates: l
     return cmd
 
 
-def start_scheduler(config_file: Path, log_file: Path) -> subprocess.Popen[str]:
+def start_scheduler(config_file: Path, log_file: Path, instance_log_dir: Path | None = None) -> subprocess.Popen[str]:
     log_file.parent.mkdir(parents=True, exist_ok=True)
     print(f'[start] scheduler log: {log_file}')
     env = os.environ.copy()
     env['PYTHONPATH'] = f"{REPO_ROOT}:{env.get('PYTHONPATH', '')}".rstrip(':')
+    if instance_log_dir is not None and not env.get('GLOBAL_SCHEDULER_LOG_DIR'):
+        env['GLOBAL_SCHEDULER_LOG_DIR'] = str(instance_log_dir.resolve())
+    if env.get('GLOBAL_SCHEDULER_LOG_DIR'):
+        print(f"[start] instance logs: {env['GLOBAL_SCHEDULER_LOG_DIR']}")
     log_handle = log_file.open('w', encoding='utf-8')
     process = subprocess.Popen(
         [
@@ -605,7 +609,8 @@ def run_case(options: dict[str, str]) -> Path:
 
     scheduler_process: subprocess.Popen[str] | None = None
     try:
-        scheduler_process = start_scheduler(generated_config, scheduler_log_file)
+        instance_log_dir = out_dir / 'instance_logs'
+        scheduler_process = start_scheduler(generated_config, scheduler_log_file, instance_log_dir)
         wait_scheduler_ready(runtime['scheduler_url'], timeout_s=60, poll_interval_s=1.0)
         wait_workers_ready(runtime['scheduler_url'], runtime['worker_ids'], runtime['worker_ready_timeout_s'])
 

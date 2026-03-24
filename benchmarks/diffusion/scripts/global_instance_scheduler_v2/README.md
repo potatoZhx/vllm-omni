@@ -218,6 +218,8 @@ benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 - `TRITON_CACHE_DIR` 用于重定向 Triton 编译缓存。
 - `TORCHINDUCTOR_CACHE_DIR` 用于重定向 TorchInductor 编译缓存。
 - 这几个环境变量会随 `run_case.sh -> orchestrate.py -> global scheduler -> worker` 的进程链路继承下去。
+- 如果没有显式设置 `GLOBAL_SCHEDULER_LOG_DIR`，脚本现在会默认给每个 case 分配独立的 worker 日志目录：`<case_out_dir>/instance_logs/`。例如单实例时，`worker0` 的日志会落到 `<case_out_dir>/instance_logs/worker0.log`，不会再和其他 case 互相覆盖。
+- 如果你想手动统一日志根目录，仍然可以显式设置 `GLOBAL_SCHEDULER_LOG_DIR` 覆盖默认行为。
 
 ### 批量 case
 
