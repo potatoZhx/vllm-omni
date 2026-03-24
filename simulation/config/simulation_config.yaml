@@ -43,24 +43,20 @@ workers:
   - { sp: 1, cfg: 1, tp: 1}
   - { sp: 1, cfg: 1, tp: 1}
   - { sp: 1, cfg: 1, tp: 1}
-  # - { sp: 1, cfg: 1, tp: 1 }
-  # - { sp: 1, cfg: 1, tp: 1 }
-  # - { sp: 1, cfg: 1, tp: 1 }
-  # - { sp: 1, cfg: 1, tp: 2 }
   # - { sp: 1, cfg: 1, tp: 2 }
 
 # 调度算法
-#   instance_scheduler_policy: fcfs | sjf，与 benchmark --instance-scheduler-policy 对齐
-#     fcfs: 实例内 FCFS（qwen_n8_fcfs_rr）
-#     sjf: 实例内 SJF（qwen_n8_sjf_qz_rr）
-#   algorithms_to_run: 全局调度算法
+#   instance_scheduler_policies：实例内调度策略，与 algorithms_to_run 做笛卡尔乘积，每个组合一条曲线画在一起
+#   algorithms_to_run：全局调度算法
 scheduler:
-  instance_scheduler_policy: fcfs
+  instance_scheduler_policies:
+    - fcfs                # 实例内 FCFS（qwen_n8_fcfs_rr）
+    - sjf                 # 实例内 SJF（qwen_n8_sjf_qz_rr）
   # algorithms_to_run：要参与测试的算法列表。对每个算法，在 rps 列表的每个取值下各跑一轮模拟，
   # 得到 (算法, rps) 的指标点，用于画图：横轴 rps、纵轴为延迟/吞吐等，每算法一条曲线。
   algorithms_to_run:
-    - round_robin          # 轮询
-    # - min_queue_length     # 最小队列长度（仅看等待队列，不计正在运行）
+    # - round_robin          # 轮询
+    - min_queue_length     # 最小队列长度（仅看等待队列，不计正在运行）
     # - short_queue_runtime  # 最小队列等待时间（队列中所有请求 service_time 之和）
 
 # 跑完 simulation 后是否自动画图并保存

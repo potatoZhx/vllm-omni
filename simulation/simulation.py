@@ -138,9 +138,29 @@ def load_config(config_path: Path) -> dict:
         out = Path(sim["output_dir"])
         if not out.is_absolute():
             out = base / out
-        # output_dir 为 output 根目录时，自动追加 profile 名子目录：output/{profile名}/
+        # output_dir 为 output 根目录时，自动追加 profile 名 + 算法 + 实例策略：output/{profile名}_{算法}_{策略}/
+        # 笛卡尔乘积时：output/{profile名}_{算法1_算法2}_{fcfs_sjf}/
         if out.name == "output":
-            out = out / profile_stem
+            sched = cfg.get("scheduler", {})
+            workers = cfg.get("workers", [])
+            n_workers = len(workers) if workers else 0
+            algorithms_to_run = sched.get("algorithms_to_run", None)
+            if isinstance(algorithms_to_run, str):
+                algorithms_to_run = [algorithms_to_run]
+            policies_raw = sched.get("instance_scheduler_policies") or sched.get("instance_scheduler_policy", "fcfs")
+            instance_policies = (
+                [str(p).strip().lower() for p in policies_raw]
+                if isinstance(policies_raw, (list, tuple))
+                else [str(policies_raw).strip().lower()]
+            )
+            parts = [profile_stem]
+            if n_workers > 0:
+                parts.append(f"n{n_workers}")
+            if algorithms_to_run:
+                parts.append("_".join(sorted(algorithms_to_run)))
+            if instance_policies:
+                parts.append("_".join(sorted(instance_policies)))
+            out = out / "_".join(parts)
         sim["output_dir"] = out
     trace_path = sim.get("trace_path")
     if trace_path is not None:
@@ -652,35 +672,50 @@ def main() -> None:
     rps_cfg = sim["rps"]
     rps_list = [float(x) for x in (rps_cfg if isinstance(rps_cfg, list) else [rps_cfg])]
     slo_scale = float(sim.get("slo_scale", 3))
-    algorithms_to_run = cfg.get("scheduler", {}).get("algorithms_to_run", [cfg.get("scheduler", {}).get("algorithm", "round_robin")])
+    sched = cfg.get("scheduler", {})
+    algorithms_to_run = sched.get("algorithms_to_run", [sched.get("algorithm", "round_robin")])
     if isinstance(algorithms_to_run, str):
         algorithms_to_run = [algorithms_to_run]
+    policies_raw = sched.get("instance_scheduler_policies") or sched.get("instance_scheduler_policy", "fcfs")
+    instance_policies = (
+        [str(p).strip().lower() for p in policies_raw]
+        if isinstance(policies_raw, (list, tuple))
+        else [str(policies_raw).strip().lower()]
+    )
+    # 笛卡尔乘积：(algo, policy) 每个组合视为一个算法，输出 algorithm="{algo}_{policy}"
+    algorithm_combos = [(a, p) for a in algorithms_to_run for p in instance_policies]
+    combo_names = [f"{a}_{p}" for a, p in algorithm_combos]
+
     output_dir = Path(sim["output_dir"])
     output_merged = sim.get("output_merged", False)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_runs = []
-    for algo in algorithms_to_run:
-        runs_for_algo = []
+    for algo, instance_policy in algorithm_combos:
+        combo_name = f"{algo}_{instance_policy}"
+        runs_for_combo = []
         for rps in rps_list:
             requests = build_requests(cfg, rps, t_end)
             assign_slo(requests, profile_data, workers, slo_scale)
             try:
-                instance_policy = str(cfg.get("scheduler", {}).get("instance_scheduler_policy", "fcfs")).strip().lower()
-                out = run_simulation(requests, workers, profile_data, rps, t_end, algo, instance_scheduler_policy=instance_policy)
-                runs_for_algo.append(out)
+                out = run_simulation(
+                    requests, workers, profile_data, rps, t_end, algo,
+                    instance_scheduler_policy=instance_policy,
+                )
+                out["algorithm"] = combo_name  # 覆盖为组合名，画图时每条线一个组合
+                runs_for_combo.append(out)
                 all_runs.append(out)
             except (KeyError, ValueError) as e:
-                print(f"算法 {algo} rps={rps} 运行失败: {e}", file=sys.stderr)
+                print(f"算法 {combo_name} rps={rps} 运行失败: {e}", file=sys.stderr)
                 sys.exit(1)
         if not output_merged:
-            runs_stats = [{k: v for k, v in run.items() if k != "requests"} for run in runs_for_algo]
-            out_path = output_dir / f"{algo}.json"
+            runs_stats = [{k: v for k, v in run.items() if k != "requests"} for run in runs_for_combo]
+            out_path = output_dir / f"{combo_name}.json"
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(runs_stats, f, indent=2)
-            req_path = output_dir / f"{algo}_requests.csv"
-            _write_requests_csv(req_path, runs_for_algo)
-            print(f"已写入 {algo}: 统计 {out_path}，请求明细 {req_path} ({len(runs_for_algo)} 个 rps 点)")
+            req_path = output_dir / f"{combo_name}_requests.csv"
+            _write_requests_csv(req_path, runs_for_combo)
+            print(f"已写入 {combo_name}: 统计 {out_path}，请求明细 {req_path} ({len(runs_for_combo)} 个 rps 点)")
 
     if output_merged and all_runs:
         merged_stats = [{k: v for k, v in run.items() if k != "requests"} for run in all_runs]
@@ -719,11 +754,13 @@ def main() -> None:
             saved_list = []
             for metric in plot_metrics:
                 out_path = plot_output_dir / f"{plot_output_prefix}_{metric}.png"
+                n_workers = len(workers)
+                t_end_str = str(int(t_end)) if t_end == int(t_end) else str(t_end)
                 saved = plot_results_fn(
                     merged_for_plot,
                     output=out_path,
                     metrics=[metric],
-                    title="Simulation",
+                    title=f"Simulation (t_end={t_end_str}s, workers={n_workers})",
                     split_by_type=True,
                 )
                 if saved:
@@ -739,7 +776,7 @@ def main() -> None:
         except Exception as e:
             print("自动画图失败:", e, file=sys.stderr)
 
-    print("完成。画图示例: python diffusion_bench/plot_results.py --input-dir", output_dir, "--algorithms", " ".join(algorithms_to_run), "-o figs/compare --split-by-type")
+    print("完成。画图示例: python diffusion_bench/plot_results.py --input-dir", output_dir, "--algorithms", " ".join(combo_names), "-o figs/compare --split-by-type")
 
 
 if __name__ == "__main__":
