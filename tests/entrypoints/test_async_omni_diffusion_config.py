@@ -24,9 +24,17 @@ def test_default_stage_config_includes_cache_backend():
         cache_config='{"Fn_compute_blocks": 2}',
         vae_use_slicing=True,
         ulysses_degree=2,
-        instance_scheduler_policy="slo_first",
+        instance_scheduler_policy="p95-first",
         instance_scheduler_slo_target_ms=1800.0,
         instance_scheduler_aging_factor=0.25,
+        instance_scheduler_p95_first_base_ms=2200.0,
+        instance_scheduler_p95_first_min_ms=1200.0,
+        instance_scheduler_p95_first_max_ms=6000.0,
+        instance_scheduler_p95_first_backlog_alpha=1.5,
+        instance_scheduler_p95_first_size_bias=0.1,
+        instance_scheduler_p95_first_age_bias=0.2,
+        instance_scheduler_p95_first_starvation_threshold_s=3.0,
+        instance_scheduler_p95_first_starvation_boost=1.0,
         instance_runtime_profile_path="/profile/runtime.json",
         instance_runtime_profile_name="img-a",
         diffusion_enable_step_chunk=True,
@@ -43,9 +51,17 @@ def test_default_stage_config_includes_cache_backend():
     cache_config = engine_args["cache_config"]
     assert cache_config["Fn_compute_blocks"] == 2
     assert engine_args["vae_use_slicing"] is True
-    assert engine_args["instance_scheduler_policy"] == "slo_first"
+    assert engine_args["instance_scheduler_policy"] == "p95-first"
     assert engine_args["instance_scheduler_slo_target_ms"] == 1800.0
     assert engine_args["instance_scheduler_aging_factor"] == 0.25
+    assert engine_args["instance_scheduler_p95_first_base_ms"] == 2200.0
+    assert engine_args["instance_scheduler_p95_first_min_ms"] == 1200.0
+    assert engine_args["instance_scheduler_p95_first_max_ms"] == 6000.0
+    assert engine_args["instance_scheduler_p95_first_backlog_alpha"] == 1.5
+    assert engine_args["instance_scheduler_p95_first_size_bias"] == 0.1
+    assert engine_args["instance_scheduler_p95_first_age_bias"] == 0.2
+    assert engine_args["instance_scheduler_p95_first_starvation_threshold_s"] == 3.0
+    assert engine_args["instance_scheduler_p95_first_starvation_boost"] == 1.0
     assert engine_args["instance_runtime_profile_path"] == "/profile/runtime.json"
     assert engine_args["instance_runtime_profile_name"] == "img-a"
     assert engine_args["diffusion_engine_max_concurrency"] == 7
@@ -74,7 +90,16 @@ def test_small_request_latency_threshold_must_be_positive():
         OmniDiffusionConfig(diffusion_small_request_latency_threshold_ms=0.0)
 
 
-@pytest.mark.parametrize("policy", ["slack_age", "slack_cost_age"])
+def test_p95_first_enables_step_chunk_and_chunk_preemption_by_default():
+    from vllm_omni.diffusion.data import OmniDiffusionConfig
+
+    config = OmniDiffusionConfig(instance_scheduler_policy="p95-first")
+
+    assert config.diffusion_enable_step_chunk is True
+    assert config.diffusion_enable_chunk_preemption is True
+
+
+@pytest.mark.parametrize("policy", ["p95-first", "slack_age", "slack_cost_age"])
 def test_new_instance_scheduler_policies_are_accepted(policy: str):
     from vllm_omni.diffusion.data import OmniDiffusionConfig
 

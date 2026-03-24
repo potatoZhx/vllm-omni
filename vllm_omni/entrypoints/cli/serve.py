@@ -258,10 +258,11 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "slo_first", "slack_age", "slack_cost_age"],
+            choices=["fcfs", "sjf", "slo_first", "p95-first", "slack_age", "slack_cost_age"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'slo_first' keeps the current "
-            "slack-over-cost on-time ordering, 'slack_age' prioritizes tight/old requests, and "
+            "deadline-aware on-time/tail ordering, 'p95-first' uses dynamic p95 single-queue "
+            "ranking with starvation protection, 'slack_age' prioritizes tight/old requests, and "
             "'slack_cost_age' adds a bounded remaining-cost penalty on top of slack+aging.",
         )
         omni_config_group.add_argument(
@@ -282,6 +283,54 @@ class OmniServeCommand(CLISubcommand):
             type=float,
             default=0.0,
             help="Aging factor used when ordering the delayed tail set in the instance-local 'slo_first' scheduler.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-base-ms",
+            type=float,
+            default=None,
+            help="Base dynamic p95 target in milliseconds for the instance-local 'p95-first' scheduler.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-min-ms",
+            type=float,
+            default=0.0,
+            help="Lower bound applied to the dynamic p95 target in milliseconds for 'p95-first'.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-max-ms",
+            type=float,
+            default=None,
+            help="Upper bound applied to the dynamic p95 target in milliseconds for 'p95-first'.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-backlog-alpha",
+            type=float,
+            default=1.0,
+            help="Backlog-to-dynamic-p95 coefficient for the instance-local 'p95-first' scheduler.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-size-bias",
+            type=float,
+            default=0.0,
+            help="Small positive size bias added to the 'p95-first' ranking score.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-age-bias",
+            type=float,
+            default=0.0,
+            help="Aging coefficient subtracted from the 'p95-first' ranking score.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-starvation-threshold-s",
+            type=float,
+            default=None,
+            help="Wait-time threshold in seconds after which 'p95-first' applies starvation boost.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-first-starvation-boost",
+            type=float,
+            default=0.0,
+            help="Fixed priority boost applied by 'p95-first' after starvation threshold is exceeded.",
         )
         omni_config_group.add_argument(
             "--instance-runtime-profile-path",

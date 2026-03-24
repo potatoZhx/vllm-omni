@@ -419,6 +419,14 @@ class OmniDiffusionConfig:
     instance_scheduler_slo_target_ms: float | None = None
     instance_scheduler_slo_floor_ms: float = 0.0
     instance_scheduler_aging_factor: float = 0.0
+    instance_scheduler_p95_first_base_ms: float | None = None
+    instance_scheduler_p95_first_min_ms: float = 0.0
+    instance_scheduler_p95_first_max_ms: float | None = None
+    instance_scheduler_p95_first_backlog_alpha: float = 1.0
+    instance_scheduler_p95_first_size_bias: float = 0.0
+    instance_scheduler_p95_first_age_bias: float = 0.0
+    instance_scheduler_p95_first_starvation_threshold_s: float | None = None
+    instance_scheduler_p95_first_starvation_boost: float = 0.0
     instance_runtime_profile_path: str | None = None
     instance_runtime_profile_name: str | None = None
     diffusion_engine_max_concurrency: int = 32
@@ -591,7 +599,7 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
-        valid_policies = {"fcfs", "sjf", "slo_first", "slack_age", "slack_cost_age"}
+        valid_policies = {"fcfs", "sjf", "slo_first", "p95-first", "slack_age", "slack_cost_age"}
         if self.instance_scheduler_policy not in valid_policies:
             raise ValueError(
                 "instance_scheduler_policy must be one of "
@@ -603,6 +611,33 @@ class OmniDiffusionConfig:
             raise ValueError("instance_scheduler_slo_floor_ms must be >= 0")
         if self.instance_scheduler_aging_factor < 0:
             raise ValueError("instance_scheduler_aging_factor must be >= 0")
+        if self.instance_scheduler_p95_first_base_ms is not None and self.instance_scheduler_p95_first_base_ms <= 0:
+            raise ValueError("instance_scheduler_p95_first_base_ms must be > 0 when provided")
+        if self.instance_scheduler_p95_first_min_ms < 0:
+            raise ValueError("instance_scheduler_p95_first_min_ms must be >= 0")
+        if self.instance_scheduler_p95_first_max_ms is not None and self.instance_scheduler_p95_first_max_ms <= 0:
+            raise ValueError("instance_scheduler_p95_first_max_ms must be > 0 when provided")
+        if (
+            self.instance_scheduler_p95_first_max_ms is not None
+            and self.instance_scheduler_p95_first_max_ms < self.instance_scheduler_p95_first_min_ms
+        ):
+            raise ValueError("instance_scheduler_p95_first_max_ms must be >= instance_scheduler_p95_first_min_ms")
+        if self.instance_scheduler_p95_first_backlog_alpha < 0:
+            raise ValueError("instance_scheduler_p95_first_backlog_alpha must be >= 0")
+        if self.instance_scheduler_p95_first_size_bias < 0:
+            raise ValueError("instance_scheduler_p95_first_size_bias must be >= 0")
+        if self.instance_scheduler_p95_first_age_bias < 0:
+            raise ValueError("instance_scheduler_p95_first_age_bias must be >= 0")
+        if (
+            self.instance_scheduler_p95_first_starvation_threshold_s is not None
+            and self.instance_scheduler_p95_first_starvation_threshold_s <= 0
+        ):
+            raise ValueError("instance_scheduler_p95_first_starvation_threshold_s must be > 0 when provided")
+        if self.instance_scheduler_p95_first_starvation_boost < 0:
+            raise ValueError("instance_scheduler_p95_first_starvation_boost must be >= 0")
+        if self.instance_scheduler_policy == "p95-first":
+            self.diffusion_enable_step_chunk = True
+            self.diffusion_enable_chunk_preemption = True
         if self.diffusion_engine_max_concurrency < 1:
             raise ValueError("diffusion_engine_max_concurrency must be >= 1")
         if self.diffusion_enable_chunk_preemption and not self.diffusion_enable_step_chunk:

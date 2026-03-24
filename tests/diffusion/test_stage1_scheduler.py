@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from vllm_omni.diffusion.data import DiffusionOutput
-from vllm_omni.diffusion.stage1_scheduler import Stage1Scheduler
+from vllm_omni.diffusion.stage1_scheduler import Stage1Scheduler, _QueuedRequest
 
 pytestmark = [pytest.mark.diffusion]
 
@@ -60,6 +60,14 @@ def _make_stage1_scheduler(
         instance_scheduler_slo_target_ms=slo_target_ms,
         instance_scheduler_slo_floor_ms=0.0,
         instance_scheduler_aging_factor=aging_factor,
+        instance_scheduler_p95_first_base_ms=None,
+        instance_scheduler_p95_first_min_ms=0.0,
+        instance_scheduler_p95_first_max_ms=None,
+        instance_scheduler_p95_first_backlog_alpha=1.0,
+        instance_scheduler_p95_first_size_bias=0.0,
+        instance_scheduler_p95_first_age_bias=0.0,
+        instance_scheduler_p95_first_starvation_threshold_s=None,
+        instance_scheduler_p95_first_starvation_boost=0.0,
         instance_runtime_profile_path=profile_path,
         instance_runtime_profile_name=profile_name,
     )
@@ -818,3 +826,207 @@ def test_stage1_scheduler_abort_removes_waiting_request():
     assert results["waiting"].error_code == "REQUEST_ABORTED"
     assert results["waiting"].error == "Request aborted before dispatch"
     assert sched.estimate_waiting_queue_len() == 0
+
+
+def test_stage1_scheduler_p95_first_reports_policy_name_without_affecting_existing_policies():
+    sched, req_q, res_q = _make_stage1_scheduler(policy="p95-first")
+    req = _mock_request("req-p95-first")
+
+    def _worker():
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), request_id="req-p95-first"))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    output = sched.add_req(req)
+    worker.join(5)
+
+    assert output.error is None
+    assert output.metrics["scheduler_policy"] == "p95-first"
+
+
+def test_stage1_scheduler_p95_first_dynamic_p95_grows_with_backlog():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+    sched.od_config.instance_scheduler_p95_first_backlog_alpha = 1.0
+
+    with sched._queue_cv:
+        q1 = sched._enqueue_request_locked(
+            _mock_request("req-1", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+        )
+        dynamic_p95_single, backlog_single, _learned_single, _adjusted_single = sched._compute_dynamic_p95_ms(
+            [q1], now=q1.enqueue_time
+        )
+        q2 = sched._enqueue_request_locked(
+            _mock_request("req-2", num_inference_steps=1, extra_args={"estimated_cost_s": 3.0})
+        )
+        waiting = list(sched._waiting_queue)
+        dynamic_p95_double, backlog_double, _learned_double, _adjusted_double = sched._compute_dynamic_p95_ms(
+            waiting, now=q2.enqueue_time
+        )
+
+    assert backlog_double > backlog_single
+    assert dynamic_p95_double > dynamic_p95_single
+
+
+
+def test_stage1_scheduler_p95_first_reorders_waiting_queue_by_single_queue_priority():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+    sched.od_config.instance_scheduler_p95_first_size_bias = 5.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(  # noqa: SLF001
+            _mock_request("long", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+        )
+        sched._enqueue_request_locked(  # noqa: SLF001
+            _mock_request("short", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+        )
+        ordered = [queued.request.request_ids[0] for queued in sched._waiting_queue]  # noqa: SLF001
+
+    assert ordered == ["short", "long"]
+
+
+
+def test_stage1_scheduler_p95_first_starvation_boost_promotes_old_request():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+    sched.od_config.instance_scheduler_p95_first_size_bias = 20.0
+    sched.od_config.instance_scheduler_p95_first_starvation_threshold_s = 5.0
+    sched.od_config.instance_scheduler_p95_first_starvation_boost = 200.0
+
+    old_req = _mock_request("old", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+    new_req = _mock_request("new", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    old_req.arrival_time = 0.0
+    new_req.arrival_time = 9.9
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_req)  # noqa: SLF001
+        sched._enqueue_request_locked(new_req)  # noqa: SLF001
+        ordered, metrics_by_sequence = sched._build_p95_first_queue(list(sched._waiting_queue), now=10.0)  # noqa: SLF001
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["old", "new"]
+    old_metrics = metrics_by_sequence[ordered[0].sequence_id]
+    assert old_metrics["starvation_boost"] == pytest.approx(200.0)
+
+
+def test_stage1_scheduler_p95_first_separates_active_total_backlog_from_chunk_blocking():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+    sched.od_config.instance_scheduler_p95_first_backlog_alpha = 1.0
+
+    active_req = _mock_request("active", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+    waiting_req = _mock_request("waiting", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    active_req.arrival_time = 100.0
+    waiting_req.arrival_time = 100.5
+    active_req.max_steps_this_turn = 2
+
+    active_queued = _QueuedRequest(
+        request=active_req,
+        enqueue_time=100.0,
+        sequence_id=1,
+        estimated_cost_s=10.0,
+    )
+    waiting_queued = _QueuedRequest(
+        request=waiting_req,
+        enqueue_time=100.5,
+        sequence_id=2,
+        estimated_cost_s=1.0,
+    )
+
+    sched._active_request = active_queued
+    sched._active_started_at = 100.0
+
+    total_remaining = sched._active_total_remaining_cost_seconds(now=100.5)
+    chunk_remaining = sched._active_chunk_remaining_cost_seconds(now=100.5)
+    _dynamic_p95_ms, backlog_s, _learned_p95_ms, _adjusted_p95_ms = sched._compute_dynamic_p95_ms(
+        [waiting_queued], now=100.5
+    )
+
+    assert total_remaining == pytest.approx(9.5)
+    assert chunk_remaining == pytest.approx(1.5)
+    assert backlog_s == pytest.approx(10.5)
+    assert backlog_s > chunk_remaining + waiting_queued.estimated_cost_s
+
+
+
+def test_stage1_scheduler_p95_first_uses_active_chunk_blocking_for_cursor():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+
+    active_req = _mock_request("active", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+    waiting_req = _mock_request("waiting", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    active_req.arrival_time = 100.0
+    waiting_req.arrival_time = 100.5
+    active_req.max_steps_this_turn = 2
+
+    active_queued = _QueuedRequest(
+        request=active_req,
+        enqueue_time=100.0,
+        sequence_id=1,
+        estimated_cost_s=10.0,
+    )
+    waiting_queued = _QueuedRequest(
+        request=waiting_req,
+        enqueue_time=100.5,
+        sequence_id=2,
+        estimated_cost_s=1.0,
+    )
+
+    sched._active_request = active_queued
+    sched._active_started_at = 100.0
+
+    ordered, metrics_by_sequence = sched._build_p95_first_queue([waiting_queued], now=100.5)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["waiting"]
+    waiting_metrics = metrics_by_sequence[waiting_queued.sequence_id]
+    assert waiting_metrics["active_chunk_blocking_s"] == pytest.approx(1.5)
+    assert waiting_metrics["instance_backlog_total_s"] == pytest.approx(10.5)
+    assert waiting_metrics["predicted_finish_latency_ms"] == pytest.approx(2500.0)
+
+
+def test_stage1_scheduler_p95_first_ignores_legacy_slo_target_without_explicit_base():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first", slo_target_ms=5000.0)
+    sched.od_config.instance_scheduler_p95_first_backlog_alpha = 0.0
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(
+            _mock_request("req", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+        )
+        dynamic_p95_ms, _backlog_s, learned_p95_ms, backlog_adjusted_p95_ms = sched._compute_dynamic_p95_ms(
+            [queued], now=queued.enqueue_time
+        )
+
+    assert learned_p95_ms == pytest.approx(1000.0)
+    assert backlog_adjusted_p95_ms == pytest.approx(0.0)
+    assert dynamic_p95_ms == pytest.approx(1000.0)
+
+
+
+def test_stage1_scheduler_p95_first_uses_explicit_base_without_reusing_legacy_slo_target():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first", slo_target_ms=5000.0)
+    sched.od_config.instance_scheduler_p95_first_base_ms = 2200.0
+    sched.od_config.instance_scheduler_p95_first_backlog_alpha = 0.0
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(
+            _mock_request("req", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+        )
+        dynamic_p95_ms, _backlog_s, learned_p95_ms, backlog_adjusted_p95_ms = sched._compute_dynamic_p95_ms(
+            [queued], now=queued.enqueue_time
+        )
+
+    assert learned_p95_ms == pytest.approx(2200.0)
+    assert backlog_adjusted_p95_ms == pytest.approx(2200.0)
+    assert dynamic_p95_ms == pytest.approx(2200.0)
+
+
+def test_stage1_scheduler_p95_first_learned_p95_uses_max_for_small_history():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+    sched._p95_first_latency_history_ms.extend([100.0, 400.0, 250.0])
+
+    assert sched._learned_p95_ms() == pytest.approx(400.0)
+
+
+
+def test_stage1_scheduler_p95_first_learned_p95_uses_nearest_rank_for_larger_history():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+    sched._p95_first_latency_history_ms.extend(float(i * 100) for i in range(1, 21))
+
+    assert sched._learned_p95_ms() == pytest.approx(1900.0)

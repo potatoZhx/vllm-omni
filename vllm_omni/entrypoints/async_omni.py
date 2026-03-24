@@ -189,6 +189,20 @@ class AsyncOmni(OmniBase):
                     "instance_scheduler_slo_target_ms": kwargs.get("instance_scheduler_slo_target_ms", None),
                     "instance_scheduler_slo_floor_ms": kwargs.get("instance_scheduler_slo_floor_ms", 0.0),
                     "instance_scheduler_aging_factor": kwargs.get("instance_scheduler_aging_factor", 0.0),
+                    "instance_scheduler_p95_first_base_ms": kwargs.get("instance_scheduler_p95_first_base_ms", None),
+                    "instance_scheduler_p95_first_min_ms": kwargs.get("instance_scheduler_p95_first_min_ms", 0.0),
+                    "instance_scheduler_p95_first_max_ms": kwargs.get("instance_scheduler_p95_first_max_ms", None),
+                    "instance_scheduler_p95_first_backlog_alpha": kwargs.get(
+                        "instance_scheduler_p95_first_backlog_alpha", 1.0
+                    ),
+                    "instance_scheduler_p95_first_size_bias": kwargs.get("instance_scheduler_p95_first_size_bias", 0.0),
+                    "instance_scheduler_p95_first_age_bias": kwargs.get("instance_scheduler_p95_first_age_bias", 0.0),
+                    "instance_scheduler_p95_first_starvation_threshold_s": kwargs.get(
+                        "instance_scheduler_p95_first_starvation_threshold_s", None
+                    ),
+                    "instance_scheduler_p95_first_starvation_boost": kwargs.get(
+                        "instance_scheduler_p95_first_starvation_boost", 0.0
+                    ),
                     "instance_runtime_profile_path": kwargs.get("instance_runtime_profile_path", None),
                     "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
                     "diffusion_engine_max_concurrency": kwargs.get("diffusion_engine_max_concurrency", 32),
