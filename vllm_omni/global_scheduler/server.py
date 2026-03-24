@@ -219,7 +219,34 @@ def _extract_request_meta_from_form_fields(form_fields: dict[str, str], request_
     )
 
 
-def _no_routable_instance_response(backend: str, request_id: str) -> JSONResponse:
+def _instance_debug_snapshot(app: FastAPI) -> list[dict[str, Any]]:
+    lifecycle_snapshot = app.state.instance_lifecycle_manager.snapshot()
+    runtime_snapshot = app.state.runtime_state_store.snapshot()
+    payload: list[dict[str, Any]] = []
+    for instance_id, lifecycle in lifecycle_snapshot.items():
+        runtime = runtime_snapshot.get(instance_id)
+        payload.append(
+            {
+                "id": instance_id,
+                "enabled": lifecycle.enabled,
+                "healthy": lifecycle.healthy,
+                "draining": lifecycle.draining,
+                "process_state": lifecycle.process_state,
+                "queue_len": runtime.queue_len if runtime else 0,
+                "inflight": runtime.inflight if runtime else 0,
+                "last_error": lifecycle.last_error,
+            }
+        )
+    return payload
+
+
+def _no_routable_instance_response(app: FastAPI, backend: str, request_id: str) -> JSONResponse:
+    logger.warning(
+        "route.reject.no_routable request_id=%s backend=%s instances=%s",
+        request_id,
+        backend,
+        _instance_debug_snapshot(app),
+    )
     return JSONResponse(
         status_code=503,
         content=_build_error_payload(
@@ -243,7 +270,7 @@ async def _wait_and_reserve_route(
             backend=backend,
         )
         if not candidates:
-            return _no_routable_instance_response(backend, request_id)
+            return _no_routable_instance_response(app, backend, request_id)
 
         async with app.state.routing_lock:
             runtime_snapshot = app.state.runtime_state_store.snapshot()
@@ -263,6 +290,14 @@ async def _wait_and_reserve_route(
                         runtime_stats=runtime_snapshot,
                     )
                 except (ValueError, KeyError) as exc:
+                    logger.warning(
+                        "route.reject.selection_error request_id=%s backend=%s candidates=%s error=%s instances=%s",
+                        request_id,
+                        backend,
+                        [instance.id for instance in available_candidates],
+                        str(exc),
+                        _instance_debug_snapshot(app),
+                    )
                     return JSONResponse(
                         status_code=503,
                         content=_build_error_payload(

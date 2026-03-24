@@ -308,6 +308,46 @@ def test_chat_completions_returns_503_when_no_routable_instance(tmp_path):
     assert payload["error"]["request_id"]
 
 
+def test_chat_completions_no_routable_logs_instance_snapshot(tmp_path, monkeypatch):
+    """No-routable rejection should log lifecycle and runtime snapshot for debugging."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+    app.state.instance_lifecycle_manager.mark_health("worker-0", healthy=False, error="ready_probe_timeout")
+
+    log_messages: list[str] = []
+
+    def _capture_warning(message, *args):
+        log_messages.append(message % args)
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.logger.warning", _capture_warning)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-request-id": "req-no-route-1"},
+        json={"model": "demo", "messages": []},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "GS_NO_ROUTABLE_INSTANCE"
+    assert any("route.reject.no_routable request_id=req-no-route-1 backend=vllm-omni" in message for message in log_messages)
+    assert any("'healthy': False" in message or '"healthy": False' in message for message in log_messages)
+    assert any("ready_probe_timeout" in message for message in log_messages)
+
+
 @pytest.mark.parametrize(
     "raised,status_code,error_code",
     [
