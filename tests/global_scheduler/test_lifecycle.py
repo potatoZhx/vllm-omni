@@ -252,3 +252,53 @@ def test_probe_all_keeps_newly_started_instance_on_readiness_probe(monkeypatch):
         ("ready", "http://127.0.0.1:9001", 1.25),
         ("ready", "http://127.0.0.1:9002", 1.25),
     ]
+
+
+def test_probe_failures_require_threshold_before_marking_unhealthy(monkeypatch):
+    """Transient probe failures should not eject a healthy instance immediately."""
+    manager = InstanceLifecycleManager(_instances())
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: (False, "timed out"),
+    )
+
+    manager.probe_all(0.5, unhealthy_after_failures=3)
+    after_first = manager.snapshot()["worker-0"]
+    assert after_first.healthy is True
+    assert after_first.last_error == "timed out"
+
+    manager.probe_all(0.5, unhealthy_after_failures=3)
+    after_second = manager.snapshot()["worker-0"]
+    assert after_second.healthy is True
+
+    manager.probe_all(0.5, unhealthy_after_failures=3)
+    after_third = manager.snapshot()["worker-0"]
+    assert after_third.healthy is False
+    assert after_third.consecutive_probe_failures == 3
+
+
+def test_successful_probe_resets_failure_streak(monkeypatch):
+    """A successful probe should reset the consecutive failure counter."""
+    manager = InstanceLifecycleManager([InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001")])
+    outcomes = iter([(False, "timed out"), (True, None), (False, "timed out")])
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: next(outcomes),
+    )
+
+    manager.probe_all(0.5, unhealthy_after_failures=2)
+    after_first = manager.snapshot()["worker-0"]
+    assert after_first.healthy is True
+    assert after_first.consecutive_probe_failures == 1
+
+    manager.probe_all(0.5, unhealthy_after_failures=2)
+    after_success = manager.snapshot()["worker-0"]
+    assert after_success.healthy is True
+    assert after_success.consecutive_probe_failures == 0
+
+    manager.probe_all(0.5, unhealthy_after_failures=2)
+    after_reset_fail = manager.snapshot()["worker-0"]
+    assert after_reset_fail.healthy is True
+    assert after_reset_fail.consecutive_probe_failures == 1

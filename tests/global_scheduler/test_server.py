@@ -228,6 +228,7 @@ def test_probe_endpoint_runs_probe_in_to_thread(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert len(calls) == 1
+    assert calls[0][1] == (0.1, 3)
 
 
 def test_chat_completions_success_sets_route_headers_and_state(tmp_path, monkeypatch):
@@ -326,6 +327,7 @@ def test_chat_completions_no_routable_logs_instance_snapshot(tmp_path, monkeypat
     config = load_config(config_path)
     app = create_app(config)
     app.state.instance_lifecycle_manager.mark_health("worker-0", healthy=False, error="ready_probe_timeout")
+    app.state.instance_lifecycle_manager.set_process_state("worker-0", process_state="stopped")
 
     log_messages: list[str] = []
 
@@ -346,6 +348,52 @@ def test_chat_completions_no_routable_logs_instance_snapshot(tmp_path, monkeypat
     assert any("route.reject.no_routable request_id=req-no-route-1 backend=vllm-omni" in message for message in log_messages)
     assert any("'healthy': False" in message or '"healthy": False' in message for message in log_messages)
     assert any("ready_probe_timeout" in message for message in log_messages)
+
+
+def test_chat_completions_waits_for_recoverable_instance_before_routing(tmp_path, monkeypatch):
+    """Transiently unhealthy running instances should be waited on instead of rejected immediately."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+    app.state.instance_lifecycle_manager.mark_health("worker-0", healthy=False, error="timed out")
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        app.state.instance_lifecycle_manager.mark_health("worker-0", healthy=True, error=None)
+
+    def _fake_proxy(endpoint, body, headers, timeout_s):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert timeout_s == 2
+        return b'{"id": "resp-waited"}'
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_chat_completion", _fake_proxy)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-request-id": "req-wait-route-1"},
+        json={"model": "demo", "messages": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "resp-waited"
+    assert sleep_calls == [0.5]
 
 
 @pytest.mark.parametrize(

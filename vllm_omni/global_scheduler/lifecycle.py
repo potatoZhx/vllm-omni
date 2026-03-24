@@ -31,6 +31,7 @@ class InstanceLifecycleStatus:
     last_operation_error: str | None = None
     last_check_ts_s: float | None = None
     last_error: str | None = None
+    consecutive_probe_failures: int = 0
 
 
 class InstanceLifecycleManager:
@@ -69,6 +70,7 @@ class InstanceLifecycleManager:
                     last_operation_error=status.last_operation_error,
                     last_check_ts_s=status.last_check_ts_s,
                     last_error=status.last_error,
+                    consecutive_probe_failures=status.consecutive_probe_failures,
                 )
                 for instance_id, status in self._instances.items()
             }
@@ -137,13 +139,49 @@ class InstanceLifecycleManager:
             status.healthy = healthy
             status.last_check_ts_s = time.time()
             status.last_error = error
+            status.consecutive_probe_failures = 0
             return self._copy_status(status)
 
-    def probe_all(self, timeout_s: float) -> None:
+
+    def record_probe_result(
+        self,
+        instance_id: str,
+        *,
+        healthy: bool,
+        error: str | None = None,
+        unhealthy_after_failures: int = 3,
+    ) -> InstanceLifecycleStatus:
+        """Apply one runtime probe result with failure-threshold hysteresis.
+
+        Short probe failures keep the current health state so transient probe
+        stalls do not immediately eject an otherwise running instance from
+        routing. Once failures reach `unhealthy_after_failures`, the instance is
+        marked unhealthy until a later successful probe resets the streak.
+        """
+        if unhealthy_after_failures < 1:
+            raise ValueError('unhealthy_after_failures must be >= 1')
+
+        with self._lock:
+            status = self._get_status(instance_id)
+            status.last_check_ts_s = time.time()
+            if healthy:
+                status.healthy = True
+                status.last_error = None
+                status.consecutive_probe_failures = 0
+                return self._copy_status(status)
+
+            status.last_error = error
+            status.consecutive_probe_failures += 1
+            if status.consecutive_probe_failures >= unhealthy_after_failures:
+                status.healthy = False
+            return self._copy_status(status)
+
+    def probe_all(self, timeout_s: float, unhealthy_after_failures: int = 3) -> None:
         """Probe all enabled instances and update their health status.
 
         Args:
             timeout_s: TCP probing timeout in seconds.
+            unhealthy_after_failures: Consecutive probe failures required before marking an instance unhealthy.
         """
         with self._lock:
             statuses = list(self._instances.values())
@@ -155,7 +193,12 @@ class InstanceLifecycleManager:
                 healthy, error = _probe_http_ready(status.instance.endpoint, timeout_s)
             else:
                 healthy, error = _probe_http_health(status.instance.endpoint, timeout_s)
-            self.mark_health(status.instance.id, healthy=healthy, error=error)
+            self.record_probe_result(
+                status.instance.id,
+                healthy=healthy,
+                error=error,
+                unhealthy_after_failures=unhealthy_after_failures,
+            )
 
     def sync_instances(self, instances: list[InstanceSpec], runtime_snapshot: dict[str, RuntimeStats]) -> None:
         """Synchronize lifecycle entries with latest configured instances.
@@ -240,6 +283,7 @@ class InstanceLifecycleManager:
             last_operation_error=status.last_operation_error,
             last_check_ts_s=status.last_check_ts_s,
             last_error=status.last_error,
+            consecutive_probe_failures=status.consecutive_probe_failures,
         )
 
 

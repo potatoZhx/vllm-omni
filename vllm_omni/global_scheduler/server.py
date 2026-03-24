@@ -257,6 +257,17 @@ def _no_routable_instance_response(app: FastAPI, backend: str, request_id: str) 
     )
 
 
+def _select_waitable_candidates_for_backend(app: FastAPI, backend: str) -> list[InstanceSpec]:
+    waitable_process_states = {"running", "starting", "restarting"}
+    lifecycle_snapshot = app.state.instance_lifecycle_manager.snapshot()
+    all_candidates = [
+        status.instance
+        for status in lifecycle_snapshot.values()
+        if status.enabled and not status.draining and status.process_state in waitable_process_states
+    ]
+    return _select_candidates_for_backend(all_candidates, backend=backend)
+
+
 async def _wait_and_reserve_route(
     app: FastAPI,
     *,
@@ -264,13 +275,27 @@ async def _wait_and_reserve_route(
     request_meta: RequestMeta,
     request_id: str,
 ) -> tuple[RouteDecision, int] | JSONResponse:
+    waiting_for_recoverable = False
     while True:
         candidates = _select_candidates_for_backend(
             app.state.instance_lifecycle_manager.get_routable_instances(),
             backend=backend,
         )
         if not candidates:
-            return _no_routable_instance_response(app, backend, request_id)
+            waitable_candidates = _select_waitable_candidates_for_backend(app, backend)
+            if not waitable_candidates:
+                return _no_routable_instance_response(app, backend, request_id)
+            if not waiting_for_recoverable:
+                logger.info(
+                    "route.wait.recoverable request_id=%s backend=%s waitable_instances=%s instances=%s",
+                    request_id,
+                    backend,
+                    [instance.id for instance in waitable_candidates],
+                    _instance_debug_snapshot(app),
+                )
+                waiting_for_recoverable = True
+            await asyncio.sleep(0.5)
+            continue
 
         async with app.state.routing_lock:
             runtime_snapshot = app.state.runtime_state_store.snapshot()
@@ -587,10 +612,12 @@ def create_app(
                 current_config = getattr(app.state, "global_scheduler_config", config)
                 timeout_s = current_config.server.instance_health_check_timeout_s
                 interval_s = current_config.server.instance_health_check_interval_s
+                unhealthy_after_failures = current_config.server.instance_health_check_failures_before_unhealthy
 
                 await asyncio.to_thread(
                     app.state.instance_lifecycle_manager.probe_all,
                     timeout_s,
+                    unhealthy_after_failures,
                 )
                 app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
                 await asyncio.sleep(interval_s)
@@ -724,6 +751,7 @@ def create_app(
         await asyncio.to_thread(
             app.state.instance_lifecycle_manager.probe_all,
             current_config.server.instance_health_check_timeout_s,
+            current_config.server.instance_health_check_failures_before_unhealthy,
         )
         app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
         return JSONResponse(status_code=200, content={"status": "ok"})
