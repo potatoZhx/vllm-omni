@@ -203,6 +203,12 @@ class AsyncOmni(OmniBase):
                     "instance_scheduler_p95_first_starvation_boost": kwargs.get(
                         "instance_scheduler_p95_first_starvation_boost", 0.0
                     ),
+                    "instance_scheduler_slack_panic_threshold": kwargs.get(
+                        "instance_scheduler_slack_panic_threshold", 1.0
+                    ),
+                    "instance_scheduler_slack_swap_overhead_ms": kwargs.get(
+                        "instance_scheduler_slack_swap_overhead_ms", 0.0
+                    ),
                     "instance_runtime_profile_path": kwargs.get("instance_runtime_profile_path", None),
                     "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
                     "diffusion_engine_max_concurrency": kwargs.get("diffusion_engine_max_concurrency", 32),

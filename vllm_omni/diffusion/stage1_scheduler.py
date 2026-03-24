@@ -20,11 +20,15 @@ logger = init_logger(__name__)
 
 _DEADLINE_AWARE_POLICIES = {"slo_first", "slack_age", "slack_cost_age"}
 _P95_FIRST_POLICY = "p95-first"
+_P95_BUCKET_SJF_POLICY = "p95-bucket-sjf"
 _SJF_AGING_POLICY = "sjf_aging"
+_SLACK_HYBRID_POLICY = "slack_hybrid"
 _P95_FIRST_HISTORY_MAXLEN = 128
 _P95_FIRST_MIN_HISTORY_FOR_QUANTILE = 20
 _SLACK_COST_ALPHA = 0.25
 _SJF_AGING_DEFAULT_FACTOR = 1.0
+_SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
+_LEARNED_P95_DEADLINE_POLICIES = _DEADLINE_AWARE_POLICIES | {_P95_FIRST_POLICY, _SLACK_HYBRID_POLICY}
 
 
 @dataclass
@@ -44,6 +48,10 @@ class _WaitingPlan:
     feasible_ids: set[int]
     completion_ts: dict[int, float]
     regret_drop_count: int
+    dynamic_p95_ms: float | None = None
+    learned_p95_ms: float | None = None
+    backlog_adjusted_p95_ms: float | None = None
+    uses_learned_deadline: bool = False
 
 
 class Stage1Scheduler(Scheduler):
@@ -433,7 +441,104 @@ class Stage1Scheduler(Scheduler):
 
         return ordered_queue, metrics_by_sequence
 
-    def _deadline_ts(self, queued_request: _QueuedRequest) -> float:
+    def _p95_bucket_target_ms(self, queued_request: _QueuedRequest) -> tuple[float, float]:
+        estimated_cost_ms = max(self._queued_cost_seconds(queued_request) * 1000.0, 0.0)
+        history_p95_ms = max(
+            self._learned_p95_ms(),
+            float(getattr(self.od_config, "instance_scheduler_p95_first_min_ms", 0.0) or 0.0),
+        )
+        return max(history_p95_ms, estimated_cost_ms), history_p95_ms
+
+    def _build_p95_bucket_sjf_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        bucket_count = max(self._safe_int(getattr(self.od_config, "instance_scheduler_p95_bucket_count", 4), 4), 1)
+        min_window_ms = float(getattr(self.od_config, "instance_scheduler_p95_bucket_min_window_ms", 200.0) or 200.0)
+        starvation_threshold_s = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_p95_bucket_starvation_threshold_s", None)
+        )
+        promote_levels = max(
+            self._safe_int(getattr(self.od_config, "instance_scheduler_p95_bucket_starvation_promote_levels", 1), 1),
+            0,
+        )
+        availability_ts = self._availability_ts(now)
+        history_p95_ms = max(
+            self._learned_p95_ms(),
+            float(getattr(self.od_config, "instance_scheduler_p95_first_min_ms", 0.0) or 0.0),
+        )
+        max_estimated_cost_ms = max(self._queued_cost_seconds(queued) * 1000.0 for queued in waiting_requests)
+        anchor_window_ms = max(history_p95_ms, max_estimated_cost_ms, min_window_ms)
+        bucket_width_ms = max(anchor_window_ms / float(bucket_count), 1e-9)
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        buckets: dict[int, list[_QueuedRequest]] = {bucket_id: [] for bucket_id in range(bucket_count)}
+
+        for queued_request in waiting_requests:
+            estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+            estimated_cost_ms = estimated_cost_s * 1000.0
+            target_p95_ms = max(history_p95_ms, estimated_cost_ms)
+            age_s = self._request_age_seconds(queued_request, now)
+            base_arrival_time = getattr(queued_request.request, "arrival_time", queued_request.enqueue_time)
+            if not isinstance(base_arrival_time, (int, float)):
+                base_arrival_time = queued_request.enqueue_time
+            deadline_ts = float(base_arrival_time) + (target_p95_ms / 1000.0)
+            urgency_ms = (deadline_ts - availability_ts) * 1000.0
+            if urgency_ms <= 0:
+                raw_bucket_id = 0
+            else:
+                raw_bucket_id = min(int(urgency_ms / bucket_width_ms), bucket_count - 1)
+            starvation_promoted = 0
+            effective_bucket_id = raw_bucket_id
+            if starvation_threshold_s is not None and age_s >= starvation_threshold_s and promote_levels > 0:
+                effective_bucket_id = max(raw_bucket_id - promote_levels, 0)
+                starvation_promoted = 1
+            metrics_by_sequence[queued_request.sequence_id] = {
+                "scheduler_policy": _P95_BUCKET_SJF_POLICY,
+                "queue_reorder_count": 1,
+                "estimated_cost_s": estimated_cost_s,
+                "history_p95_ms": history_p95_ms,
+                "target_p95_ms": target_p95_ms,
+                "deadline_ts": deadline_ts,
+                "urgency_ms": urgency_ms,
+                "raw_bucket_id": raw_bucket_id,
+                "effective_bucket_id": effective_bucket_id,
+                "bucket_width_ms": bucket_width_ms,
+                "age_s": age_s,
+                "starvation_promoted": starvation_promoted,
+            }
+            buckets[effective_bucket_id].append(queued_request)
+
+        ordered_queue: list[_QueuedRequest] = []
+        for bucket_id in range(bucket_count):
+            bucket = sorted(
+                buckets[bucket_id],
+                key=lambda queued: (
+                    self._queued_cost_seconds(queued),
+                    queued.enqueue_time,
+                    queued.sequence_id,
+                ),
+            )
+            ordered_queue.extend(bucket)
+
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
+
+        return ordered_queue, metrics_by_sequence
+
+    def _request_base_arrival_time(self, queued_request: _QueuedRequest) -> float:
+        request = queued_request.request
+        base_arrival_time = getattr(request, "arrival_time", None)
+        if not isinstance(base_arrival_time, (int, float)):
+            base_arrival_time = getattr(request, "first_enqueue_time", None)
+        if not isinstance(base_arrival_time, (int, float)):
+            base_arrival_time = queued_request.enqueue_time
+        return float(base_arrival_time)
+
+    def _explicit_deadline_ts(self, queued_request: _QueuedRequest) -> float | None:
         extra_args = getattr(queued_request.request.sampling_params, "extra_args", {}) or {}
         if extra_args.get("deadline_ts") is not None:
             return float(extra_args["deadline_ts"])
@@ -444,33 +549,57 @@ class Stage1Scheduler(Scheduler):
         if slo_target_ms is None:
             slo_target_ms = getattr(self.od_config, "instance_scheduler_slo_target_ms", None)
         if slo_target_ms is None:
-            return inf
+            return None
 
         floor_ms = float(getattr(self.od_config, "instance_scheduler_slo_floor_ms", 0.0) or 0.0)
         effective_target_ms = max(float(slo_target_ms), floor_ms)
-        base_arrival_time = getattr(queued_request.request, "arrival_time", queued_request.enqueue_time)
-        if not isinstance(base_arrival_time, (int, float)):
-            base_arrival_time = queued_request.enqueue_time
-        base_arrival_time = float(base_arrival_time)
-        return base_arrival_time + (effective_target_ms / 1000.0)
+        return self._request_base_arrival_time(queued_request) + (effective_target_ms / 1000.0)
+
+    def _uses_learned_deadline(self, queued_request: _QueuedRequest) -> bool:
+        return self._explicit_deadline_ts(queued_request) is None
+
+    def _deadline_ts(self, queued_request: _QueuedRequest, dynamic_p95_ms: float | None = None) -> float:
+        explicit_deadline_ts = self._explicit_deadline_ts(queued_request)
+        if explicit_deadline_ts is not None:
+            return explicit_deadline_ts
+        if dynamic_p95_ms is None:
+            return inf
+        return self._request_base_arrival_time(queued_request) + (float(dynamic_p95_ms) / 1000.0)
+
+    def _learned_deadline_context(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+        *,
+        include_active: bool = False,
+    ) -> tuple[float | None, float | None, float | None, bool]:
+        needs_learned_deadline = any(self._uses_learned_deadline(queued_request) for queued_request in waiting_requests)
+        if include_active and self._active_request is not None:
+            needs_learned_deadline = needs_learned_deadline or self._uses_learned_deadline(self._active_request)
+        if not needs_learned_deadline:
+            return None, None, None, False
+
+        dynamic_p95_ms, _backlog_s, learned_p95_ms, backlog_adjusted_p95_ms = self._compute_dynamic_p95_ms(
+            waiting_requests, now
+        )
+        return dynamic_p95_ms, learned_p95_ms, backlog_adjusted_p95_ms, True
 
     def _request_age_seconds(self, queued_request: _QueuedRequest, now: float) -> float:
-        request = queued_request.request
-        base_arrival_time = getattr(request, "arrival_time", None)
-        if not isinstance(base_arrival_time, (int, float)):
-            base_arrival_time = getattr(request, "first_enqueue_time", None)
-        if not isinstance(base_arrival_time, (int, float)):
-            base_arrival_time = queued_request.enqueue_time
-        return max(now - float(base_arrival_time), 0.0)
+        return max(now - self._request_base_arrival_time(queued_request), 0.0)
 
     def _best_effort_score(self, queued_request: _QueuedRequest, now: float) -> float:
         aging_factor = float(getattr(self.od_config, "instance_scheduler_aging_factor", 0.0) or 0.0)
         age_s = self._request_age_seconds(queued_request, now)
         return self._queued_cost_seconds(queued_request) / (1.0 + aging_factor * age_s)
 
-    def _on_time_score(self, queued_request: _QueuedRequest, now: float) -> tuple[float, float, float, float, int]:
+    def _on_time_score(
+        self,
+        queued_request: _QueuedRequest,
+        now: float,
+        dynamic_p95_ms: float | None = None,
+    ) -> tuple[float, float, float, float, int]:
         remaining_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
-        slack_s = self._deadline_ts(queued_request) - now - remaining_cost_s
+        slack_s = self._deadline_ts(queued_request, dynamic_p95_ms) - now - remaining_cost_s
         age_s = self._request_age_seconds(queued_request, now)
         aging_factor = float(getattr(self.od_config, "instance_scheduler_aging_factor", 0.0) or 0.0)
         policy = self._policy_name()
@@ -517,9 +646,37 @@ class Stage1Scheduler(Scheduler):
             )
 
         availability_ts = self._availability_ts(now)
+        policy = self._policy_name()
+        dynamic_p95_ms, learned_p95_ms, backlog_adjusted_p95_ms, uses_learned_deadline = self._learned_deadline_context(
+            waiting_requests,
+            now,
+        )
+        if policy in {"slack_age", "slack_cost_age"}:
+            ordered_queue = sorted(
+                waiting_requests,
+                key=lambda queued: self._on_time_score(queued, now, dynamic_p95_ms),
+            )
+            completion_ts: dict[int, float] = {}
+            cursor = availability_ts
+            for queued in ordered_queue:
+                cursor += self._queued_cost_seconds(queued)
+                completion_ts[queued.sequence_id] = cursor
+            return _WaitingPlan(
+                ordered_queue=ordered_queue,
+                on_time_queue=list(ordered_queue),
+                best_effort_queue=[],
+                feasible_ids={queued.sequence_id for queued in ordered_queue},
+                completion_ts=completion_ts,
+                regret_drop_count=0,
+                dynamic_p95_ms=dynamic_p95_ms,
+                learned_p95_ms=learned_p95_ms,
+                backlog_adjusted_p95_ms=backlog_adjusted_p95_ms,
+                uses_learned_deadline=uses_learned_deadline,
+            )
+
         deadline_sorted = sorted(
             waiting_requests,
-            key=lambda queued: (self._deadline_ts(queued), queued.enqueue_time, queued.sequence_id),
+            key=lambda queued: (self._deadline_ts(queued, dynamic_p95_ms), queued.enqueue_time, queued.sequence_id),
         )
 
         prefix: list[_QueuedRequest] = []
@@ -528,7 +685,7 @@ class Stage1Scheduler(Scheduler):
         for queued in deadline_sorted:
             prefix.append(queued)
             work += self._queued_cost_seconds(queued)
-            if availability_ts + work > self._deadline_ts(queued):
+            if availability_ts + work > self._deadline_ts(queued, dynamic_p95_ms):
                 longest = max(
                     prefix,
                     key=lambda candidate: (self._queued_cost_seconds(candidate), candidate.sequence_id),
@@ -540,7 +697,7 @@ class Stage1Scheduler(Scheduler):
         feasible_ids = {queued.sequence_id for queued in prefix}
         on_time_queue = sorted(
             prefix,
-            key=lambda queued: self._on_time_score(queued, now),
+            key=lambda queued: self._on_time_score(queued, now, dynamic_p95_ms),
         )
         best_effort_queue = [queued for queued in waiting_requests if queued.sequence_id not in feasible_ids]
         best_effort_queue = sorted(
@@ -562,6 +719,10 @@ class Stage1Scheduler(Scheduler):
             feasible_ids=feasible_ids,
             completion_ts=completion_ts,
             regret_drop_count=regret_drop_count,
+            dynamic_p95_ms=dynamic_p95_ms,
+            learned_p95_ms=learned_p95_ms,
+            backlog_adjusted_p95_ms=backlog_adjusted_p95_ms,
+            uses_learned_deadline=uses_learned_deadline,
         )
 
     def _build_sjf_queue(self, waiting_requests: list[_QueuedRequest], now: float) -> list[_QueuedRequest]:
@@ -580,6 +741,138 @@ class Stage1Scheduler(Scheduler):
         if aging_factor > 0.0:
             return aging_factor
         return _SJF_AGING_DEFAULT_FACTOR
+
+    def _slack_hybrid_panic_threshold(self) -> float:
+        threshold = self._safe_optional_float(getattr(self.od_config, "instance_scheduler_slack_panic_threshold", None))
+        if threshold is None:
+            return _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD
+        return max(float(threshold), 0.0)
+
+    def _slack_hybrid_swap_overhead_seconds(self) -> float:
+        swap_overhead_ms = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_slack_swap_overhead_ms", None)
+        )
+        if swap_overhead_ms is None:
+            return 0.0
+        return max(float(swap_overhead_ms), 0.0) / 1000.0
+
+    def _slack_hybrid_ratio(
+        self,
+        *,
+        deadline_ts: float,
+        now: float,
+        remaining_cost_s: float,
+        swap_overhead_s: float,
+    ) -> float:
+        if deadline_ts == inf:
+            return inf
+        return (deadline_ts - now - swap_overhead_s) / max(remaining_cost_s, 1e-9)
+
+    def _active_slack_hybrid_ratio(
+        self,
+        now: float,
+        swap_overhead_s: float,
+        dynamic_p95_ms: float | None = None,
+    ) -> float:
+        if self._active_request is None:
+            return inf
+        remaining_cost_s = max(self._active_total_remaining_cost_seconds(now), 1e-9)
+        deadline_ts = self._deadline_ts(self._active_request, dynamic_p95_ms)
+        return self._slack_hybrid_ratio(
+            deadline_ts=deadline_ts,
+            now=now,
+            remaining_cost_s=remaining_cost_s,
+            swap_overhead_s=swap_overhead_s,
+        )
+
+    def _build_slack_hybrid_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        aging_factor = float(getattr(self.od_config, "instance_scheduler_aging_factor", 0.0) or 0.0)
+        panic_threshold = self._slack_hybrid_panic_threshold()
+        swap_overhead_s = self._slack_hybrid_swap_overhead_seconds()
+        dynamic_p95_ms, learned_p95_ms, backlog_adjusted_p95_ms, uses_learned_deadline = self._learned_deadline_context(
+            waiting_requests,
+            now,
+            include_active=True,
+        )
+        active_slack_ratio = self._active_slack_hybrid_ratio(now, swap_overhead_s, dynamic_p95_ms)
+        panic_mode = active_slack_ratio < panic_threshold
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+
+        for queued_request in waiting_requests:
+            estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+            age_s = self._request_age_seconds(queued_request, now)
+            deadline_ts = self._deadline_ts(queued_request, dynamic_p95_ms)
+            slack_ratio = self._slack_hybrid_ratio(
+                deadline_ts=deadline_ts,
+                now=now,
+                remaining_cost_s=estimated_cost_s,
+                swap_overhead_s=swap_overhead_s,
+            )
+            throughput_priority = estimated_cost_s - (aging_factor * age_s)
+            is_urgent = int(slack_ratio < panic_threshold)
+            panic_mode = panic_mode or bool(is_urgent)
+            metrics_by_sequence[queued_request.sequence_id] = {
+                "scheduler_policy": _SLACK_HYBRID_POLICY,
+                "queue_reorder_count": 1,
+                "estimated_cost_s": estimated_cost_s,
+                "age_s": age_s,
+                "aging_factor": aging_factor,
+                "deadline_ts": deadline_ts,
+                "slack_ratio": slack_ratio,
+                "throughput_priority": throughput_priority,
+                "panic_threshold": panic_threshold,
+                "swap_overhead_ms": swap_overhead_s * 1000.0,
+                "active_slack_ratio": active_slack_ratio,
+                "is_urgent": is_urgent,
+                "dispatch_group": "single_queue",
+                "learned_deadline_fallback": int(uses_learned_deadline and self._uses_learned_deadline(queued_request)),
+                "dynamic_p95_ms": dynamic_p95_ms,
+                "learned_p95_ms": learned_p95_ms,
+                "backlog_adjusted_p95_ms": backlog_adjusted_p95_ms,
+            }
+
+        if panic_mode:
+            ordered_queue = sorted(
+                waiting_requests,
+                key=lambda queued: (
+                    0 if metrics_by_sequence[queued.sequence_id]["is_urgent"] else 1,
+                    float(metrics_by_sequence[queued.sequence_id]["deadline_ts"]),
+                    float(metrics_by_sequence[queued.sequence_id]["slack_ratio"]),
+                    float(metrics_by_sequence[queued.sequence_id]["estimated_cost_s"]),
+                    queued.enqueue_time,
+                    queued.sequence_id,
+                ),
+            )
+            mode = "panic_edf"
+        else:
+            ordered_queue = sorted(
+                waiting_requests,
+                key=lambda queued: (
+                    float(metrics_by_sequence[queued.sequence_id]["throughput_priority"]),
+                    float(metrics_by_sequence[queued.sequence_id]["estimated_cost_s"]),
+                    queued.enqueue_time,
+                    queued.sequence_id,
+                ),
+            )
+            mode = "throughput_srpt"
+
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics_by_sequence[queued_request.sequence_id]["hybrid_mode"] = mode
+            metrics_by_sequence[queued_request.sequence_id]["priority_score"] = (
+                float(metrics_by_sequence[queued_request.sequence_id]["deadline_ts"])
+                if panic_mode
+                else float(metrics_by_sequence[queued_request.sequence_id]["throughput_priority"])
+            )
+            metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
+
+        return ordered_queue, metrics_by_sequence
 
     def _build_sjf_aging_queue(
         self,
@@ -683,6 +976,48 @@ class Stage1Scheduler(Scheduler):
             )
             return
 
+        if policy == _P95_BUCKET_SJF_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_p95_bucket_sjf_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s history_p95_ms=%.2f target_p95_ms=%.2f urgency_ms=%.2f bucket=%s queue_rank=%s estimated_cost_s=%.4f",
+                self._request_label(new_request.request),
+                policy,
+                float(request_metrics.get("history_p95_ms", 0.0) or 0.0),
+                float(request_metrics.get("target_p95_ms", 0.0) or 0.0),
+                float(request_metrics.get("urgency_ms", 0.0) or 0.0),
+                request_metrics.get("effective_bucket_id"),
+                request_metrics.get("queue_rank"),
+                float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
+            )
+            return
+
+        if policy == _SLACK_HYBRID_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_slack_hybrid_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s mode=%s slack_ratio=%.4f priority_score=%.4f queue_rank=%s estimated_cost_s=%.4f urgent=%s",
+                self._request_label(new_request.request),
+                policy,
+                request_metrics.get("hybrid_mode"),
+                float(request_metrics.get("slack_ratio", 0.0) or 0.0),
+                float(request_metrics.get("priority_score", 0.0) or 0.0),
+                request_metrics.get("queue_rank"),
+                float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
+                request_metrics.get("is_urgent"),
+            )
+            return
+
         if policy not in _DEADLINE_AWARE_POLICIES:
             return
 
@@ -695,12 +1030,13 @@ class Stage1Scheduler(Scheduler):
         attain_after = len(after_plan.feasible_ids)
         damage_count = len(before_plan.feasible_ids - after_plan.feasible_ids)
         self_hit = 1 if new_request.sequence_id in after_plan.feasible_ids else 0
-        deadline_ts = self._deadline_ts(new_request)
+        deadline_ts = self._deadline_ts(new_request, after_plan.dynamic_p95_ms)
         completion_ts = after_plan.completion_ts.get(new_request.sequence_id)
         slack_ms = None
         if completion_ts is not None and deadline_ts != inf:
             slack_ms = (deadline_ts - completion_ts) * 1000.0
 
+        is_single_queue_slack = policy in {"slack_age", "slack_cost_age"}
         new_request.schedule_metrics.update(
             {
                 "scheduler_policy": policy,
@@ -708,14 +1044,20 @@ class Stage1Scheduler(Scheduler):
                 "attain_after": attain_after,
                 "self_hit": self_hit,
                 "damage_count": damage_count,
-                "on_time_set_size": len(after_plan.on_time_queue),
-                "best_effort_set_size": len(after_plan.best_effort_queue),
-                "tail_set_size": len(after_plan.best_effort_queue),
+                "on_time_set_size": len(after_plan.ordered_queue) if is_single_queue_slack else len(after_plan.on_time_queue),
+                "best_effort_set_size": 0 if is_single_queue_slack else len(after_plan.best_effort_queue),
+                "tail_set_size": 0 if is_single_queue_slack else len(after_plan.best_effort_queue),
                 "regret_drop_count": after_plan.regret_drop_count,
                 "queue_reorder_count": 1,
                 "deadline_slack_ms": slack_ms,
-                "dispatch_group": "on_time" if new_request.sequence_id in after_plan.feasible_ids else "best_effort",
+                "dispatch_group": "single_queue"
+                if is_single_queue_slack
+                else ("on_time" if new_request.sequence_id in after_plan.feasible_ids else "best_effort"),
                 "estimated_cost_s": self._queued_cost_seconds(new_request),
+                "learned_deadline_fallback": int(after_plan.uses_learned_deadline and self._uses_learned_deadline(new_request)),
+                "dynamic_p95_ms": after_plan.dynamic_p95_ms,
+                "learned_p95_ms": after_plan.learned_p95_ms,
+                "backlog_adjusted_p95_ms": after_plan.backlog_adjusted_p95_ms,
             }
         )
         request_summary = self._request_summary(new_request.request)
@@ -852,7 +1194,7 @@ class Stage1Scheduler(Scheduler):
             schedule_metrics={"scheduler_policy": self._policy_name()},
         )
         self._waiting_queue.append(queued_request)
-        if self._policy_name() == _P95_FIRST_POLICY:
+        if self._policy_name() in {_P95_FIRST_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
             self._record_p95_first_cost_observation(queued_request)
         self._maybe_reorder_waiting_queue(queued_request, enqueue_time)
         self._log_request_event(
@@ -1092,7 +1434,7 @@ class Stage1Scheduler(Scheduler):
             self.finish_request(request)
             setattr(request, "completion_time", time.monotonic())
             self._refresh_output_metrics(output, request, queue_len=len(self._waiting_queue))
-            if self._policy_name() == _P95_FIRST_POLICY:
+            if self._policy_name() in {_P95_FIRST_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
                 self._record_p95_first_latency_ms(self._safe_optional_float(output.metrics.get("scheduler_latency_ms")))
             self._log_request_event(
                 "REQUEST_COMPLETED",

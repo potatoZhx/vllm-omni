@@ -264,11 +264,17 @@ class DiffusionEngine:
 
     def _estimate_remaining_runtime_s(self, request: OmniDiffusionRequest) -> float:
         sampling_params = request.sampling_params
+        extra_args = getattr(sampling_params, "extra_args", {}) or {}
         width = int(getattr(sampling_params, "width", None) or getattr(sampling_params, "resolution", 1024) or 1024)
         height = int(getattr(sampling_params, "height", None) or getattr(sampling_params, "resolution", 1024) or 1024)
         total_steps = max(int(getattr(sampling_params, "num_inference_steps", 1) or 1), 1)
         executed_steps = max(int(getattr(request, "executed_steps", 0) or 0), 0)
         remaining_steps = max(total_steps - executed_steps, 1)
+        estimated_cost_s = extra_args.get("estimated_cost_s")
+        if estimated_cost_s is not None:
+            total_cost_s = max(float(estimated_cost_s), 0.0)
+            return max(total_cost_s * (float(remaining_steps) / float(total_steps)), 0.0)
+
         num_frames = max(int(getattr(sampling_params, "num_frames", 1) or 1), 1)
         task_type = "video" if num_frames > 1 else "image"
         fallback_s = max(float(remaining_steps * num_frames), 0.001)

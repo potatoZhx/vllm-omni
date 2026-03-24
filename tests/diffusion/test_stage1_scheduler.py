@@ -51,6 +51,8 @@ def _make_stage1_scheduler(
     aging_factor: float = 0.0,
     profile_path: str | None = None,
     profile_name: str | None = None,
+    slack_panic_threshold: float = 1.0,
+    slack_swap_overhead_ms: float = 0.0,
 ):
     sched = Stage1Scheduler()
     sched.num_workers = 1
@@ -68,6 +70,12 @@ def _make_stage1_scheduler(
         instance_scheduler_p95_first_age_bias=0.0,
         instance_scheduler_p95_first_starvation_threshold_s=None,
         instance_scheduler_p95_first_starvation_boost=0.0,
+        instance_scheduler_p95_bucket_count=4,
+        instance_scheduler_p95_bucket_min_window_ms=200.0,
+        instance_scheduler_p95_bucket_starvation_threshold_s=None,
+        instance_scheduler_p95_bucket_starvation_promote_levels=1,
+        instance_scheduler_slack_panic_threshold=slack_panic_threshold,
+        instance_scheduler_slack_swap_overhead_ms=slack_swap_overhead_ms,
         instance_runtime_profile_path=profile_path,
         instance_runtime_profile_name=profile_name,
     )
@@ -445,7 +453,34 @@ def test_stage1_scheduler_slack_age_prefers_older_request_when_slack_is_tied():
 
     plan = sched._build_waiting_plan(waiting, now=20.0)  # noqa: SLF001
 
+    assert [queued.request.request_ids[0] for queued in plan.ordered_queue] == ["older", "newer"]
     assert [queued.request.request_ids[0] for queued in plan.on_time_queue] == ["older", "newer"]
+    assert plan.best_effort_queue == []
+
+
+@pytest.mark.parametrize("policy", ["slack_age", "slack_cost_age"])
+def test_stage1_scheduler_slack_policies_use_single_queue_ranking(policy: str):
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy=policy, slo_target_ms=5000.0, aging_factor=1.0)
+    late_old = _mock_request("late-old", num_inference_steps=1, extra_args={"deadline_ts": 18.0, "estimated_cost_s": 1.0})
+    on_time_new = _mock_request(
+        "on-time-new",
+        num_inference_steps=1,
+        extra_args={"deadline_ts": 30.0, "estimated_cost_s": 1.0},
+    )
+    late_old.arrival_time = 10.0
+    on_time_new.arrival_time = 20.0
+
+    with sched._queue_cv:  # noqa: SLF001
+        first = sched._enqueue_request_locked(late_old)  # noqa: SLF001
+        second = sched._enqueue_request_locked(on_time_new)  # noqa: SLF001
+        waiting = list(sched._waiting_queue)  # noqa: SLF001
+
+    plan = sched._build_waiting_plan(waiting, now=20.0)  # noqa: SLF001
+
+    assert [queued.request.request_ids[0] for queued in plan.ordered_queue] == ["late-old", "on-time-new"]
+    assert plan.best_effort_queue == []
+    assert plan.feasible_ids == {first.sequence_id, second.sequence_id}
+    assert second.schedule_metrics["dispatch_group"] == "single_queue"
 
 
 def test_stage1_scheduler_slack_cost_age_penalizes_large_request_when_slack_and_age_match():
@@ -462,7 +497,115 @@ def test_stage1_scheduler_slack_cost_age_penalizes_large_request_when_slack_and_
 
     plan = sched._build_waiting_plan(waiting, now=10.0)  # noqa: SLF001
 
-    assert [queued.request.request_ids[0] for queued in plan.on_time_queue] == ["small", "large"]
+    assert [queued.request.request_ids[0] for queued in plan.ordered_queue] == ["small", "large"]
+    assert plan.best_effort_queue == []
+
+
+def test_stage1_scheduler_slack_hybrid_uses_throughput_srpt_with_aging_in_safe_mode():
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="slack_hybrid",
+        aging_factor=1.0,
+        slack_panic_threshold=1.0,
+    )
+    now = time.monotonic()
+    older = _mock_request("older", num_inference_steps=10, extra_args={"deadline_ts": now + 40.0, "estimated_cost_s": 10.0})
+    newer = _mock_request("newer", num_inference_steps=3, extra_args={"deadline_ts": now + 5.0, "estimated_cost_s": 3.0})
+    older.arrival_time = now - 20.0
+    newer.arrival_time = now
+
+    with sched._queue_cv:  # noqa: SLF001
+        sched._enqueue_request_locked(older)  # noqa: SLF001
+        sched._enqueue_request_locked(newer)  # noqa: SLF001
+        ordered = list(sched._waiting_queue)  # noqa: SLF001
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["older", "newer"]
+    assert ordered[0].schedule_metrics["hybrid_mode"] == "throughput_srpt"
+    assert ordered[0].schedule_metrics["throughput_priority"] < ordered[1].schedule_metrics["throughput_priority"]
+
+
+def test_stage1_scheduler_slack_hybrid_switches_to_panic_edf_for_urgent_request():
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="slack_hybrid",
+        aging_factor=0.0,
+        slack_panic_threshold=1.0,
+    )
+    now = time.monotonic()
+    urgent = _mock_request("urgent", num_inference_steps=2, extra_args={"deadline_ts": now + 1.5, "estimated_cost_s": 2.0})
+    short_safe = _mock_request("short-safe", num_inference_steps=1, extra_args={"deadline_ts": now + 10.0, "estimated_cost_s": 1.0})
+    urgent.arrival_time = now
+    short_safe.arrival_time = now
+
+    with sched._queue_cv:  # noqa: SLF001
+        sched._enqueue_request_locked(short_safe)  # noqa: SLF001
+        sched._enqueue_request_locked(urgent)  # noqa: SLF001
+        ordered = list(sched._waiting_queue)  # noqa: SLF001
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["urgent", "short-safe"]
+    assert ordered[0].schedule_metrics["hybrid_mode"] == "panic_edf"
+    assert ordered[0].schedule_metrics["is_urgent"] == 1
+
+
+def test_stage1_scheduler_slack_hybrid_adapts_to_step_chunk_requeue():
+    sched, req_q, res_q = _make_stage1_scheduler(
+        policy="slack_hybrid",
+        aging_factor=0.0,
+        slack_panic_threshold=1.0,
+    )
+    now = time.monotonic()
+    req1 = _mock_request("req-1", num_inference_steps=20, extra_args={"deadline_ts": now + 100.0, "estimated_cost_s": 20.0})
+    req2 = _mock_request("req-2", num_inference_steps=2, extra_args={"deadline_ts": now + 2.0, "estimated_cost_s": 2.0})
+    req1.arrival_time = now - 10.0
+    req2.arrival_time = now
+    dispatch_order: list[str] = []
+    req1_requeued = threading.Event()
+    allow_req1_resume = threading.Event()
+
+    def _worker():
+        first = req_q.get(timeout=5)
+        dispatch_order.append(first["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=None, finished=False, request_id="req-1", metrics={"executed_steps": 10}))
+
+        second = req_q.get(timeout=5)
+        dispatch_order.append(second["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True, request_id="req-2", metrics={"executed_steps": 2}))
+
+        third = req_q.get(timeout=5)
+        dispatch_order.append(third["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True, request_id="req-1", metrics={"executed_steps": 20}))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    results: dict[str, DiffusionOutput] = {}
+
+    def _run_req1():
+        first_output = sched.add_req(req1)
+        results["req-1-first"] = first_output
+        req1_requeued.set()
+        allow_req1_resume.wait(timeout=5)
+        results["req-1-second"] = sched.add_req(req1)
+
+    req1_thread = threading.Thread(target=_run_req1, daemon=True)
+    req1_thread.start()
+    assert req1_requeued.wait(timeout=5)
+
+    req2_thread = threading.Thread(
+        target=lambda: results.setdefault("req-2", sched.add_req(req2)),
+        daemon=True,
+    )
+    req2_thread.start()
+
+    time.sleep(0.1)
+    allow_req1_resume.set()
+
+    req1_thread.join(5)
+    req2_thread.join(5)
+    worker.join(5)
+
+    assert dispatch_order == ["req-1", "req-2", "req-1"]
+    assert results["req-1-first"].finished is False
+    assert results["req-2"].metrics["scheduler_policy"] == "slack_hybrid"
+    assert results["req-2"].metrics["hybrid_mode"] == "panic_edf"
 
 
 def test_stage1_scheduler_sjf_uses_remaining_steps():
@@ -566,6 +709,50 @@ def test_stage1_scheduler_deadline_uses_request_arrival_time():
         queued = sched._enqueue_request_locked(req)
 
     assert sched._deadline_ts(queued) == pytest.approx(102.0)
+
+
+@pytest.mark.parametrize("policy", ["slo_first", "slack_age", "slack_cost_age"])
+def test_stage1_scheduler_deadline_aware_policies_fallback_to_learned_p95_without_explicit_deadline(policy: str):
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy=policy, slo_target_ms=None)
+    for _ in range(20):
+        sched._record_p95_first_latency_ms(1500.0)  # noqa: SLF001
+
+    req = _mock_request("req-learned-deadline", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    req.arrival_time = 100.0
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(req)
+        waiting = list(sched._waiting_queue)
+
+    plan = sched._build_waiting_plan(waiting, now=101.0)  # noqa: SLF001
+
+    assert plan.uses_learned_deadline is True
+    assert plan.dynamic_p95_ms == pytest.approx(1500.0)
+    assert sched._deadline_ts(queued, plan.dynamic_p95_ms) == pytest.approx(101.5)  # noqa: SLF001
+    assert queued.schedule_metrics["learned_deadline_fallback"] == 1
+    assert queued.schedule_metrics["dynamic_p95_ms"] == pytest.approx(1500.0)
+
+
+def test_stage1_scheduler_slack_hybrid_fallback_to_learned_p95_without_explicit_deadline():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="slack_hybrid", slo_target_ms=None, aging_factor=0.0)
+    for _ in range(20):
+        sched._record_p95_first_latency_ms(2000.0)  # noqa: SLF001
+
+    older = _mock_request("older", num_inference_steps=3, extra_args={"estimated_cost_s": 3.0})
+    newer = _mock_request("newer", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    now = time.monotonic()
+    older.arrival_time = now - 1.0
+    newer.arrival_time = now
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(older)
+        sched._enqueue_request_locked(newer)
+        ordered = list(sched._waiting_queue)
+
+    assert ordered[0].schedule_metrics["dynamic_p95_ms"] >= 2000.0
+    assert ordered[0].schedule_metrics["learned_p95_ms"] == pytest.approx(2000.0)
+    assert ordered[0].schedule_metrics["learned_deadline_fallback"] == 1
+    assert ordered[0].schedule_metrics["hybrid_mode"] in {"panic_edf", "throughput_srpt"}
 
 
 def test_stage1_scheduler_sjf_reorders_waiting_queue():
@@ -1107,3 +1294,79 @@ def test_stage1_scheduler_p95_first_learned_p95_uses_nearest_rank_for_larger_his
     sched._p95_first_latency_history_ms.extend(float(i * 100) for i in range(1, 21))
 
     assert sched._learned_p95_ms() == pytest.approx(1900.0)
+
+
+def test_stage1_scheduler_p95_bucket_sjf_target_p95_uses_max_of_history_and_cost():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf")
+    sched._p95_first_latency_history_ms.extend([1200.0, 1600.0, 1400.0])
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(
+            _mock_request("req", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+        )
+        ordered, metrics_by_sequence = sched._build_p95_bucket_sjf_queue(list(sched._waiting_queue), now=queued.enqueue_time)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["req"]
+    metrics = metrics_by_sequence[queued.sequence_id]
+    assert metrics["history_p95_ms"] == pytest.approx(1600.0)
+    assert metrics["target_p95_ms"] == pytest.approx(1600.0)
+
+
+def test_stage1_scheduler_p95_bucket_sjf_reorders_by_bucket_then_sjf():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf")
+    sched._p95_first_latency_history_ms.extend([10000.0])
+
+    urgent_long = _mock_request("urgent-long", num_inference_steps=8, extra_args={"estimated_cost_s": 8.0})
+    urgent_short = _mock_request("urgent-short", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    relaxed = _mock_request("relaxed", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    urgent_long.arrival_time = 0.0
+    urgent_short.arrival_time = 0.0
+    relaxed.arrival_time = 8.0
+
+    with sched._queue_cv:
+        q1 = sched._enqueue_request_locked(urgent_long)
+        q2 = sched._enqueue_request_locked(urgent_short)
+        q3 = sched._enqueue_request_locked(relaxed)
+        ordered, metrics_by_sequence = sched._build_p95_bucket_sjf_queue([q1, q2, q3], now=9.0)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["urgent-short", "urgent-long", "relaxed"]
+    assert metrics_by_sequence[q1.sequence_id]["effective_bucket_id"] == metrics_by_sequence[q2.sequence_id]["effective_bucket_id"]
+    assert metrics_by_sequence[q3.sequence_id]["effective_bucket_id"] > metrics_by_sequence[q2.sequence_id]["effective_bucket_id"]
+
+
+def test_stage1_scheduler_p95_bucket_sjf_negative_urgency_falls_into_bucket_zero():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf")
+    sched._p95_first_latency_history_ms.extend([1000.0])
+
+    req = _mock_request("late", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    req.arrival_time = 0.0
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(req)
+        ordered, metrics_by_sequence = sched._build_p95_bucket_sjf_queue([queued], now=5.0)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["late"]
+    assert metrics_by_sequence[queued.sequence_id]["raw_bucket_id"] == 0
+    assert metrics_by_sequence[queued.sequence_id]["effective_bucket_id"] == 0
+
+
+def test_stage1_scheduler_p95_bucket_sjf_starvation_promotion_moves_request_forward():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf")
+    sched.od_config.instance_scheduler_p95_bucket_count = 4
+    sched.od_config.instance_scheduler_p95_bucket_min_window_ms = 1000.0
+    sched.od_config.instance_scheduler_p95_bucket_starvation_threshold_s = 5.0
+    sched.od_config.instance_scheduler_p95_bucket_starvation_promote_levels = 2
+    sched._p95_first_latency_history_ms.extend([10000.0])
+
+    old_req = _mock_request("old", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    old_req.arrival_time = 0.0
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(old_req)
+        ordered, metrics_by_sequence = sched._build_p95_bucket_sjf_queue([queued], now=7.0)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["old"]
+    metrics = metrics_by_sequence[queued.sequence_id]
+    assert metrics["starvation_promoted"] == 1
+    assert metrics["effective_bucket_id"] == 0
+    assert metrics["raw_bucket_id"] > metrics["effective_bucket_id"]

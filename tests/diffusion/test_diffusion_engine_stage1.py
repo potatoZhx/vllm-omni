@@ -14,13 +14,14 @@ from vllm_omni.diffusion.runtime_profile import RuntimeProfileEstimator, Runtime
 pytestmark = [pytest.mark.diffusion, pytest.mark.cpu]
 
 
-def _make_request():
+def _make_request(*, extra_args=None):
     return SimpleNamespace(
         prompts=["prompt"],
         request_ids=["req-1"],
         sampling_params=SimpleNamespace(
             num_outputs_per_prompt=1,
             resolution=1024,
+            extra_args=extra_args or {},
         ),
     )
 
@@ -275,3 +276,42 @@ def test_plan_chunk_budget_falls_back_to_global_budget_when_modality_budget_miss
     request.executed_steps = 0
 
     assert engine._plan_chunk_budget(request) == 4
+
+def test_estimate_remaining_runtime_s_prefers_request_estimated_cost():
+    engine = object.__new__(DiffusionEngine)
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="image",
+                width=1024,
+                height=1024,
+                num_frames=1,
+                steps=25,
+                latency_s=25.0,
+            )
+        ]
+    )
+    request = _make_request(extra_args={"estimated_cost_s": 11.561593586113304})
+    request.sampling_params.width = 1024
+    request.sampling_params.height = 1024
+    request.sampling_params.num_inference_steps = 25
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 0
+
+    assert engine._estimate_remaining_runtime_s(request) == pytest.approx(11.561593586113304)
+
+
+def test_estimate_remaining_runtime_s_scales_request_estimated_cost_by_remaining_steps():
+    engine = object.__new__(DiffusionEngine)
+    engine.runtime_estimator = RuntimeProfileEstimator()
+    request = _make_request(extra_args={"estimated_cost_s": 11.561593586113304})
+    request.sampling_params.width = 1024
+    request.sampling_params.height = 1024
+    request.sampling_params.num_inference_steps = 25
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 12
+
+    assert engine._estimate_remaining_runtime_s(request) == pytest.approx(
+        11.561593586113304 * (13.0 / 25.0)
+    )
+

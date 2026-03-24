@@ -258,14 +258,16 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "sjf_aging", "slo_first", "p95-first", "slack_age", "slack_cost_age"],
+            choices=["fcfs", "sjf", "sjf_aging", "slo_first", "p95-first", "p95-bucket-sjf", "slack_age", "slack_cost_age", "slack_hybrid"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'sjf_aging' adds wait-time aging "
             "on top of SJF to prevent starvation and works with chunk requeue, 'slo_first' keeps "
             "the current deadline-aware on-time/tail ordering, 'p95-first' uses dynamic p95 "
-            "single-queue ranking with starvation protection, 'slack_age' prioritizes tight/old "
-            "requests, and 'slack_cost_age' adds a bounded remaining-cost penalty on top of "
-            "slack+aging.",
+            "single-queue ranking with starvation protection, 'p95-bucket-sjf' derives a local "
+            "target p95 from request cost and history, then orders by deadline buckets with "
+            "intra-bucket SJF, 'slack_age' prioritizes tight/old requests, 'slack_cost_age' adds "
+            "a bounded remaining-cost penalty on top of slack+aging, and 'slack_hybrid' switches "
+            "between panic EDF and throughput SRPT+aging based on the slack ratio threshold.",
         )
         omni_config_group.add_argument(
             "--instance-scheduler-slo-target-ms",
@@ -333,6 +335,42 @@ class OmniServeCommand(CLISubcommand):
             type=float,
             default=0.0,
             help="Fixed priority boost applied by 'p95-first' after starvation threshold is exceeded.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-bucket-count",
+            type=int,
+            default=4,
+            help="Number of urgency buckets used by 'p95-bucket-sjf'.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-bucket-min-window-ms",
+            type=float,
+            default=200.0,
+            help="Minimum urgency window in milliseconds used to derive bucket width for 'p95-bucket-sjf'.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-bucket-starvation-threshold-s",
+            type=float,
+            default=None,
+            help="Wait-time threshold in seconds after which 'p95-bucket-sjf' promotes a request into an earlier urgency bucket.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-bucket-starvation-promote-levels",
+            type=int,
+            default=1,
+            help="How many urgency buckets 'p95-bucket-sjf' moves a starved request forward.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-slack-panic-threshold",
+            type=float,
+            default=1.0,
+            help="Dimensionless slack-ratio panic threshold used by 'slack_hybrid'. When any task falls below it, the scheduler switches to panic EDF mode.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-slack-swap-overhead-ms",
+            type=float,
+            default=0.0,
+            help="Context-switch overhead in milliseconds subtracted from the slack numerator in 'slack_hybrid'.",
         )
         omni_config_group.add_argument(
             "--instance-runtime-profile-path",
