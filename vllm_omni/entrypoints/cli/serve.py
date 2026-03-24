@@ -258,10 +258,12 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "sjf_aging", "slo_first", "p95-first", "p95-bucket-sjf", "slack_age", "slack_cost_age", "slack_hybrid"],
+            choices=["fcfs", "sjf", "sjf_aging", "size_bucket_sjf_aging", "slo_first", "p95-first", "p95-bucket-sjf", "slack_age", "slack_cost_age", "slack_hybrid"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'sjf_aging' adds wait-time aging "
-            "on top of SJF to prevent starvation and works with chunk requeue, 'slo_first' keeps "
+            "on top of SJF to prevent starvation and works with chunk requeue, 'size_bucket_sjf_aging' "
+            "groups requests into fixed resolution buckets and applies SJF+aging within each bucket, "
+            "'slo_first' keeps "
             "the current deadline-aware on-time/tail ordering, 'p95-first' uses dynamic p95 "
             "single-queue ranking with starvation protection, 'p95-bucket-sjf' derives a local "
             "target p95 from request cost and history, then orders by deadline buckets with "

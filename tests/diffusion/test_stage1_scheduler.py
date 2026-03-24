@@ -700,6 +700,53 @@ def test_stage1_scheduler_sjf_aging_adapts_to_step_chunk_requeue():
     assert results["req-1-second"].metrics["aged_cost_s"] < results["req-2"].metrics["aged_cost_s"]
 
 
+def test_stage1_scheduler_size_bucket_sjf_aging_prefers_smaller_bucket_before_larger_bucket():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="size_bucket_sjf_aging")
+    smaller = _mock_request("smaller", resolution=768, num_inference_steps=20, extra_args={"estimated_cost_s": 3.0})
+    larger = _mock_request("larger", resolution=1536, num_inference_steps=10, extra_args={"estimated_cost_s": 1.0})
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(larger)
+        sched._enqueue_request_locked(smaller)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["smaller", "larger"]
+    assert ordered[0].schedule_metrics["raw_size_bucket_id"] < ordered[1].schedule_metrics["raw_size_bucket_id"]
+
+
+def test_stage1_scheduler_size_bucket_sjf_aging_uses_sjf_within_same_bucket():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="size_bucket_sjf_aging")
+    longer = _mock_request("longer", resolution=1024, num_inference_steps=25, extra_args={"estimated_cost_s": 4.0})
+    shorter = _mock_request("shorter", resolution=1024, num_inference_steps=25, extra_args={"estimated_cost_s": 1.0})
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(longer)
+        sched._enqueue_request_locked(shorter)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["shorter", "longer"]
+    assert ordered[0].schedule_metrics["raw_size_bucket_id"] == ordered[1].schedule_metrics["raw_size_bucket_id"]
+    assert ordered[0].schedule_metrics["aged_cost_s"] < ordered[1].schedule_metrics["aged_cost_s"]
+
+
+def test_stage1_scheduler_size_bucket_sjf_aging_promotes_old_large_request_across_buckets():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="size_bucket_sjf_aging", aging_factor=1.0)
+    now = time.monotonic()
+    old_large = _mock_request("old-large", resolution=1536, num_inference_steps=35, extra_args={"estimated_cost_s": 8.0})
+    new_medium = _mock_request("new-medium", resolution=768, num_inference_steps=20, extra_args={"estimated_cost_s": 1.0})
+    old_large.arrival_time = now - 25.0
+    new_medium.arrival_time = now
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_large)
+        sched._enqueue_request_locked(new_medium)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["old-large", "new-medium"]
+    assert ordered[0].schedule_metrics["raw_size_bucket_id"] > ordered[0].schedule_metrics["effective_size_bucket_id"]
+    assert ordered[0].schedule_metrics["bucket_promotion_levels"] >= 2
+
+
 def test_stage1_scheduler_deadline_uses_request_arrival_time():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="slo_first", slo_target_ms=5000.0)
     req = _mock_request("req-deadline", num_inference_steps=10, extra_args={"slo_ms": 2000.0})

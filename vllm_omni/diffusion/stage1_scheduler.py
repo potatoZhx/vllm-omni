@@ -22,11 +22,14 @@ _DEADLINE_AWARE_POLICIES = {"slo_first", "slack_age", "slack_cost_age"}
 _P95_FIRST_POLICY = "p95-first"
 _P95_BUCKET_SJF_POLICY = "p95-bucket-sjf"
 _SJF_AGING_POLICY = "sjf_aging"
+_SIZE_BUCKET_SJF_AGING_POLICY = "size_bucket_sjf_aging"
 _SLACK_HYBRID_POLICY = "slack_hybrid"
 _P95_FIRST_HISTORY_MAXLEN = 128
 _P95_FIRST_MIN_HISTORY_FOR_QUANTILE = 20
 _SLACK_COST_ALPHA = 0.25
 _SJF_AGING_DEFAULT_FACTOR = 1.0
+_FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
+_SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
 _LEARNED_P95_DEADLINE_POLICIES = _DEADLINE_AWARE_POLICIES | {_P95_FIRST_POLICY, _SLACK_HYBRID_POLICY}
 
@@ -742,6 +745,61 @@ class Stage1Scheduler(Scheduler):
             return aging_factor
         return _SJF_AGING_DEFAULT_FACTOR
 
+    def _fixed_size_bucket_id(self, queued_request: _QueuedRequest) -> int:
+        request_summary = self._request_summary(queued_request.request)
+        max_dim = max(request_summary["width"], request_summary["height"])
+        for bucket_id, threshold in enumerate(_FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS):
+            if max_dim <= threshold:
+                return bucket_id
+        return len(_FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS)
+
+    def _build_size_bucket_sjf_aging_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        aging_factor = self._effective_sjf_aging_factor()
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        for queued_request in waiting_requests:
+            estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+            age_s = self._request_age_seconds(queued_request, now)
+            aged_cost_s = estimated_cost_s / (1.0 + aging_factor * age_s)
+            request_summary = self._request_summary(queued_request.request)
+            max_dim = max(request_summary["width"], request_summary["height"])
+            raw_size_bucket_id = self._fixed_size_bucket_id(queued_request)
+            bucket_promotion_levels = int((aging_factor * age_s) / _SIZE_BUCKET_PROMOTION_WINDOW_S)
+            effective_size_bucket_id = max(raw_size_bucket_id - bucket_promotion_levels, 0)
+            metrics_by_sequence[queued_request.sequence_id] = {
+                "scheduler_policy": _SIZE_BUCKET_SJF_AGING_POLICY,
+                "queue_reorder_count": 1,
+                "estimated_cost_s": estimated_cost_s,
+                "age_s": age_s,
+                "aging_factor": aging_factor,
+                "aged_cost_s": aged_cost_s,
+                "max_dim": max_dim,
+                "raw_size_bucket_id": raw_size_bucket_id,
+                "effective_size_bucket_id": effective_size_bucket_id,
+                "bucket_promotion_levels": bucket_promotion_levels,
+            }
+
+        ordered_queue = sorted(
+            waiting_requests,
+            key=lambda queued: (
+                int(metrics_by_sequence[queued.sequence_id]["effective_size_bucket_id"]),
+                float(metrics_by_sequence[queued.sequence_id]["aged_cost_s"]),
+                float(metrics_by_sequence[queued.sequence_id]["estimated_cost_s"]),
+                queued.enqueue_time,
+                queued.sequence_id,
+            ),
+        )
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
+
+        return ordered_queue, metrics_by_sequence
+
     def _slack_hybrid_panic_threshold(self) -> float:
         threshold = self._safe_optional_float(getattr(self.od_config, "instance_scheduler_slack_panic_threshold", None))
         if threshold is None:
@@ -929,6 +987,26 @@ class Stage1Scheduler(Scheduler):
                 self._request_label(new_request.request),
                 policy,
                 float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
+                float(request_metrics.get("aged_cost_s", 0.0) or 0.0),
+                float(request_metrics.get("age_s", 0.0) or 0.0),
+                request_metrics.get("queue_rank"),
+            )
+            return
+
+        if policy == _SIZE_BUCKET_SJF_AGING_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_size_bucket_sjf_aging_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s raw_size_bucket=%s effective_size_bucket=%s aged_cost_s=%.4f age_s=%.4f queue_rank=%s",
+                self._request_label(new_request.request),
+                policy,
+                request_metrics.get("raw_size_bucket_id"),
+                request_metrics.get("effective_size_bucket_id"),
                 float(request_metrics.get("aged_cost_s", 0.0) or 0.0),
                 float(request_metrics.get("age_s", 0.0) or 0.0),
                 request_metrics.get("queue_rank"),
