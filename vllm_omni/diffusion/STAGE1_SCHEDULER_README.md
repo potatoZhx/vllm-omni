@@ -16,18 +16,20 @@
 
 ## 1. 当前支持的策略
 
-`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 5 种取值：
+`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 7 种取值：
 
 - `fcfs`
 - `sjf`
+- `sjf_aging`
 - `slo_first`
+- `p95-first`
 - `slack_age`
 - `slack_cost_age`
 
 CLI 入口：
 
 ```bash
---instance-scheduler-policy {fcfs,sjf,slo_first,slack_age,slack_cost_age}
+--instance-scheduler-policy {fcfs,sjf,sjf_aging,slo_first,p95-first,slack_age,slack_cost_age}
 ```
 
 其中：
@@ -36,6 +38,10 @@ CLI 入口：
   - 严格按入队顺序调度
 - `sjf`
   - 按估算剩余耗时从小到大排序
+- `sjf_aging`
+  - 在 `sjf` 的剩余耗时排序上叠加等待时长老化分数 `remaining_cost / (1 + aging_factor * age)`
+  - 当 `instance_scheduler_aging_factor <= 0` 时，使用内建默认 aging 系数 `1.0`，保证不额外配参也具备防饥饿能力
+  - 对 step chunk / chunk preemption 友好：chunk 重入队后继续按“剩余耗时 + 首次 arrival 老化”计算
 - `slo_first`
   - 先求可按时完成的 `on_time` 集合，再按 `slack / remaining_cost` 排序
 - `slack_age`
@@ -81,9 +87,9 @@ CLI 入口：
 
 不需要额外参数。
 
-### 3.2 `sjf`
+### 3.2 `sjf` / `sjf_aging`
 
-不要求提供 deadline，但强烈建议提供更准确的耗时估计来源。当前耗时估计优先级是：
+这两种策略都不要求提供 deadline，但强烈建议提供更准确的耗时估计来源。当前耗时估计优先级是：
 
 1. `sampling_params.extra_args["estimated_cost_s"]`
 2. runtime profile 估算
@@ -252,6 +258,15 @@ deadline_ts = base_arrival_time + max(slo_target_ms, instance_scheduler_slo_floo
 
 - `queue_reorder_count`
 - `estimated_cost_s`
+
+`sjf_aging` 额外会输出：
+
+- `queue_reorder_count`
+- `estimated_cost_s`
+- `age_s`
+- `aging_factor`
+- `aged_cost_s`
+- `queue_rank`
 
 deadline-aware 策略额外会输出：
 

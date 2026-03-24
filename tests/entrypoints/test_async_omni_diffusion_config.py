@@ -99,7 +99,7 @@ def test_p95_first_enables_step_chunk_and_chunk_preemption_by_default():
     assert config.diffusion_enable_chunk_preemption is True
 
 
-@pytest.mark.parametrize("policy", ["p95-first", "slack_age", "slack_cost_age"])
+@pytest.mark.parametrize("policy", ["p95-first", "sjf_aging", "slack_age", "slack_cost_age"])
 def test_new_instance_scheduler_policies_are_accepted(policy: str):
     from vllm_omni.diffusion.data import OmniDiffusionConfig
 

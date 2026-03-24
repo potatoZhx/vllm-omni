@@ -480,6 +480,83 @@ def test_stage1_scheduler_sjf_uses_remaining_steps():
     assert ordered == ["short-remaining", "long"]
 
 
+def test_stage1_scheduler_sjf_aging_promotes_old_request_over_short_new_request():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging")
+    now = time.monotonic()
+    older = _mock_request("older", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+    newer = _mock_request("newer", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    older.arrival_time = now - 20.0
+    newer.arrival_time = now
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(older)
+        sched._enqueue_request_locked(newer)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["older", "newer"]
+    assert ordered[0].schedule_metrics["scheduler_policy"] == "sjf_aging"
+    assert ordered[0].schedule_metrics["aged_cost_s"] < ordered[1].schedule_metrics["aged_cost_s"]
+    assert ordered[0].schedule_metrics["aging_factor"] == pytest.approx(1.0)
+
+
+def test_stage1_scheduler_sjf_aging_adapts_to_step_chunk_requeue():
+    sched, req_q, res_q = _make_stage1_scheduler(policy="sjf_aging")
+    req1 = _mock_request("req-1", num_inference_steps=20, extra_args={"estimated_cost_s": 20.0})
+    req2 = _mock_request("req-2", num_inference_steps=3, extra_args={"estimated_cost_s": 3.0})
+    req1.arrival_time = time.monotonic() - 30.0
+    dispatch_order: list[str] = []
+    req1_requeued = threading.Event()
+    allow_req1_resume = threading.Event()
+
+    def _worker():
+        first = req_q.get(timeout=5)
+        dispatch_order.append(first["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=None, finished=False, request_id="req-1", metrics={"executed_steps": 10}))
+
+        second = req_q.get(timeout=5)
+        dispatch_order.append(second["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True, request_id="req-1", metrics={"executed_steps": 20}))
+
+        third = req_q.get(timeout=5)
+        dispatch_order.append(third["args"][0].request_ids[0])
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), finished=True, request_id="req-2", metrics={"executed_steps": 3}))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    results: dict[str, DiffusionOutput] = {}
+
+    def _run_req1():
+        first_output = sched.add_req(req1)
+        results["req-1-first"] = first_output
+        req1_requeued.set()
+        allow_req1_resume.wait(timeout=5)
+        results["req-1-second"] = sched.add_req(req1)
+
+    req1_thread = threading.Thread(target=_run_req1, daemon=True)
+    req1_thread.start()
+    assert req1_requeued.wait(timeout=5)
+
+    req2_thread = threading.Thread(
+        target=lambda: results.setdefault("req-2", sched.add_req(req2)),
+        daemon=True,
+    )
+    req2_thread.start()
+
+    time.sleep(0.1)
+    allow_req1_resume.set()
+
+    req1_thread.join(5)
+    req2_thread.join(5)
+    worker.join(5)
+
+    assert dispatch_order == ["req-1", "req-1", "req-2"]
+    assert results["req-1-first"].finished is False
+    assert results["req-1-second"].finished is True
+    assert results["req-1-second"].metrics["scheduler_policy"] == "sjf_aging"
+    assert results["req-1-second"].metrics["aged_cost_s"] < results["req-2"].metrics["aged_cost_s"]
+
+
 def test_stage1_scheduler_deadline_uses_request_arrival_time():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="slo_first", slo_target_ms=5000.0)
     req = _mock_request("req-deadline", num_inference_steps=10, extra_args={"slo_ms": 2000.0})

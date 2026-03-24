@@ -599,7 +599,7 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
-        valid_policies = {"fcfs", "sjf", "slo_first", "p95-first", "slack_age", "slack_cost_age"}
+        valid_policies = {"fcfs", "sjf", "sjf_aging", "slo_first", "p95-first", "slack_age", "slack_cost_age"}
         if self.instance_scheduler_policy not in valid_policies:
             raise ValueError(
                 "instance_scheduler_policy must be one of "

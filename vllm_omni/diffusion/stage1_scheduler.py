@@ -20,9 +20,11 @@ logger = init_logger(__name__)
 
 _DEADLINE_AWARE_POLICIES = {"slo_first", "slack_age", "slack_cost_age"}
 _P95_FIRST_POLICY = "p95-first"
+_SJF_AGING_POLICY = "sjf_aging"
 _P95_FIRST_HISTORY_MAXLEN = 128
 _P95_FIRST_MIN_HISTORY_FOR_QUANTILE = 20
 _SLACK_COST_ALPHA = 0.25
+_SJF_AGING_DEFAULT_FACTOR = 1.0
 
 
 @dataclass
@@ -573,9 +575,71 @@ class Stage1Scheduler(Scheduler):
             ),
         )
 
+    def _effective_sjf_aging_factor(self) -> float:
+        aging_factor = float(getattr(self.od_config, "instance_scheduler_aging_factor", 0.0) or 0.0)
+        if aging_factor > 0.0:
+            return aging_factor
+        return _SJF_AGING_DEFAULT_FACTOR
+
+    def _build_sjf_aging_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        aging_factor = self._effective_sjf_aging_factor()
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        for queued_request in waiting_requests:
+            estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+            age_s = self._request_age_seconds(queued_request, now)
+            aged_cost_s = estimated_cost_s / (1.0 + aging_factor * age_s)
+            metrics_by_sequence[queued_request.sequence_id] = {
+                "scheduler_policy": _SJF_AGING_POLICY,
+                "queue_reorder_count": 1,
+                "estimated_cost_s": estimated_cost_s,
+                "age_s": age_s,
+                "aging_factor": aging_factor,
+                "aged_cost_s": aged_cost_s,
+            }
+
+        ordered_queue = sorted(
+            waiting_requests,
+            key=lambda queued: (
+                float(metrics_by_sequence[queued.sequence_id]["aged_cost_s"]),
+                float(metrics_by_sequence[queued.sequence_id]["estimated_cost_s"]),
+                queued.enqueue_time,
+                queued.sequence_id,
+            ),
+        )
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
+
+        return ordered_queue, metrics_by_sequence
+
     def _maybe_reorder_waiting_queue(self, new_request: _QueuedRequest, now: float) -> None:
         policy = self._policy_name()
         if policy == "fcfs":
+            return
+
+        if policy == _SJF_AGING_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_sjf_aging_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s estimated_cost_s=%.4f aged_cost_s=%.4f age_s=%.4f queue_rank=%s",
+                self._request_label(new_request.request),
+                policy,
+                float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
+                float(request_metrics.get("aged_cost_s", 0.0) or 0.0),
+                float(request_metrics.get("age_s", 0.0) or 0.0),
+                request_metrics.get("queue_rank"),
+            )
             return
 
         if policy == "sjf":
