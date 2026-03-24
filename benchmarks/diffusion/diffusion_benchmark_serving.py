@@ -911,26 +911,25 @@ def _inject_scheduler_slo_fields(
     requests_list: list[RequestFuncInput],
     args,
 ) -> list[RequestFuncInput]:
-    """Optionally inject per-request scheduler fields into request payloads.
+    """Inject scheduler-facing request fields into request payloads.
 
-    When enabled, the benchmark sends `slo_ms` to the server so instance-local
-    schedulers such as `slo_first` can use the same target that the client-side
-    SLO report uses. Existing explicit request values are preserved.
+    `estimated_cost_s` is always injected when available so the backend can use
+    warmup-derived cost estimates by default. `slo_ms` and `slo_target_ms`
+    remain gated by `--inject-scheduler-slo` so existing opt-in behavior for
+    explicit SLO targets is preserved.
     """
 
-    if not getattr(args, "inject_scheduler_slo", False):
-        return requests_list
-
+    inject_slo = bool(getattr(args, "inject_scheduler_slo", False))
     updated: list[RequestFuncInput] = []
     slo_scale = float(getattr(args, "slo_scale", 3.0))
     for req in requests_list:
         extra_body = dict(req.extra_body)
-        if req.slo_ms is not None:
+        if inject_slo and req.slo_ms is not None:
             extra_body.setdefault("slo_ms", req.slo_ms)
             extra_body.setdefault("slo_target_ms", req.slo_ms)
         if req.estimated_cost_s is not None:
             extra_body.setdefault("estimated_cost_s", req.estimated_cost_s)
-        elif req.slo_ms is not None and slo_scale > 0:
+        elif inject_slo and req.slo_ms is not None and slo_scale > 0:
             extra_body.setdefault("estimated_cost_s", float(req.slo_ms) / 1000.0 / slo_scale)
         updated.append(replace(req, extra_body=extra_body))
 
@@ -1188,15 +1187,14 @@ async def benchmark(args):
                 warm_out = await limited_request_func(warm_req, session, None)
                 warmup_pairs.append((warm_req, warm_out))
 
-        if args.slo or args.inject_scheduler_slo:
+        if warmup_pairs or args.slo or args.inject_scheduler_slo:
             # Prefer trace-provided per-request slo_ms. Only populate when missing.
             requests_list = _populate_slo_ms_from_warmups(
                 requests_list=requests_list,
                 warmup_pairs=warmup_pairs,
                 args=args,
             )
-        if args.inject_scheduler_slo:
-            requests_list = _inject_scheduler_slo_fields(requests_list, args)
+        requests_list = _inject_scheduler_slo_fields(requests_list, args)
 
         start_time = time.perf_counter()
         tasks = []
@@ -1406,8 +1404,8 @@ if __name__ == "__main__":
         "--inject-scheduler-slo",
         action="store_true",
         help=(
-            "Inject per-request scheduler fields into the server request payload. "
-            "When enabled, the benchmark sends slo_ms, slo_target_ms, and estimated_cost_s when available."
+            "Inject explicit SLO target fields into the server request payload. "
+            "estimated_cost_s is sent whenever available; this flag additionally sends slo_ms and slo_target_ms."
         ),
     )
     parser.add_argument("--disable-tqdm", action="store_true", help="Disable progress bar.")
