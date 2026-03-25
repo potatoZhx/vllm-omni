@@ -258,14 +258,14 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "sjf_aging", "size_bucket_sjf_aging", "slo_first", "p95-first", "p95-bucket-sjf", "slack_age", "slack_cost_age", "slack_hybrid"],
+            choices=["fcfs", "sjf", "sjf_aging", "size_bucket_sjf_aging", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "slack_age", "slack_cost_age", "slack_hybrid"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'sjf_aging' adds wait-time aging "
             "on top of SJF to prevent starvation and works with chunk requeue, 'size_bucket_sjf_aging' "
             "groups requests into fixed resolution buckets and applies SJF+aging within each bucket, "
             "'slo_first' keeps "
-            "the current deadline-aware on-time/tail ordering, 'p95-first' uses dynamic p95 "
-            "single-queue ranking with starvation protection, 'p95-bucket-sjf' derives a local "
+            "the current deadline-aware on-time/tail ordering, 'p95-first' uses normalized "
+            "tail-pressure ranking learned from observed runtime and request slowdown, 'p95-first-deadline' uses the same normalized learning path to derive synthetic deadlines and then orders by slack/deadline pressure, 'p95-bucket-sjf' derives a local "
             "target p95 from request cost and history, then orders by deadline buckets with "
             "intra-bucket SJF, 'slack_age' prioritizes tight/old requests, 'slack_cost_age' adds "
             "a bounded remaining-cost penalty on top of slack+aging, and 'slack_hybrid' switches "
@@ -294,25 +294,25 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-p95-first-base-ms",
             type=float,
             default=None,
-            help="Base dynamic p95 target in milliseconds for the instance-local 'p95-first' scheduler.",
+            help="Compatibility knob for learned-deadline fallback and cold-start history seeding. The current 'p95-first' ranking path does not use this value directly.",
         )
         omni_config_group.add_argument(
             "--instance-scheduler-p95-first-min-ms",
             type=float,
             default=0.0,
-            help="Lower bound applied to the dynamic p95 target in milliseconds for 'p95-first'.",
+            help="Lower bound applied to learned synthetic deadlines and the learned-p95 helper. The current 'p95-first' ranking path does not use this value directly.",
         )
         omni_config_group.add_argument(
             "--instance-scheduler-p95-first-max-ms",
             type=float,
             default=None,
-            help="Upper bound applied to the dynamic p95 target in milliseconds for 'p95-first'.",
+            help="Upper bound applied to learned synthetic deadlines. The current 'p95-first' ranking path does not use this value directly.",
         )
         omni_config_group.add_argument(
             "--instance-scheduler-p95-first-backlog-alpha",
             type=float,
             default=1.0,
-            help="Backlog-to-dynamic-p95 coefficient for the instance-local 'p95-first' scheduler.",
+            help="Backlog coefficient for learned synthetic deadlines. The current 'p95-first' ranking path does not use this value directly.",
         )
         omni_config_group.add_argument(
             "--instance-scheduler-p95-first-size-bias",

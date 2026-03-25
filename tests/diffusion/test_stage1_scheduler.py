@@ -1157,6 +1157,24 @@ def test_stage1_scheduler_p95_first_reports_policy_name_without_affecting_existi
     assert output.metrics["scheduler_policy"] == "p95-first"
 
 
+def test_stage1_scheduler_p95_first_deadline_reports_policy_name_without_affecting_existing_policies():
+    sched, req_q, res_q = _make_stage1_scheduler(policy="p95-first-deadline")
+    req = _mock_request("req-p95-first-deadline")
+
+    def _worker():
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), request_id="req-p95-first-deadline"))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    output = sched.add_req(req)
+    worker.join(5)
+
+    assert output.error is None
+    assert output.metrics["scheduler_policy"] == "p95-first-deadline"
+
+
 def test_stage1_scheduler_p95_first_dynamic_p95_grows_with_backlog():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
     sched.od_config.instance_scheduler_p95_first_backlog_alpha = 1.0
@@ -1342,6 +1360,97 @@ def test_stage1_scheduler_p95_first_learned_p95_uses_nearest_rank_for_larger_his
 
     assert sched._learned_p95_ms() == pytest.approx(1900.0)
 
+
+
+def test_stage1_scheduler_p95_first_updates_service_rate_from_actual_chunk_runtime():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+
+    req = _mock_request("runtime", num_inference_steps=4, extra_args={"estimated_cost_s": 4.0})
+    chunk_output = SimpleNamespace(error=None, finished=False, metrics={"executed_steps": 2})
+    chunk_work_units = sched._completed_chunk_work_units(req, chunk_output, previous_executed_steps=0)
+    sched._record_p95_first_execute_sample(400.0, chunk_work_units)
+
+    waiting_req = _mock_request("waiting", num_inference_steps=3, extra_args={"estimated_cost_s": 9.0})
+    queued = _QueuedRequest(request=waiting_req, enqueue_time=0.0, sequence_id=1, estimated_cost_s=9.0)
+
+    assert sched._p95_first_observed_service_ms_per_work_unit == pytest.approx(200.0)
+    assert sched._p95_first_estimated_service_ms(queued) == pytest.approx(600.0)
+
+
+
+def test_stage1_scheduler_p95_first_learns_slowdown_from_request_latency_over_actual_execute_time():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+
+    req = _mock_request("done", num_inference_steps=4, extra_args={"estimated_cost_s": 4.0})
+    setattr(req, "_p95_first_cumulative_execute_ms", 400.0)
+
+    sched._record_p95_first_latency_ms(1000.0, request=req)
+
+    assert sched._learned_p95_first_slowdown() == pytest.approx(2.5)
+
+
+
+def test_stage1_scheduler_p95_first_reorders_by_normalized_tail_pressure_without_dynamic_p95_knobs():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
+    sched.od_config.instance_scheduler_p95_first_base_ms = 999999.0
+    sched.od_config.instance_scheduler_p95_first_min_ms = 888888.0
+    sched.od_config.instance_scheduler_p95_first_max_ms = 999999.0
+    sched.od_config.instance_scheduler_p95_first_backlog_alpha = 123.0
+    sched._p95_first_observed_service_ms_per_work_unit = 1000.0
+    sched._p95_first_slowdown_history.append(2.0)
+
+    older = _mock_request("older", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+    newer = _mock_request("newer", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    older.arrival_time = 0.0
+    newer.arrival_time = 19.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(older)  # noqa: SLF001
+        sched._enqueue_request_locked(newer)  # noqa: SLF001
+        ordered, metrics_by_sequence = sched._build_p95_first_queue(list(sched._waiting_queue), now=20.0)  # noqa: SLF001
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["older", "newer"]
+    first_metrics = metrics_by_sequence[ordered[0].sequence_id]
+    assert first_metrics["learned_slowdown_p95"] == pytest.approx(2.0)
+    assert first_metrics["target_latency_ms"] == pytest.approx(20000.0)
+    assert first_metrics["service_rate_source"] == "observed_runtime"
+    assert "dynamic_p95_ms" not in first_metrics
+
+def test_stage1_scheduler_p95_first_deadline_reorders_by_normalized_synthetic_deadline():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first-deadline")
+    sched._p95_first_observed_service_ms_per_work_unit = 1000.0
+    sched._p95_first_slowdown_history.append(2.0)
+
+    older = _mock_request("older", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+    newer = _mock_request("newer", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    older.arrival_time = 0.0
+    newer.arrival_time = 19.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(older)  # noqa: SLF001
+        sched._enqueue_request_locked(newer)  # noqa: SLF001
+        ordered, metrics_by_sequence = sched._build_p95_first_deadline_queue(list(sched._waiting_queue), now=20.0)  # noqa: SLF001
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["older", "newer"]
+    first_metrics = metrics_by_sequence[ordered[0].sequence_id]
+    assert first_metrics["learned_slowdown_p95"] == pytest.approx(2.0)
+    assert first_metrics["target_latency_ms"] == pytest.approx(20000.0)
+    assert first_metrics["synthetic_deadline_ts"] == pytest.approx(20.0)
+    assert first_metrics["slack_s"] == pytest.approx(-10.0)
+    assert first_metrics["service_rate_source"] == "observed_runtime"
+    assert "dynamic_p95_ms" not in first_metrics
+
+
+
+def test_stage1_scheduler_p95_first_deadline_learns_slowdown_from_request_latency_over_actual_execute_time():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first-deadline")
+
+    req = _mock_request("done", num_inference_steps=4, extra_args={"estimated_cost_s": 4.0})
+    setattr(req, "_p95_first_cumulative_execute_ms", 400.0)
+
+    sched._record_p95_first_latency_ms(1000.0, request=req)
+
+    assert sched._learned_p95_first_slowdown() == pytest.approx(2.5)
 
 def test_stage1_scheduler_p95_bucket_sjf_target_p95_uses_max_of_history_and_cost():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf")

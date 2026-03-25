@@ -20,17 +20,20 @@ logger = init_logger(__name__)
 
 _DEADLINE_AWARE_POLICIES = {"slo_first", "slack_age", "slack_cost_age"}
 _P95_FIRST_POLICY = "p95-first"
+_P95_FIRST_DEADLINE_POLICY = "p95-first-deadline"
 _P95_BUCKET_SJF_POLICY = "p95-bucket-sjf"
 _SJF_AGING_POLICY = "sjf_aging"
 _SIZE_BUCKET_SJF_AGING_POLICY = "size_bucket_sjf_aging"
 _SLACK_HYBRID_POLICY = "slack_hybrid"
 _P95_FIRST_HISTORY_MAXLEN = 128
 _P95_FIRST_MIN_HISTORY_FOR_QUANTILE = 20
+_P95_FIRST_SERVICE_RATE_EMA_ALPHA = 0.1
 _SLACK_COST_ALPHA = 0.25
 _SJF_AGING_DEFAULT_FACTOR = 1.0
 _FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
 _SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
+_NORMALIZED_P95_POLICIES = {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY}
 _LEARNED_P95_DEADLINE_POLICIES = _DEADLINE_AWARE_POLICIES | {_P95_FIRST_POLICY, _SLACK_HYBRID_POLICY}
 
 
@@ -73,6 +76,8 @@ class Stage1Scheduler(Scheduler):
             instance_type=getattr(od_config, "instance_runtime_profile_name", None),
         )
         self._p95_first_latency_history_ms: deque[float] = deque(maxlen=_P95_FIRST_HISTORY_MAXLEN)
+        self._p95_first_slowdown_history: deque[float] = deque(maxlen=_P95_FIRST_HISTORY_MAXLEN)
+        self._p95_first_observed_service_ms_per_work_unit: float | None = None
         self._p95_first_cold_start_max_ms = 0.0
 
     @staticmethod
@@ -294,16 +299,109 @@ class Stage1Scheduler(Scheduler):
         )
         return max(estimated_chunk_cost_s - elapsed, 0.0)
 
+    def _request_work_units(
+        self,
+        request: OmniDiffusionRequest,
+        *,
+        step_count: int | None = None,
+        total: bool = False,
+    ) -> float:
+        sampling_params = request.sampling_params
+        total_steps = max(self._safe_int(getattr(sampling_params, "num_inference_steps", 1), 1), 1)
+        if step_count is None:
+            if total:
+                step_count = total_steps
+            else:
+                executed_steps = max(self._safe_int(getattr(request, "executed_steps", 0), 0), 0)
+                step_count = max(total_steps - executed_steps, 0)
+        else:
+            step_count = max(self._safe_int(step_count, 0), 0)
+
+        if step_count <= 0:
+            return 0.0
+
+        request_summary = self._request_summary(request)
+        area_scale = max(float(request_summary["width"] * request_summary["height"]) / float(1024 * 1024), 0.0)
+        num_frames = max(self._safe_int(getattr(sampling_params, "num_frames", 1), 1), 1)
+        num_outputs = max(self._safe_int(getattr(sampling_params, "num_outputs_per_prompt", 1), 1), 1)
+        return max(float(step_count * num_frames * num_outputs) * max(area_scale, 0.0625), 1e-9)
+
+    def _chunk_work_units_this_turn(self, queued_request: _QueuedRequest) -> float:
+        request = queued_request.request
+        total_steps = max(self._safe_int(getattr(request.sampling_params, "num_inference_steps", 1), 1), 1)
+        executed_steps = max(self._safe_int(getattr(request, "executed_steps", 0), 0), 0)
+        remaining_steps_at_dispatch = max(total_steps - executed_steps, 1)
+        chunk_steps_this_turn = self._safe_optional_int(getattr(request, "max_steps_this_turn", None))
+        if chunk_steps_this_turn is None or chunk_steps_this_turn <= 0:
+            chunk_steps_this_turn = remaining_steps_at_dispatch
+        else:
+            chunk_steps_this_turn = min(max(chunk_steps_this_turn, 1), remaining_steps_at_dispatch)
+        return self._request_work_units(request, step_count=chunk_steps_this_turn)
+
+    def _completed_chunk_work_units(
+        self,
+        request: OmniDiffusionRequest,
+        output: DiffusionOutput,
+        previous_executed_steps: int,
+    ) -> float:
+        if getattr(output, "error", None):
+            return 0.0
+
+        total_steps = max(self._safe_int(getattr(request.sampling_params, "num_inference_steps", 1), 1), 1)
+        metrics = dict(getattr(output, "metrics", {}) or {})
+        if "executed_steps" in metrics:
+            executed_after = self._safe_int(metrics["executed_steps"], previous_executed_steps)
+        elif getattr(output, "finished", True):
+            executed_after = total_steps
+        else:
+            executed_after = previous_executed_steps
+
+        executed_after = min(max(executed_after, 0), total_steps)
+        delta_steps = max(executed_after - previous_executed_steps, 0)
+        return self._request_work_units(request, step_count=delta_steps)
+
     def _record_p95_first_cost_observation(self, queued_request: _QueuedRequest) -> None:
         observed_ms = max(self._queued_cost_seconds(queued_request) * 1000.0, 0.0)
         self._p95_first_cold_start_max_ms = max(self._p95_first_cold_start_max_ms, observed_ms)
 
-    def _record_p95_first_latency_ms(self, latency_ms: float | None) -> None:
+    def _record_p95_first_execute_sample(self, execute_latency_ms: float | None, work_units: float) -> None:
+        if execute_latency_ms is None or work_units <= 0.0:
+            return
+
+        observed_service_ms_per_work_unit = max(float(execute_latency_ms), 0.0) / max(work_units, 1e-9)
+        if observed_service_ms_per_work_unit <= 0.0:
+            return
+
+        if self._p95_first_observed_service_ms_per_work_unit is None:
+            self._p95_first_observed_service_ms_per_work_unit = observed_service_ms_per_work_unit
+            return
+
+        alpha = _P95_FIRST_SERVICE_RATE_EMA_ALPHA
+        self._p95_first_observed_service_ms_per_work_unit = (
+            (1.0 - alpha) * self._p95_first_observed_service_ms_per_work_unit
+            + alpha * observed_service_ms_per_work_unit
+        )
+
+    def _record_p95_first_latency_ms(
+        self,
+        latency_ms: float | None,
+        *,
+        request: OmniDiffusionRequest | None = None,
+    ) -> None:
         if latency_ms is None:
             return
         value = max(float(latency_ms), 0.0)
         self._p95_first_latency_history_ms.append(value)
         self._p95_first_cold_start_max_ms = max(self._p95_first_cold_start_max_ms, value)
+
+        if request is None or self._policy_name() not in _NORMALIZED_P95_POLICIES:
+            return
+
+        total_execute_ms = self._safe_optional_float(getattr(request, "_p95_first_cumulative_execute_ms", None))
+        if total_execute_ms is None or total_execute_ms <= 0.0:
+            return
+        slowdown = max(value / max(total_execute_ms, 1e-9), 1.0)
+        self._p95_first_slowdown_history.append(slowdown)
 
     def _learned_p95_ms(self) -> float:
         if self._p95_first_latency_history_ms:
@@ -341,25 +439,58 @@ class Stage1Scheduler(Scheduler):
         dynamic_p95_ms = max(dynamic_p95_ms, min_ms)
         return dynamic_p95_ms, backlog_s, learned_p95_ms, backlog_adjusted_p95_ms
 
+    def _learned_p95_first_slowdown(self) -> float:
+        if self._p95_first_slowdown_history:
+            samples = sorted(self._p95_first_slowdown_history)
+            if len(samples) < _P95_FIRST_MIN_HISTORY_FOR_QUANTILE:
+                return max(float(samples[-1]), 1.0)
+            index = max(ceil(len(samples) * 0.95) - 1, 0)
+            return max(float(samples[index]), 1.0)
+        return 1.0
+
+    def _p95_first_estimated_service_ms(self, queued_request: _QueuedRequest) -> float:
+        if self._p95_first_observed_service_ms_per_work_unit is None:
+            return max(self._queued_cost_seconds(queued_request) * 1000.0, 1e-9)
+        work_units = self._request_work_units(queued_request.request)
+        return max(self._p95_first_observed_service_ms_per_work_unit * max(work_units, 1e-9), 1e-9)
+
+    def _p95_first_active_chunk_blocking_ms(self, now: float) -> float:
+        if self._active_request is None or self._active_started_at is None:
+            return 0.0
+
+        if self._p95_first_observed_service_ms_per_work_unit is None:
+            return max(self._active_chunk_remaining_cost_seconds(now) * 1000.0, 0.0)
+
+        elapsed_ms = max((now - self._active_started_at) * 1000.0, 0.0)
+        predicted_chunk_ms = self._p95_first_observed_service_ms_per_work_unit * max(
+            self._chunk_work_units_this_turn(self._active_request),
+            1e-9,
+        )
+        return max(predicted_chunk_ms - elapsed_ms, 0.0)
+
     def _p95_first_candidate_metrics(
         self,
         queued_request: _QueuedRequest,
         *,
         now: float,
-        cursor_s: float,
-        dynamic_p95_ms: float,
-        backlog_s: float,
-        learned_p95_ms: float,
-        backlog_adjusted_p95_ms: float,
-        active_chunk_blocking_s: float,
+        cursor_ms: float,
+        learned_slowdown_p95: float,
+        instance_backlog_total_s: float,
+        active_chunk_blocking_ms: float,
         queue_rank: int,
     ) -> dict[str, Any]:
         remaining_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+        work_units = max(self._request_work_units(queued_request.request), 1e-9)
+        estimated_service_ms = self._p95_first_estimated_service_ms(queued_request)
         age_s = self._request_age_seconds(queued_request, now)
-        predicted_finish_latency_ms = max((age_s + cursor_s + remaining_cost_s) * 1000.0, 0.0)
-        risk_ms = predicted_finish_latency_ms - dynamic_p95_ms
-        base_score = -risk_ms / max(remaining_cost_s * 1000.0, 1e-9)
-        size_penalty = float(getattr(self.od_config, "instance_scheduler_p95_first_size_bias", 0.0) or 0.0) * remaining_cost_s
+        predicted_finish_latency_ms = max((age_s * 1000.0) + cursor_ms + estimated_service_ms, 0.0)
+        target_latency_ms = max(learned_slowdown_p95 * estimated_service_ms, 1e-9)
+        pressure_ratio = predicted_finish_latency_ms / target_latency_ms
+        risk_ms = predicted_finish_latency_ms - target_latency_ms
+        base_score = -pressure_ratio
+        size_penalty = float(getattr(self.od_config, "instance_scheduler_p95_first_size_bias", 0.0) or 0.0) * (
+            estimated_service_ms / 1000.0
+        )
         aging_bonus = float(getattr(self.od_config, "instance_scheduler_p95_first_age_bias", 0.0) or 0.0) * age_s
         starvation_threshold_s = self._safe_optional_float(
             getattr(self.od_config, "instance_scheduler_p95_first_starvation_threshold_s", None)
@@ -371,15 +502,24 @@ class Stage1Scheduler(Scheduler):
         return {
             "scheduler_policy": _P95_FIRST_POLICY,
             "queue_reorder_count": 1,
-            "dynamic_p95_ms": dynamic_p95_ms,
-            "learned_p95_ms": learned_p95_ms,
-            "backlog_adjusted_p95_ms": backlog_adjusted_p95_ms,
-            "backlog_s_at_schedule": backlog_s,
-            "instance_backlog_total_s": backlog_s,
-            "active_chunk_blocking_s": active_chunk_blocking_s,
+            "learned_slowdown_p95": learned_slowdown_p95,
+            "observed_service_rate_ms_per_work_unit": self._p95_first_observed_service_ms_per_work_unit,
+            "service_rate_source": (
+                "observed_runtime"
+                if self._p95_first_observed_service_ms_per_work_unit is not None
+                else "estimated_cost_fallback"
+            ),
+            "backlog_s_at_schedule": instance_backlog_total_s,
+            "instance_backlog_total_s": instance_backlog_total_s,
+            "active_chunk_blocking_ms": active_chunk_blocking_ms,
+            "active_chunk_blocking_s": active_chunk_blocking_ms / 1000.0,
             "estimated_cost_s": remaining_cost_s,
+            "work_units": work_units,
+            "estimated_service_ms": estimated_service_ms,
             "age_s": age_s,
             "predicted_finish_latency_ms": predicted_finish_latency_ms,
+            "target_latency_ms": target_latency_ms,
+            "pressure_ratio": pressure_ratio,
             "risk_ms": risk_ms,
             "base_score": base_score,
             "size_penalty": size_penalty,
@@ -397,11 +537,10 @@ class Stage1Scheduler(Scheduler):
         if not waiting_requests:
             return [], {}
 
-        dynamic_p95_ms, backlog_s, learned_p95_ms, backlog_adjusted_p95_ms = self._compute_dynamic_p95_ms(
-            waiting_requests, now
-        )
-        active_chunk_blocking_s = self._active_chunk_remaining_cost_seconds(now)
-        cursor_s = active_chunk_blocking_s
+        learned_slowdown_p95 = self._learned_p95_first_slowdown()
+        instance_backlog_total_s = self._compute_local_backlog_seconds(waiting_requests, now)
+        active_chunk_blocking_ms = self._p95_first_active_chunk_blocking_ms(now)
+        cursor_ms = active_chunk_blocking_ms
         remaining = list(waiting_requests)
         ordered_queue: list[_QueuedRequest] = []
         metrics_by_sequence: dict[int, dict[str, Any]] = {}
@@ -415,18 +554,16 @@ class Stage1Scheduler(Scheduler):
                 candidate_metrics = self._p95_first_candidate_metrics(
                     queued_request,
                     now=now,
-                    cursor_s=cursor_s,
-                    dynamic_p95_ms=dynamic_p95_ms,
-                    backlog_s=backlog_s,
-                    learned_p95_ms=learned_p95_ms,
-                    backlog_adjusted_p95_ms=backlog_adjusted_p95_ms,
-                    active_chunk_blocking_s=active_chunk_blocking_s,
+                    cursor_ms=cursor_ms,
+                    learned_slowdown_p95=learned_slowdown_p95,
+                    instance_backlog_total_s=instance_backlog_total_s,
+                    active_chunk_blocking_ms=active_chunk_blocking_ms,
                     queue_rank=queue_rank,
                 )
                 candidate_key = (
                     float(candidate_metrics["final_priority_score"]),
-                    float(candidate_metrics["risk_ms"]),
-                    float(candidate_metrics["estimated_cost_s"]),
+                    -float(candidate_metrics["pressure_ratio"]),
+                    float(candidate_metrics["estimated_service_ms"]),
                     queued_request.enqueue_time,
                     queued_request.sequence_id,
                 )
@@ -439,8 +576,96 @@ class Stage1Scheduler(Scheduler):
             assert best_metrics is not None
             ordered_queue.append(best_request)
             metrics_by_sequence[best_request.sequence_id] = best_metrics
-            cursor_s += float(best_metrics["estimated_cost_s"])
+            cursor_ms += float(best_metrics["estimated_service_ms"])
             remaining.remove(best_request)
+
+        return ordered_queue, metrics_by_sequence
+
+    def _p95_first_deadline_candidate_metrics(
+        self,
+        queued_request: _QueuedRequest,
+        *,
+        now: float,
+        availability_ts: float,
+        learned_slowdown_p95: float,
+        instance_backlog_total_s: float,
+        active_chunk_blocking_ms: float,
+        queue_rank: int,
+    ) -> dict[str, Any]:
+        remaining_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+        work_units = max(self._request_work_units(queued_request.request), 1e-9)
+        estimated_service_ms = self._p95_first_estimated_service_ms(queued_request)
+        age_s = self._request_age_seconds(queued_request, now)
+        target_latency_ms = max(learned_slowdown_p95 * estimated_service_ms, 1e-9)
+        synthetic_deadline_ts = self._request_base_arrival_time(queued_request) + (target_latency_ms / 1000.0)
+        slack_s = synthetic_deadline_ts - availability_ts - (estimated_service_ms / 1000.0)
+        urgency_ms = (synthetic_deadline_ts - availability_ts) * 1000.0
+        predicted_finish_latency_ms = max(((availability_ts - self._request_base_arrival_time(queued_request)) * 1000.0) + estimated_service_ms, 0.0)
+        pressure_ratio = predicted_finish_latency_ms / target_latency_ms
+        return {
+            "scheduler_policy": _P95_FIRST_DEADLINE_POLICY,
+            "queue_reorder_count": 1,
+            "learned_slowdown_p95": learned_slowdown_p95,
+            "observed_service_rate_ms_per_work_unit": self._p95_first_observed_service_ms_per_work_unit,
+            "service_rate_source": (
+                "observed_runtime"
+                if self._p95_first_observed_service_ms_per_work_unit is not None
+                else "estimated_cost_fallback"
+            ),
+            "backlog_s_at_schedule": instance_backlog_total_s,
+            "instance_backlog_total_s": instance_backlog_total_s,
+            "active_chunk_blocking_ms": active_chunk_blocking_ms,
+            "active_chunk_blocking_s": active_chunk_blocking_ms / 1000.0,
+            "availability_ts": availability_ts,
+            "estimated_cost_s": remaining_cost_s,
+            "work_units": work_units,
+            "estimated_service_ms": estimated_service_ms,
+            "age_s": age_s,
+            "target_latency_ms": target_latency_ms,
+            "synthetic_deadline_ts": synthetic_deadline_ts,
+            "urgency_ms": urgency_ms,
+            "slack_s": slack_s,
+            "predicted_finish_latency_ms": predicted_finish_latency_ms,
+            "pressure_ratio": pressure_ratio,
+            "queue_rank": queue_rank,
+        }
+
+    def _build_p95_first_deadline_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        learned_slowdown_p95 = self._learned_p95_first_slowdown()
+        availability_ts = self._availability_ts(now)
+        instance_backlog_total_s = self._compute_local_backlog_seconds(waiting_requests, now)
+        active_chunk_blocking_ms = self._p95_first_active_chunk_blocking_ms(now)
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        for queued_request in waiting_requests:
+            metrics_by_sequence[queued_request.sequence_id] = self._p95_first_deadline_candidate_metrics(
+                queued_request,
+                now=now,
+                availability_ts=availability_ts,
+                learned_slowdown_p95=learned_slowdown_p95,
+                instance_backlog_total_s=instance_backlog_total_s,
+                active_chunk_blocking_ms=active_chunk_blocking_ms,
+                queue_rank=0,
+            )
+
+        ordered_queue = sorted(
+            waiting_requests,
+            key=lambda queued: (
+                float(metrics_by_sequence[queued.sequence_id]["slack_s"]),
+                float(metrics_by_sequence[queued.sequence_id]["synthetic_deadline_ts"]),
+                float(metrics_by_sequence[queued.sequence_id]["estimated_service_ms"]),
+                queued.enqueue_time,
+                queued.sequence_id,
+            ),
+        )
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
 
         return ordered_queue, metrics_by_sequence
 
@@ -1043,14 +1268,35 @@ class Stage1Scheduler(Scheduler):
                     queued_request.schedule_metrics.update(metrics)
             request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
             logger.info(
-                "QUEUE_REORDER request_id=%s policy=%s dynamic_p95_ms=%.2f final_priority_score=%.4f queue_rank=%s estimated_cost_s=%.4f risk_ms=%.2f",
+                "QUEUE_REORDER request_id=%s policy=%s learned_slowdown_p95=%.4f pressure_ratio=%.4f final_priority_score=%.4f queue_rank=%s estimated_service_ms=%.2f risk_ms=%.2f",
                 self._request_label(new_request.request),
                 policy,
-                float(request_metrics.get("dynamic_p95_ms", 0.0) or 0.0),
+                float(request_metrics.get("learned_slowdown_p95", 0.0) or 0.0),
+                float(request_metrics.get("pressure_ratio", 0.0) or 0.0),
                 float(request_metrics.get("final_priority_score", 0.0) or 0.0),
                 request_metrics.get("queue_rank"),
-                float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
+                float(request_metrics.get("estimated_service_ms", 0.0) or 0.0),
                 float(request_metrics.get("risk_ms", 0.0) or 0.0),
+            )
+            return
+
+        if policy == _P95_FIRST_DEADLINE_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_p95_first_deadline_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s synthetic_deadline_ts=%.4f slack_s=%.4f pressure_ratio=%.4f queue_rank=%s estimated_service_ms=%.2f",
+                self._request_label(new_request.request),
+                policy,
+                float(request_metrics.get("synthetic_deadline_ts", 0.0) or 0.0),
+                float(request_metrics.get("slack_s", 0.0) or 0.0),
+                float(request_metrics.get("pressure_ratio", 0.0) or 0.0),
+                request_metrics.get("queue_rank"),
+                float(request_metrics.get("estimated_service_ms", 0.0) or 0.0),
             )
             return
 
@@ -1272,7 +1518,7 @@ class Stage1Scheduler(Scheduler):
             schedule_metrics={"scheduler_policy": self._policy_name()},
         )
         self._waiting_queue.append(queued_request)
-        if self._policy_name() in {_P95_FIRST_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
+        if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
             self._record_p95_first_cost_observation(queued_request)
         self._maybe_reorder_waiting_queue(queued_request, enqueue_time)
         self._log_request_event(
@@ -1420,6 +1666,7 @@ class Stage1Scheduler(Scheduler):
                     break
                 self._queue_cv.wait()
 
+        previous_executed_steps = self._safe_int(getattr(request, "executed_steps", 0), 0)
         execute_start = time.monotonic()
         try:
             with self._lock:
@@ -1453,8 +1700,14 @@ class Stage1Scheduler(Scheduler):
             raise TimeoutError("Scheduler did not respond in time.") from exc
 
         execute_latency_ms = (time.monotonic() - execute_start) * 1000
+        chunk_work_units = self._completed_chunk_work_units(request, output, previous_executed_steps)
         self._sync_request_progress_from_output(request, output)
         output = self._annotate_output(output, queued_request, request, queue_wait_ms, execute_latency_ms)
+        if self._policy_name() in _NORMALIZED_P95_POLICIES and not output.error:
+            previous_total_execute_ms = self._safe_optional_float(getattr(request, "_p95_first_cumulative_execute_ms", None))
+            total_execute_ms = (previous_total_execute_ms or 0.0) + execute_latency_ms
+            setattr(request, "_p95_first_cumulative_execute_ms", total_execute_ms)
+            self._record_p95_first_execute_sample(execute_latency_ms, chunk_work_units)
 
         if output.error:
             self.fail_request(request)
@@ -1512,8 +1765,11 @@ class Stage1Scheduler(Scheduler):
             self.finish_request(request)
             setattr(request, "completion_time", time.monotonic())
             self._refresh_output_metrics(output, request, queue_len=len(self._waiting_queue))
-            if self._policy_name() in {_P95_FIRST_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
-                self._record_p95_first_latency_ms(self._safe_optional_float(output.metrics.get("scheduler_latency_ms")))
+            if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
+                self._record_p95_first_latency_ms(
+                    self._safe_optional_float(output.metrics.get("scheduler_latency_ms")),
+                    request=request,
+                )
             self._log_request_event(
                 "REQUEST_COMPLETED",
                 request,
