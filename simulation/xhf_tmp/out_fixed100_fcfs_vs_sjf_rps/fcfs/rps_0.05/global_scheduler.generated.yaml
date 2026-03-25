@@ -1,0 +1,59 @@
+server:
+  host: 0.0.0.0
+  port: 8089
+  request_timeout_s: 6000000
+  instance_health_check_interval_s: 10.0
+  instance_health_check_timeout_s: 10.0
+scheduler:
+  tie_breaker: random
+  ewma_alpha: 0.2
+policy:
+  baseline:
+    algorithm: round_robin
+benchmark:
+  worker_ids:
+  - worker0
+  worker_ready_timeout_s: 12000
+  model: "/data2/group_\u8C08\u6D77\u751F/mumura/models/Qwen-Image"
+  backend: vllm-omni
+  task: t2i
+  dataset: trace
+  dataset_path: /home/mumura/omni/vllm-omni/benchmarks/diffusion/scripts/global_instance_scheduler_v2/xhf_tmp/datasets/datasetX.trace.txt
+  max_concurrency: 20
+  warmup_requests: 8
+  warmup_num_inference_steps: 1
+  output_file: /home/mumura/omni/vllm-omni/benchmarks/diffusion/scripts/global_instance_scheduler_v2/xhf_tmp/out_fixed100_fcfs_vs_sjf_rps/fcfs/rps_0.05/metrics.json
+  auto_stop: true
+instances:
+- id: worker0
+  endpoint: http://127.0.0.1:8001
+  instance_type: qwen-image
+  numa_node: 0
+  backends:
+  - vllm-omni
+  - openai
+  launch:
+    executable: vllm-omni
+    model: "/data2/group_\u8C08\u6D77\u751F/mumura/models/Qwen-Image"
+    args:
+    - --omni
+    - --diffusion-engine-max-concurrency
+    - '32'
+    - --ulysses-degree
+    - '1'
+    - --cfg-parallel-size
+    - '1'
+    - --vae-use-slicing
+    - --vae-use-tiling
+    - --num-weight-load-threads
+    - '4'
+    - --instance-scheduler-policy
+    - fcfs
+    env:
+      CUDA_VISIBLE_DEVICES: '0'
+  stop:
+    executable: pkill
+    args:
+    - -f
+    - "vllm-omni serve /data2/group_\u8C08\u6D77\u751F/mumura/models/Qwen-Image --port\
+      \ {endpoint_port}"

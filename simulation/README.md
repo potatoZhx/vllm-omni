@@ -9,6 +9,8 @@ python simulation.py
 
 **配置**：`config/simulation_config.yaml`（主配置，含 rps、worker、算法、profile 路径、请求 mix 等）。
 
+**额外示例配置（来自合并的 simulation_tmp）**：`config/simulation_config_tmp.yaml`（单实例 + trace 数据集示例；使用 `profile/qwen.json` 与 `xhf_tmp/datasets/datasetX.trace.txt`）。
+
 **输出**：`output/{profile名}/` 下生成各算法的 JSON 与 CSV，跑完自动画图到同目录。
 
 ---
