@@ -21,6 +21,7 @@ logger = init_logger(__name__)
 _DEADLINE_AWARE_POLICIES = {"slo_first", "slack_age", "slack_cost_age"}
 _P95_FIRST_POLICY = "p95-first"
 _P95_FIRST_DEADLINE_POLICY = "p95-first-deadline"
+_P95_BUCKET_SJF_NORMALIZED_POLICY = "p95-bucket-sjf-normalized"
 _P95_BUCKET_SJF_POLICY = "p95-bucket-sjf"
 _SJF_AGING_POLICY = "sjf_aging"
 _SIZE_BUCKET_SJF_AGING_POLICY = "size_bucket_sjf_aging"
@@ -33,7 +34,7 @@ _SJF_AGING_DEFAULT_FACTOR = 1.0
 _FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
 _SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
-_NORMALIZED_P95_POLICIES = {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY}
+_NORMALIZED_P95_POLICIES = {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY}
 _LEARNED_P95_DEADLINE_POLICIES = _DEADLINE_AWARE_POLICIES | {_P95_FIRST_POLICY, _SLACK_HYBRID_POLICY}
 
 
@@ -677,6 +678,110 @@ class Stage1Scheduler(Scheduler):
         )
         return max(history_p95_ms, estimated_cost_ms), history_p95_ms
 
+    def _build_p95_bucket_sjf_normalized_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        bucket_count = max(self._safe_int(getattr(self.od_config, "instance_scheduler_p95_bucket_count", 4), 4), 1)
+        min_window_ms = float(getattr(self.od_config, "instance_scheduler_p95_bucket_min_window_ms", 200.0) or 200.0)
+        starvation_threshold_s = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_p95_bucket_starvation_threshold_s", None)
+        )
+        promote_levels = max(
+            self._safe_int(getattr(self.od_config, "instance_scheduler_p95_bucket_starvation_promote_levels", 1), 1),
+            0,
+        )
+        availability_ts = self._availability_ts(now)
+        learned_slowdown_p95 = self._learned_p95_first_slowdown()
+        instance_backlog_total_s = self._compute_local_backlog_seconds(waiting_requests, now)
+        active_chunk_blocking_ms = self._p95_first_active_chunk_blocking_ms(now)
+        service_rate_source = (
+            "observed_runtime"
+            if self._p95_first_observed_service_ms_per_work_unit is not None
+            else "estimated_cost_fallback"
+        )
+        precomputed: dict[int, dict[str, float]] = {}
+        max_target_latency_ms = min_window_ms
+        for queued_request in waiting_requests:
+            estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+            work_units = max(self._request_work_units(queued_request.request), 1e-9)
+            estimated_service_ms = self._p95_first_estimated_service_ms(queued_request)
+            target_latency_ms = max(learned_slowdown_p95 * estimated_service_ms, 1e-9)
+            synthetic_deadline_ts = self._request_base_arrival_time(queued_request) + (target_latency_ms / 1000.0)
+            urgency_ms = (synthetic_deadline_ts - availability_ts) * 1000.0
+            age_s = self._request_age_seconds(queued_request, now)
+            precomputed[queued_request.sequence_id] = {
+                "estimated_cost_s": estimated_cost_s,
+                "work_units": work_units,
+                "estimated_service_ms": estimated_service_ms,
+                "target_latency_ms": target_latency_ms,
+                "synthetic_deadline_ts": synthetic_deadline_ts,
+                "urgency_ms": urgency_ms,
+                "age_s": age_s,
+            }
+            max_target_latency_ms = max(max_target_latency_ms, target_latency_ms)
+
+        bucket_width_ms = max(max_target_latency_ms / float(bucket_count), 1e-9)
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        buckets: dict[int, list[_QueuedRequest]] = {bucket_id: [] for bucket_id in range(bucket_count)}
+        for queued_request in waiting_requests:
+            values = precomputed[queued_request.sequence_id]
+            urgency_ms = float(values["urgency_ms"])
+            if urgency_ms <= 0.0:
+                raw_bucket_id = 0
+            else:
+                raw_bucket_id = min(int(urgency_ms / bucket_width_ms), bucket_count - 1)
+            starvation_promoted = 0
+            effective_bucket_id = raw_bucket_id
+            age_s = float(values["age_s"])
+            if starvation_threshold_s is not None and age_s >= starvation_threshold_s and promote_levels > 0:
+                effective_bucket_id = max(raw_bucket_id - promote_levels, 0)
+                starvation_promoted = 1
+            metrics_by_sequence[queued_request.sequence_id] = {
+                "scheduler_policy": _P95_BUCKET_SJF_NORMALIZED_POLICY,
+                "queue_reorder_count": 1,
+                "learned_slowdown_p95": learned_slowdown_p95,
+                "observed_service_rate_ms_per_work_unit": self._p95_first_observed_service_ms_per_work_unit,
+                "service_rate_source": service_rate_source,
+                "backlog_s_at_schedule": instance_backlog_total_s,
+                "instance_backlog_total_s": instance_backlog_total_s,
+                "active_chunk_blocking_ms": active_chunk_blocking_ms,
+                "active_chunk_blocking_s": active_chunk_blocking_ms / 1000.0,
+                "estimated_cost_s": float(values["estimated_cost_s"]),
+                "work_units": float(values["work_units"]),
+                "estimated_service_ms": float(values["estimated_service_ms"]),
+                "target_latency_ms": float(values["target_latency_ms"]),
+                "synthetic_deadline_ts": float(values["synthetic_deadline_ts"]),
+                "urgency_ms": urgency_ms,
+                "raw_bucket_id": raw_bucket_id,
+                "effective_bucket_id": effective_bucket_id,
+                "bucket_width_ms": bucket_width_ms,
+                "age_s": age_s,
+                "starvation_promoted": starvation_promoted,
+            }
+            buckets[effective_bucket_id].append(queued_request)
+
+        ordered_queue: list[_QueuedRequest] = []
+        for bucket_id in range(bucket_count):
+            bucket = sorted(
+                buckets[bucket_id],
+                key=lambda queued: (
+                    float(metrics_by_sequence[queued.sequence_id]["estimated_service_ms"]),
+                    queued.enqueue_time,
+                    queued.sequence_id,
+                ),
+            )
+            ordered_queue.extend(bucket)
+
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
+
+        return ordered_queue, metrics_by_sequence
+
     def _build_p95_bucket_sjf_queue(
         self,
         waiting_requests: list[_QueuedRequest],
@@ -1300,6 +1405,27 @@ class Stage1Scheduler(Scheduler):
             )
             return
 
+        if policy == _P95_BUCKET_SJF_NORMALIZED_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_p95_bucket_sjf_normalized_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s learned_slowdown_p95=%.4f target_latency_ms=%.2f urgency_ms=%.2f bucket=%s queue_rank=%s estimated_service_ms=%.2f",
+                self._request_label(new_request.request),
+                policy,
+                float(request_metrics.get("learned_slowdown_p95", 0.0) or 0.0),
+                float(request_metrics.get("target_latency_ms", 0.0) or 0.0),
+                float(request_metrics.get("urgency_ms", 0.0) or 0.0),
+                request_metrics.get("effective_bucket_id"),
+                request_metrics.get("queue_rank"),
+                float(request_metrics.get("estimated_service_ms", 0.0) or 0.0),
+            )
+            return
+
         if policy == _P95_BUCKET_SJF_POLICY:
             ordered_queue, metrics_by_sequence = self._build_p95_bucket_sjf_queue(list(self._waiting_queue), now)
             self._waiting_queue = deque(ordered_queue)
@@ -1518,7 +1644,7 @@ class Stage1Scheduler(Scheduler):
             schedule_metrics={"scheduler_policy": self._policy_name()},
         )
         self._waiting_queue.append(queued_request)
-        if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
+        if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
             self._record_p95_first_cost_observation(queued_request)
         self._maybe_reorder_waiting_queue(queued_request, enqueue_time)
         self._log_request_event(
@@ -1765,7 +1891,7 @@ class Stage1Scheduler(Scheduler):
             self.finish_request(request)
             setattr(request, "completion_time", time.monotonic())
             self._refresh_output_metrics(output, request, queue_len=len(self._waiting_queue))
-            if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
+            if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
                 self._record_p95_first_latency_ms(
                     self._safe_optional_float(output.metrics.get("scheduler_latency_ms")),
                     request=request,

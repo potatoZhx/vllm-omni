@@ -258,16 +258,14 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "sjf_aging", "size_bucket_sjf_aging", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "slack_age", "slack_cost_age", "slack_hybrid"],
+            choices=["fcfs", "sjf", "sjf_aging", "size_bucket_sjf_aging", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'sjf_aging' adds wait-time aging "
             "on top of SJF to prevent starvation and works with chunk requeue, 'size_bucket_sjf_aging' "
             "groups requests into fixed resolution buckets and applies SJF+aging within each bucket, "
             "'slo_first' keeps "
             "the current deadline-aware on-time/tail ordering, 'p95-first' uses normalized "
-            "tail-pressure ranking learned from observed runtime and request slowdown, 'p95-first-deadline' uses the same normalized learning path to derive synthetic deadlines and then orders by slack/deadline pressure, 'p95-bucket-sjf' derives a local "
-            "target p95 from request cost and history, then orders by deadline buckets with "
-            "intra-bucket SJF, 'slack_age' prioritizes tight/old requests, 'slack_cost_age' adds "
+            "tail-pressure ranking learned from observed runtime and request slowdown, 'p95-first-deadline' uses the same normalized learning path to derive synthetic deadlines and then orders by slack/deadline pressure, 'p95-bucket-sjf' derives a local target p95 from request cost and history, then orders by deadline buckets with intra-bucket SJF, while 'p95-bucket-sjf-normalized' keeps the same bucketed SJF structure but replaces that target with the normalized p95-first estimator, 'slack_age' prioritizes tight/old requests, 'slack_cost_age' adds "
             "a bounded remaining-cost penalty on top of slack+aging, and 'slack_hybrid' switches "
             "between panic EDF and throughput SRPT+aging based on the slack ratio threshold.",
         )

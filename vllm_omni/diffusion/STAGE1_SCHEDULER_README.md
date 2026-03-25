@@ -16,7 +16,7 @@
 
 ## 1. 当前支持的策略
 
-`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 11 种取值：
+`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 12 种取值：
 
 - `fcfs`
 - `sjf`
@@ -26,6 +26,7 @@
 - `p95-first`
 - `p95-first-deadline`
 - `p95-bucket-sjf`
+- `p95-bucket-sjf-normalized`
 - `slack_age`
 - `slack_cost_age`
 - `slack_hybrid`
@@ -33,7 +34,7 @@
 CLI 入口：
 
 ```bash
---instance-scheduler-policy {fcfs,sjf,sjf_aging,size_bucket_sjf_aging,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,slack_age,slack_cost_age,slack_hybrid}
+--instance-scheduler-policy {fcfs,sjf,sjf_aging,size_bucket_sjf_aging,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
 ```
 
 其中：
@@ -53,6 +54,8 @@ CLI 入口：
   - 先求可按时完成的 `on_time` 集合，再按 `slack / remaining_cost` 排序
 - `p95-first-deadline`
   - 复用 `p95-first` 的 normalized 学习链路，但将 `target_latency_ms` 转成 synthetic deadline，再按 slack/deadline 压力排序
+- `p95-bucket-sjf-normalized`
+  - 保留 `p95-bucket-sjf` 的 bucket + SJF 结构，但把内部 `target_p95_ms` 替换成 `p95-first` 的 normalized target
 - `slack_age`
   - 直接对整个等待队列按 `slack - aging_factor * age` 做单队列排序
 - `slack_cost_age`
@@ -64,134 +67,159 @@ CLI 入口：
 
 ### 1.0 `p95-first` 算法简介
 
-`p95-first` 当前不再维护一个“全局绝对毫秒 p95 目标”。它改为学习两个在线量：
+`p95-first` 的目标不是最小化平均时延，而是优先压低实例内的尾时延。当前实现不再维护一个“全局绝对 p95 毫秒阈值”，而是把每个请求都映射到同一套 **runtime-normalized tail pressure** 框架里，再按压力大小重排等待队列。
 
-1. 实例当前的服务速率，也就是“每单位 work 需要多少真实执行时间”。
-2. 已完成请求的尾部 slowdown，也就是“端到端 latency 相对纯执行时间放大了多少”。
+可以把它理解成 4 个步骤：
 
-调度时，它不再问“这个请求会不会撞上某个固定 `dynamic_p95_ms`”，而是问：
+1. 先把请求规模统一映射成 `work_units`
+2. 再根据真实 chunk 执行时间在线学习当前实例速度
+3. 然后给每个请求估算剩余纯执行时间 `estimated_service_ms`
+4. 最后比较“它的预计完成时延”相对“它自己的 tail budget”有多危险
 
-- 以当前实例的真实运行速度看，这个请求还需要多少 service time？
-- 结合它已经等了多久、前面 active chunk 还会挡多久，它的预计完成时间相对自己的 tail budget 有多危险？
+#### 1.0.1 输入量
 
-因此它优化的是 **normalized tail pressure**，而不是一个依赖数据集和机器绝对时间尺度的固定 p95 目标。
-
-当前实现里的关键量如下：
-
-- `work_units`
-  - 请求的剩余 work 规模。
-  - 当前按剩余 steps、分辨率面积、帧数和输出数构造：
+当前实现里，一个请求的剩余 work 用 `work_units` 表示：
 
 ```text
-work_units = remaining_steps * num_frames * num_outputs * max(area / 1024^2, 0.0625)
+work_units
+= remaining_steps * num_frames * num_outputs
+  * max(area / 1024^2, 0.0625)
 ```
 
-- `observed_service_rate_ms_per_work_unit`
-  - 在线学习到的实例服务速率。
-  - 来自已执行 chunk 的真实 `scheduler_execute_ms / chunk_work_units`，并用 EMA 平滑。
+这里的目标不是得到物理上精确的 FLOPs，而是构造一个在分辨率、步数、帧数、输出数之间单调一致的规模指标。
+
+#### 1.0.2 在线学习量
+
+`p95-first` 在线学习两个量：
+
+1. `observed_service_rate_ms_per_work_unit`
+   - 当前实例处理 1 个 `work_unit` 需要多少真实执行时间。
+   - 每个已完成 chunk 都会产出一个 sample：
 
 ```text
 observed_rate = chunk_execute_ms / chunk_work_units
-service_rate = observed_rate,                                      first sample
-service_rate = (1 - alpha) * old_rate + alpha * observed_rate,    otherwise
 ```
 
-- `request_execute_ms`
-  - 单个请求跨多个 chunk 的累计真实执行时间。
-  - 只统计 worker 实际执行阶段，不包含排队等待。
-
-- `slowdown_sample`
-  - 完成请求的端到端 latency 相对纯执行时间的放大倍数。
+   - 然后用 EMA 平滑更新：
 
 ```text
-slowdown_sample = request_latency_ms / max(request_execute_ms, 1e-9)
+service_rate = (1 - alpha) * old_rate + alpha * observed_rate
 ```
 
-- `learned_slowdown_p95`
-  - 实例内完成请求 slowdown 的在线 p95。
-  - 当历史样本数小于 20 时，当前实现取窗口内最大 slowdown；否则取 nearest-rank p95。
-  - 冷启动时回退为 `1.0`，表示先按“latency 大约等于 service time”处理。
+2. `learned_slowdown_p95`
+   - 已完成请求的 slowdown p95。
+   - slowdown 定义为：
 
-- `estimated_service_ms`
-  - 结合当前实例服务速率后，对该请求剩余纯执行时间的估计。
+```text
+slowdown = request_latency_ms / max(request_execute_ms, 1e-9)
+```
+
+   - 直观上，它表示“端到端 latency 相对纯执行时间被放大了多少”。
+
+如果系统还处于冷启动阶段：
+
+- `service_rate` 还没有真实 sample 时，回退到 `estimated_cost_s`
+- `learned_slowdown_p95` 没有历史样本时，回退到 `1.0`
+
+#### 1.0.3 单个请求的 tail pressure
+
+对每个等待中的请求，先估算它的剩余纯执行时间：
 
 ```text
 estimated_service_ms = service_rate * work_units
 ```
 
-  - 如果实例还没有任何真实 runtime sample，当前实现回退到 `estimated_cost_s * 1000`。
-
-- `active_chunk_blocking_ms`
-  - 当前 active chunk 还会额外阻塞等待队列多久。
-  - 若已有 runtime sample，则用 `active_chunk_work_units * service_rate` 估算 chunk 总执行时间，再扣除已运行时间。
-  - 若还没有 runtime sample，则回退到现有 cost estimation。
-
-- `predicted_finish_latency_ms`
-  - 若当前请求现在被选中，它的大致总 latency 预测值。
+再估算“如果现在轮到它执行，它最终大概会在什么时候完成”：
 
 ```text
-predicted_finish_latency_ms = age_ms + cursor_ms + estimated_service_ms
+predicted_finish_latency_ms
+= age_ms + cursor_ms + estimated_service_ms
 ```
 
 其中：
 
-- `age_ms` 是请求已经等待的时间。
-- `cursor_ms` 从 `active_chunk_blocking_ms` 起步，并在 greedy 选队列时逐步累加前面已选请求的 `estimated_service_ms`。
+- `age_ms` 是请求已经等待的时间
+- `cursor_ms` 是它前面还要再等多久
+- `estimated_service_ms` 是它自己的剩余纯执行时间
 
-- `target_latency_ms`
-  - 当前请求自己的 tail budget，不是全局常数，而是“自身 service time 乘上实例当前学到的 slowdown p95”。
+然后给这个请求一个属于它自己的 tail budget：
 
 ```text
 target_latency_ms = learned_slowdown_p95 * estimated_service_ms
 ```
 
-- `pressure_ratio`
-  - 当前实现用来衡量 tail 风险的主量。
+最后定义 tail pressure：
 
 ```text
 pressure_ratio = predicted_finish_latency_ms / max(target_latency_ms, 1e-9)
-```
-
-  - `pressure_ratio > 1` 表示预计会超过自己的 tail budget。
-  - `pressure_ratio` 越大，说明这个请求越值得被优先“救”。
-
-- `risk_ms`
-  - 预计完成时延相对其 tail budget 的超额。
-
-```text
 risk_ms = predicted_finish_latency_ms - target_latency_ms
 ```
 
-- `final_priority_score`
-  - 当前实现的最终排序分数，按分数从小到大选择下一请求。
-  - 基础项是 `-pressure_ratio`，再叠加 size bias、age bias 和 starvation boost。
+含义很直接：
+
+- `pressure_ratio > 1` 表示这个请求预计会超过自己的 tail budget
+- `pressure_ratio` 越大，说明它越值得被优先“救”
+
+#### 1.0.4 排序分数与队列构造
+
+当前实现的基础打分项是：
 
 ```text
 base_score = -pressure_ratio
-final_priority_score = base_score + size_bias * (estimated_service_ms / 1000) - age_bias * age_s - starvation_boost
 ```
 
-直观理解：
+在此之上，还可以叠加 3 个修饰项：
 
-- `p95-first` 不再用“一个固定绝对 p95 阈值”比较所有请求。
-- 它先用真实 chunk 运行时间学习实例当前速度，再把不同大小请求都映射成自己的 `estimated_service_ms`。
-- 然后用 slowdown p95 给每个请求生成自己的 tail budget。
-- 最后比较“它离自己的 tail budget 还有多远”，而不是比较“它离某个全局毫秒阈值还有多远”。
+- `size_bias`
+- `age_bias`
+- `starvation_boost`
 
-这使它对分辨率、steps 和机器速度变化更稳，也更不需要根据数据集去调 `min_ms / max_ms / base_ms` 一类绝对时间参数。
+最终分数为：
 
-与运行时机制的关系：
+```text
+final_priority_score
+= -pressure_ratio
+  + size_bias * (estimated_service_ms / 1000)
+  - age_bias * age_s
+  - starvation_boost
+```
 
-- `p95-first` 仍然依赖 step chunk + chunk preemption 才能持续重排队列。
-- active request 不会在 chunk 内被打断，只会在 chunk 边界重入队后重新参与评分。
-- 因此它仍然不是连续抢占模型，而是“chunk 边界上的 normalized tail-pressure 重排”。
+注意两点：
 
-适用边界：
+1. 这里不是一次性独立给每个请求打分后直接排序。
+2. 当前实现会用 greedy 方式逐个挑选请求，并在每选中一个请求后，把它的 `estimated_service_ms` 累加进 `cursor_ms`，再重新评估剩余请求。
 
-- 该策略更适合混合长短任务、且希望把尾时延优化目标从“绝对 ms”改成“相对 service time”的场景。
-- 如果 runtime profile 很差，冷启动阶段仍然会受 `estimated_cost_s` 质量影响。
-- 当前实现只学习一个全局服务速率；如果不同分辨率对应的 kernel regime 差异非常大，这个单一速率可能仍然会欠拟合。
-- 如果 chunk 很大，runtime sample 更新会变慢，tail risk 响应也会随之变钝。
+因此它优化的是“整条等待队列的归一化尾压顺序”，而不是单个请求的局部静态优先级。
+
+#### 1.0.5 运行时边界
+
+`p95-first` 只有在队列重排时才会重新生效：
+
+- 新请求到达时
+- unfinished 请求在 chunk 边界重新入队时
+
+它不会打断 chunk 内部执行，所以当前模型仍然是：
+
+- chunk 内连续执行
+- chunk 边界重新评估 tail pressure
+- 再决定下一轮 waiting queue 的顺序
+
+这也是为什么它强依赖：
+
+- `step chunk`
+- `chunk preemption`
+
+如果 chunk 太大：
+
+- runtime sample 更新会变慢
+- tail pressure 的响应会变钝
+- 排序收益会下降
+
+#### 1.0.6 一句话概括
+
+当前仓库里的 `p95-first` 可以概括为：
+
+> 先用真实运行数据学习实例当前速度和尾部 slowdown，再把每个请求映射成“预计完成时延 / 自身 tail budget”的压力值，最后按这个压力对等待队列做 greedy 重排。
 
 ### 1.1 `p95-first-deadline` 算法完整说明
 
@@ -401,7 +429,54 @@ sort_key = (
 - 如果 runtime profile 很差，或 `estimated_cost_s` 明显失真，bucket 划分质量会直接下降。
 - 如果系统长期重载，很多请求会一起掉进最紧急 bucket，此时策略会退化得更像“加了饥饿保护的 SJF”。
 
-### 1.3 各策略可调参数与默认值
+### 1.3 `p95-bucket-sjf-normalized` 算法完整说明
+
+`p95-bucket-sjf-normalized` 是 `p95-bucket-sjf` 的结构化副本：bucket 划分、bucket 内 SJF、starvation promotion 都保持不变，唯一变化是内部的 p95 估计不再来自绝对 latency history，而是复用 `p95-first` 的 runtime-normalized 学习链路。
+
+它对每个请求先计算：
+
+```text
+estimated_service_ms = service_rate * work_units
+target_latency_ms = learned_slowdown_p95 * estimated_service_ms
+synthetic_deadline_ts = arrival_time + target_latency_ms / 1000
+urgency_ms = (synthetic_deadline_ts - availability_ts) * 1000
+```
+
+也就是说：
+
+- 旧 `p95-bucket-sjf` 用的是 absolute `history_p95_ms`。
+- 新 `p95-bucket-sjf-normalized` 用的是 `learned_slowdown_p95 * estimated_service_ms`。
+
+之后它仍然沿用 bucket 化逻辑：
+
+```text
+bucket_width_ms = max(max_target_latency_ms_in_queue, min_bucket_window_ms) / bucket_count
+```
+
+```text
+raw_bucket_id =
+    0, if urgency_ms <= 0
+    min(floor(urgency_ms / bucket_width_ms), bucket_count - 1), otherwise
+```
+
+最后排序键仍是两级结构：
+
+```text
+sort_key = (
+    effective_bucket_id,
+    estimated_service_ms,
+    enqueue_time,
+    sequence_id,
+)
+```
+
+所以它的工程语义很直接：
+
+- deadline 压力来自 `p95-first` 的 normalized p95 估计。
+- 可解释性仍然保持在 `p95-bucket-sjf` 这一层，而不是回到连续分数排序。
+- 如果你想保留 bucket 化 tail protection，但又不想继续依赖 absolute p95 history，它就是对应副本。
+
+### 1.4 各策略可调参数与默认值
 
 | 策略 | 主要排序逻辑 | 可调参数 | 默认值 |
 | --- | --- | --- | --- |
@@ -413,6 +488,7 @@ sort_key = (
 | `p95-first` | 基于 `learned_slowdown_p95`、`estimated_service_ms`、`pressure_ratio` 的 normalized tail-pressure 单队列排序 | `instance_scheduler_p95_first_size_bias`<br>`instance_scheduler_p95_first_age_bias`<br>`instance_scheduler_p95_first_starvation_threshold_s`<br>`instance_scheduler_p95_first_starvation_boost`<br>`instance_scheduler_p95_first_base_ms`（兼容保留）<br>`instance_scheduler_p95_first_min_ms`（兼容保留）<br>`instance_scheduler_p95_first_max_ms`（兼容保留）<br>`instance_scheduler_p95_first_backlog_alpha`（兼容保留） | `0.0`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`1.0` |
 | `p95-first-deadline` | 复用 `learned_slowdown_p95` 与 `estimated_service_ms` 生成 `synthetic_deadline_ts`，再按 `slack_s` / `deadline` / `estimated_service_ms` 排序 | `instance_scheduler_p95_first_base_ms`（兼容保留）<br>`instance_scheduler_p95_first_min_ms`（兼容保留）<br>`instance_scheduler_p95_first_max_ms`（兼容保留）<br>`instance_scheduler_p95_first_backlog_alpha`（兼容保留） | `None`<br>`0.0`<br>`None`<br>`1.0` |
 | `p95-bucket-sjf` | 先按 `urgency_ms` 划 bucket，再在 bucket 内按 `estimated_cost_s` 做 SJF | `instance_scheduler_p95_bucket_count`<br>`instance_scheduler_p95_bucket_min_window_ms`<br>`instance_scheduler_p95_bucket_starvation_threshold_s`<br>`instance_scheduler_p95_bucket_starvation_promote_levels`<br>`instance_scheduler_p95_first_min_ms` | `4`<br>`200.0`<br>`None`<br>`1`<br>`0.0` |
+| `p95-bucket-sjf-normalized` | 先按 normalized `urgency_ms` 划 bucket，再在 bucket 内按 `estimated_service_ms` 做 SJF | `instance_scheduler_p95_bucket_count`<br>`instance_scheduler_p95_bucket_min_window_ms`<br>`instance_scheduler_p95_bucket_starvation_threshold_s`<br>`instance_scheduler_p95_bucket_starvation_promote_levels` | `4`<br>`200.0`<br>`None`<br>`1` |
 | `slack_age` | 单队列按 `slack - aging_factor * age_s` 排序 | `instance_scheduler_aging_factor` | `0.0` |
 | `slack_cost_age` | 单队列按 `slack + 0.25 * remaining_cost_s - aging_factor * age_s` 排序 | `instance_scheduler_aging_factor` | `0.0`<br>其中 `0.25` 是当前代码内常量，不是配置项 |
 | `slack_hybrid` | 若任一请求 `slack_ratio < panic_threshold`，切到 Panic EDF；否则按 `estimated_cost_s - aging_factor * age_s` 做 Throughput SRPT + Aging 排序 | `instance_scheduler_aging_factor`<br>`instance_scheduler_slack_panic_threshold`<br>`instance_scheduler_slack_swap_overhead_ms` | `0.0`<br>`1.0`<br>`0.0` |
@@ -421,7 +497,7 @@ sort_key = (
 
 - `estimated_cost_s` 不是实例级配置，而是请求运行时输入；若请求未提供，调度器会回退到 runtime profile 或启发式估算。
 - `deadline_ts`、`slo_target_ms`、`slo_ms` 也是请求运行时输入；若 deadline-aware 策略没有显式 deadline，会回退到 learned-p95 synthetic deadline。
-- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`slack_hybrid` 在当前实现里会自动启用：
+- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid` 在当前实现里会自动启用：
   - `diffusion_enable_step_chunk=True`
   - `diffusion_enable_chunk_preemption=True`
 
@@ -480,9 +556,9 @@ sort_key = (
 
 然后在 bucket 内做 `SJF + Aging`，并按等待时长逐步把大 bucket 请求往前提升。
 
-### 3.3 `p95-first` / `p95-first-deadline` / `p95-bucket-sjf`
+### 3.3 `p95-first` / `p95-first-deadline` / `p95-bucket-sjf` / `p95-bucket-sjf-normalized`
 
-这三种策略都只要求请求侧尽量提供更准确的 `estimated_cost_s`，不要求请求显式提供 `slo_ms`、`slo_target_ms` 或 `deadline_ts`。
+这四种策略都只要求请求侧尽量提供更准确的 `estimated_cost_s`，不要求请求显式提供 `slo_ms`、`slo_target_ms` 或 `deadline_ts`。
 
 其中：
 
@@ -512,6 +588,16 @@ sort_key = (
   - 用 `deadline_ts = arrival_ts + target_p95_ms / 1000` 派生内部 deadline。
   - 按 `urgency_ms = (deadline_ts - availability_ts) * 1000` 做 bucket 划分。
   - bucket 内按 `estimated_cost_s` 做 SJF 排序。
+  - 推荐同时配置：
+    - `--instance-runtime-profile-path`
+    - `--instance-runtime-profile-name`
+    - `--diffusion-enable-step-chunk`
+    - `--diffusion-enable-chunk-preemption`
+- `p95-bucket-sjf-normalized`
+  - 保留与 `p95-bucket-sjf` 相同的 bucket + starvation promotion + bucket 内 SJF 结构。
+  - 但内部 target 不再来自 `history_p95_ms`，而是来自 `target_latency_ms = learned_slowdown_p95 * estimated_service_ms`。
+  - 用 `synthetic_deadline_ts = arrival_ts + target_latency_ms / 1000` 派生 normalized deadline。
+  - 按 normalized `urgency_ms` 做 bucket 划分，bucket 内按 `estimated_service_ms` 排序。
   - 推荐同时配置：
     - `--instance-runtime-profile-path`
     - `--instance-runtime-profile-name`
@@ -882,6 +968,25 @@ else:
 - `starvation_promoted`
 - `queue_rank`
 
+`p95-bucket-sjf-normalized` 额外会输出：
+
+- `queue_reorder_count`
+- `learned_slowdown_p95`
+- `observed_service_rate_ms_per_work_unit`
+- `service_rate_source`
+- `estimated_cost_s`
+- `work_units`
+- `estimated_service_ms`
+- `target_latency_ms`
+- `synthetic_deadline_ts`
+- `urgency_ms`
+- `raw_bucket_id`
+- `effective_bucket_id`
+- `bucket_width_ms`
+- `age_s`
+- `starvation_promoted`
+- `queue_rank`
+
 `slack_hybrid` 额外会输出：
 
 - `hybrid_mode`
@@ -1000,7 +1105,21 @@ sampling_params.extra_args["estimated_cost_s"] = 0.9
 sampling_params.extra_args["estimated_cost_s"] = 0.9
 ```
 
-### 8.5 推荐的 deadline-aware 配置
+### 8.5 推荐的 `p95-bucket-sjf-normalized` 配置
+
+```bash
+--instance-scheduler-policy p95-bucket-sjf-normalized \
+--instance-scheduler-p95-bucket-count 4 \
+--instance-scheduler-p95-bucket-min-window-ms 250 \
+--instance-scheduler-p95-bucket-starvation-threshold-s 8 \
+--instance-scheduler-p95-bucket-starvation-promote-levels 1 \
+--instance-runtime-profile-path /profile/runtime.json \
+--instance-runtime-profile-name img-a \
+--diffusion-enable-step-chunk \
+--diffusion-enable-chunk-preemption
+```
+
+### 8.6 推荐的 deadline-aware 配置
 
 ```bash
 --instance-scheduler-policy slack_age \
@@ -1014,7 +1133,7 @@ sampling_params.extra_args["estimated_cost_s"] = 0.9
 --diffusion-chunk-budget-steps 4
 ```
 
-### 8.6 请求级覆盖示例
+### 8.7 请求级覆盖示例
 
 显式给绝对 deadline：
 
@@ -1048,6 +1167,7 @@ sampling_params.extra_args["slo_ms"] = 2500
   - `p95-first`
   - `p95-first-deadline`
   - `p95-bucket-sjf`
+  - `p95-bucket-sjf-normalized`
   - `slack_age`
   - `slack_cost_age`
   - `slack_hybrid`
@@ -1068,7 +1188,7 @@ sampling_params.extra_args["slo_ms"] = 2500
 - `instance_scheduler_p95_bucket_starvation_promote_levels >= 0`
 - `instance_scheduler_slack_panic_threshold >= 0`
 - `instance_scheduler_slack_swap_overhead_ms >= 0`
-- 当策略为 `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`slack_hybrid` 时，会自动启用：
+- 当策略为 `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid` 时，会自动启用：
   - `diffusion_enable_step_chunk=True`
   - `diffusion_enable_chunk_preemption=True`
 - `diffusion_enable_chunk_preemption=True` 时，`diffusion_enable_step_chunk` 必须为 `True`
@@ -1082,7 +1202,7 @@ sampling_params.extra_args["slo_ms"] = 2500
 从当前代码和测试可以确认：
 
 - 配置入口已接到 `AsyncOmni` 和 CLI
-- 11 种策略都已接入配置校验
+- 12 种策略都已接入配置校验
 - `sjf` 已覆盖：
   - 队列重排
   - remaining steps 缩放
@@ -1091,6 +1211,6 @@ sampling_params.extra_args["slo_ms"] = 2500
   - `on_time` / `best_effort` 集合划分
   - `slo_first`、`slack_age`、`slack_cost_age` 的排序差异
   - `attain_before`、`self_hit` 等指标输出
-- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`slack_hybrid` 已接入 CLI、配置与调度实现；是否有独立单测，应以当前测试文件为准
+- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid` 已接入 CLI、配置与调度实现；是否有独立单测，应以当前测试文件为准
 
 这份文档只描述当前仓库行为，不再保留“统一采用 `3 x estimated_cost_s` 生成 SLO”这类实验约定。若要使用该规则，应在请求构造侧显式写入 `sampling_params.extra_args["slo_target_ms"]`，而不是假定调度器内部会自动生成。

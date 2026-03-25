@@ -1175,6 +1175,24 @@ def test_stage1_scheduler_p95_first_deadline_reports_policy_name_without_affecti
     assert output.metrics["scheduler_policy"] == "p95-first-deadline"
 
 
+def test_stage1_scheduler_p95_bucket_sjf_normalized_reports_policy_name_without_affecting_existing_policies():
+    sched, req_q, res_q = _make_stage1_scheduler(policy="p95-bucket-sjf-normalized")
+    req = _mock_request("req-p95-bucket-sjf-normalized")
+
+    def _worker():
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), request_id="req-p95-bucket-sjf-normalized"))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    output = sched.add_req(req)
+    worker.join(5)
+
+    assert output.error is None
+    assert output.metrics["scheduler_policy"] == "p95-bucket-sjf-normalized"
+
+
 def test_stage1_scheduler_p95_first_dynamic_p95_grows_with_backlog():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-first")
     sched.od_config.instance_scheduler_p95_first_backlog_alpha = 1.0
@@ -1451,6 +1469,64 @@ def test_stage1_scheduler_p95_first_deadline_learns_slowdown_from_request_latenc
     sched._record_p95_first_latency_ms(1000.0, request=req)
 
     assert sched._learned_p95_first_slowdown() == pytest.approx(2.5)
+
+
+def test_stage1_scheduler_p95_bucket_sjf_normalized_uses_normalized_target_not_absolute_history():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf-normalized")
+    sched._p95_first_latency_history_ms.extend([999999.0])
+    sched._p95_first_observed_service_ms_per_work_unit = 1000.0
+    sched._p95_first_slowdown_history.append(2.0)
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(
+            _mock_request("req", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+        )
+        ordered, metrics_by_sequence = sched._build_p95_bucket_sjf_normalized_queue(list(sched._waiting_queue), now=queued.enqueue_time)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["req"]
+    metrics = metrics_by_sequence[queued.sequence_id]
+    assert metrics["learned_slowdown_p95"] == pytest.approx(2.0)
+    assert metrics["estimated_service_ms"] == pytest.approx(1000.0)
+    assert metrics["target_latency_ms"] == pytest.approx(2000.0)
+    assert "history_p95_ms" not in metrics
+
+
+
+def test_stage1_scheduler_p95_bucket_sjf_normalized_reorders_by_bucket_then_sjf():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf-normalized")
+    sched.od_config.instance_scheduler_p95_bucket_count = 4
+    sched.od_config.instance_scheduler_p95_bucket_min_window_ms = 1000.0
+    sched._p95_first_observed_service_ms_per_work_unit = 1000.0
+    sched._p95_first_slowdown_history.append(2.0)
+
+    urgent_long = _mock_request("urgent-long", num_inference_steps=8, extra_args={"estimated_cost_s": 8.0})
+    urgent_short = _mock_request("urgent-short", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    relaxed = _mock_request("relaxed", num_inference_steps=8, extra_args={"estimated_cost_s": 8.0})
+    urgent_long.arrival_time = 0.0
+    urgent_short.arrival_time = 12.0
+    relaxed.arrival_time = 13.0
+
+    with sched._queue_cv:
+        q1 = sched._enqueue_request_locked(urgent_long)
+        q2 = sched._enqueue_request_locked(urgent_short)
+        q3 = sched._enqueue_request_locked(relaxed)
+        ordered, metrics_by_sequence = sched._build_p95_bucket_sjf_normalized_queue([q1, q2, q3], now=13.0)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["urgent-short", "urgent-long", "relaxed"]
+    assert metrics_by_sequence[q1.sequence_id]["effective_bucket_id"] == metrics_by_sequence[q2.sequence_id]["effective_bucket_id"]
+    assert metrics_by_sequence[q3.sequence_id]["effective_bucket_id"] > metrics_by_sequence[q2.sequence_id]["effective_bucket_id"]
+
+
+def test_stage1_scheduler_p95_bucket_sjf_normalized_learns_slowdown_from_request_latency_over_actual_execute_time():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf-normalized")
+
+    req = _mock_request("done", num_inference_steps=4, extra_args={"estimated_cost_s": 4.0})
+    setattr(req, "_p95_first_cumulative_execute_ms", 400.0)
+
+    sched._record_p95_first_latency_ms(1000.0, request=req)
+
+    assert sched._learned_p95_first_slowdown() == pytest.approx(2.5)
+
 
 def test_stage1_scheduler_p95_bucket_sjf_target_p95_uses_max_of_history_and_cost():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="p95-bucket-sjf")
