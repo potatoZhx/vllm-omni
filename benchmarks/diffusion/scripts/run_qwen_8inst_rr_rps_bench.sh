@@ -40,6 +40,8 @@ RPS_LIST="${RPS_LIST:-[0.2]}" # , 0.4, 0.6, 0.8, 1
 BENCHMARK_MODE="${BENCHMARK_MODE:-fixed_duration}"
 NUM_PROMPTS_DURATION_SECONDS="${NUM_PROMPTS_DURATION_SECONDS:-1800}"
 FIXED_NUM_PROMPTS="${FIXED_NUM_PROMPTS:-100}"
+WARMUP_REQUESTS="${WARMUP_REQUESTS:-8}"
+WARMUP_NUM_INFERENCE_STEPS="${WARMUP_NUM_INFERENCE_STEPS:-1}"
 # ===========================================================================
 
 mkdir -p "$RESULTS_ROOT_DIR"
@@ -61,6 +63,8 @@ echo "===== RPS list: ${RPS_LIST} =====" | tee -a "$MASTER_LOG"
 echo "===== Benchmark mode: ${BENCHMARK_MODE} =====" | tee -a "$MASTER_LOG"
 echo "===== Duration(seconds): ${NUM_PROMPTS_DURATION_SECONDS} =====" | tee -a "$MASTER_LOG"
 echo "===== Fixed num-prompts: ${FIXED_NUM_PROMPTS} =====" | tee -a "$MASTER_LOG"
+echo "===== Warmup requests: ${WARMUP_REQUESTS} =====" | tee -a "$MASTER_LOG"
+echo "===== Warmup num_inference_steps: ${WARMUP_NUM_INFERENCE_STEPS} =====" | tee -a "$MASTER_LOG"
 echo "===== Dataset: ${DATASET} =====" | tee -a "$MASTER_LOG"
 echo "===== DatasetType: ${DATASET_TYPE} =====" | tee -a "$MASTER_LOG"
 echo "===== Task: ${TASK} =====" | tee -a "$MASTER_LOG"
@@ -105,6 +109,14 @@ if [ "$BENCHMARK_MODE" = "fixed_num_prompts" ]; then
     echo "FIXED_NUM_PROMPTS must be a positive integer, got: ${FIXED_NUM_PROMPTS}" | tee -a "$MASTER_LOG"
     exit 1
   fi
+fi
+if ! [[ "$WARMUP_REQUESTS" =~ ^[0-9]+$ ]]; then
+  echo "WARMUP_REQUESTS must be a non-negative integer, got: ${WARMUP_REQUESTS}" | tee -a "$MASTER_LOG"
+  exit 1
+fi
+if ! [[ "$WARMUP_NUM_INFERENCE_STEPS" =~ ^[0-9]+$ ]] || [ "$WARMUP_NUM_INFERENCE_STEPS" -lt 1 ]; then
+  echo "WARMUP_NUM_INFERENCE_STEPS must be a positive integer, got: ${WARMUP_NUM_INFERENCE_STEPS}" | tee -a "$MASTER_LOG"
+  exit 1
 fi
 
 build_random_request_config() {
@@ -198,7 +210,8 @@ for i in $(seq 0 $((NUM_INSTANCES - 1))); do
       vllm serve "$MODEL" \
         --omni \
         --port "$port" \
-        --num-gpus 1 \
+        --ulysses-degree 1 \
+        --cfg-parallel-size 1 \
         --num-weight-load-threads 8 \
         --vae-use-slicing \
         --vae-use-tiling \
@@ -212,6 +225,8 @@ for i in $(seq 0 $((NUM_INSTANCES - 1))); do
       vllm serve "$MODEL" \
         --omni \
         --port "$port" \
+        --ulysses-degree 1 \
+        --cfg-parallel-size 1 \
         --num-weight-load-threads 8 \
         --vae-use-slicing \
         --vae-use-tiling \
@@ -449,6 +464,8 @@ PY
     --num-prompts "$num_prompts" \
     --request-rate "$rps" \
     --max-concurrency "$MAX_CONCURRENCY" \
+    --warmup-requests "$WARMUP_REQUESTS" \
+    --warmup-num-inference-steps "$WARMUP_NUM_INFERENCE_STEPS" \
     --enable-negative-prompt \
     --random-request-config "$RANDOM_REQUEST_CONFIG" \
     --output-file "$METRICS_FILE" \
