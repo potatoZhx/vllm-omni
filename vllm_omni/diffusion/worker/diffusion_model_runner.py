@@ -23,6 +23,7 @@ from vllm.utils.mem_utils import DeviceMemoryProfiler, GiB_bytes
 from vllm_omni.diffusion.cache.cache_dit_backend import cache_summary
 from vllm_omni.diffusion.cache.selector import get_cache_backend
 from vllm_omni.diffusion.compile import regionally_compile
+from vllm_omni.diffusion.context import DiffusionRequestContext
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.forward_context import set_forward_context
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
@@ -64,6 +65,7 @@ class DiffusionModelRunner:
         self.pipeline = None
         self.cache_backend = None
         self.offload_backend = None
+        self.active_contexts: dict[str, DiffusionRequestContext] = {}
 
         # Initialize KV cache manager for connector management
         self.kv_transfer_manager = OmniKVTransferManager.from_od_config(od_config)
@@ -166,6 +168,84 @@ class DiffusionModelRunner:
         """Load weights into the pipeline."""
         return self.pipeline.load_weights(weights)
 
+    def prepare_generation(self, req: OmniDiffusionRequest) -> DiffusionRequestContext:
+        """Create and track request execution context for future step-chunk execution."""
+        assert self.pipeline is not None, "Model not loaded. Call load_model() first."
+
+        if len(req.prompts) == 0:
+            raise ValueError("Cannot prepare generation with empty request list")
+
+        ctx = DiffusionRequestContext.from_request(req)
+
+        prepare_fn = getattr(self.pipeline, "prepare_generation", None)
+        if callable(prepare_fn):
+            prepared_ctx = prepare_fn(req)
+            if isinstance(prepared_ctx, DiffusionRequestContext):
+                ctx = prepared_ctx
+
+        if ctx.request_id:
+            self.active_contexts[ctx.request_id] = ctx
+        return ctx
+
+    def step_generation(self, ctx: DiffusionRequestContext, steps: int) -> tuple[DiffusionRequestContext, bool]:
+        """Advance a prepared context by one or more diffusion steps."""
+        if steps < 1:
+            raise ValueError("steps must be >= 1")
+
+        step_fn = getattr(self.pipeline, "step_generation", None)
+        if callable(step_fn):
+            result = step_fn(ctx, steps)
+            if isinstance(result, tuple) and len(result) == 2:
+                next_ctx, finished = result
+                if isinstance(next_ctx, DiffusionRequestContext):
+                    ctx = next_ctx
+                else:
+                    raise TypeError("pipeline.step_generation() must return DiffusionRequestContext as first element")
+            elif isinstance(result, DiffusionRequestContext):
+                ctx = result
+                finished = ctx.finished
+            else:
+                raise TypeError(
+                    "pipeline.step_generation() must return DiffusionRequestContext or "
+                    "tuple[DiffusionRequestContext, bool]"
+                )
+        else:
+            ctx.current_step = min(ctx.current_step + steps, ctx.num_inference_steps)
+            finished = ctx.current_step >= ctx.num_inference_steps
+        ctx.finished = finished
+
+        if ctx.request_id:
+            if finished:
+                self.active_contexts.pop(ctx.request_id, None)
+            else:
+                self.active_contexts[ctx.request_id] = ctx
+        return ctx, finished
+
+    def finalize_generation(self, ctx: DiffusionRequestContext) -> DiffusionOutput:
+        """Finalize a finished context and release its tracked state."""
+        finalize_fn = getattr(self.pipeline, "finalize_generation", None)
+        try:
+            if callable(finalize_fn):
+                output = finalize_fn(ctx)
+            else:
+                output = DiffusionOutput(request_id=ctx.request_id)
+        finally:
+            if ctx.request_id:
+                self.active_contexts.pop(ctx.request_id, None)
+
+        if output.request_id is None:
+            output.request_id = ctx.request_id
+        return output
+
+    def abort_generation(self, request_id: str) -> None:
+        """Abort a prepared request context and run pipeline-specific cleanup if available."""
+        abort_fn = getattr(self.pipeline, "abort_generation", None)
+        try:
+            if callable(abort_fn):
+                abort_fn(request_id)
+        finally:
+            self.active_contexts.pop(request_id, None)
+
     def execute_model(self, req: OmniDiffusionRequest) -> DiffusionOutput:
         """
         Execute a forward pass for the given requests.
@@ -185,6 +265,18 @@ class DiffusionModelRunner:
         assert self.pipeline is not None, "Model not loaded. Call load_model() first."
         if len(req.prompts) == 0:
             raise ValueError("Cannot execute model with empty request list")
+
+        if getattr(self.od_config, "diffusion_enable_step_chunk", False):
+            missing_hooks = [
+                hook_name
+                for hook_name in ("prepare_generation", "step_generation", "finalize_generation")
+                if not callable(getattr(self.pipeline, hook_name, None))
+            ]
+            if missing_hooks:
+                raise NotImplementedError(
+                    "Step-chunk execution is only supported for step-aware pipelines. "
+                    f"Missing hooks: {', '.join(missing_hooks)}"
+                )
 
         # Use no_grad() for HSDP compatibility, inference_mode() otherwise for better perf
         use_hsdp = self.od_config.parallel_config.use_hsdp
@@ -215,8 +307,55 @@ class DiffusionModelRunner:
                 self.cache_backend.refresh(self.pipeline, req.sampling_params.num_inference_steps)
 
             with set_forward_context(vllm_config=self.vllm_config, omni_diffusion_config=self.od_config):
-                with record_function("pipeline_forward"):
-                    output = self.pipeline.forward(req)
+                if getattr(self.od_config, "diffusion_enable_step_chunk", False):
+                    with record_function("pipeline_step_chunk"):
+                        request_id = req.primary_request_id
+                        ctx = self.active_contexts.get(request_id)
+                        if ctx is None:
+                            ctx = self.prepare_generation(req)
+
+                        req.dispatch_epoch += 1
+                        remaining_steps = max(ctx.num_inference_steps - ctx.current_step, 0)
+                        steps_this_turn = req.max_steps_this_turn if req.max_steps_this_turn is not None else remaining_steps
+                        if steps_this_turn <= 0:
+                            steps_this_turn = remaining_steps
+                        width = int(
+                            getattr(req.sampling_params, "width", None)
+                            or getattr(req.sampling_params, "resolution", 1024)
+                            or 1024
+                        )
+                        height = int(
+                            getattr(req.sampling_params, "height", None)
+                            or getattr(req.sampling_params, "resolution", 1024)
+                            or 1024
+                        )
+                        logger.info(
+                            "STEP_CHUNK_EXEC request_id=%s dispatch_epoch=%d width=%d height=%d total_steps=%d executed_steps=%d remaining_steps=%d steps_this_turn=%d",
+                            request_id or "<missing-request-id>",
+                            req.dispatch_epoch,
+                            width,
+                            height,
+                            ctx.num_inference_steps,
+                            ctx.current_step,
+                            remaining_steps,
+                            steps_this_turn,
+                        )
+
+                        ctx, finished = self.step_generation(ctx, steps_this_turn)
+                        req.executed_steps = ctx.current_step
+
+                        if finished:
+                            output = self.finalize_generation(ctx)
+                        else:
+                            output = DiffusionOutput(
+                                output=None,
+                                request_id=ctx.request_id,
+                                finished=False,
+                                metrics={"executed_steps": ctx.current_step},
+                            )
+                else:
+                    with record_function("pipeline_forward"):
+                        output = self.pipeline.forward(req)
 
             # NOTE:
             if (

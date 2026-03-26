@@ -414,6 +414,21 @@ class OmniDiffusionConfig:
 
     scheduler_port: int = 5555
 
+    # Instance-local scheduler configuration
+    instance_scheduler_policy: str = "fcfs"
+    instance_scheduler_slo_target_ms: float | None = None
+    instance_scheduler_slo_floor_ms: float = 0.0
+    instance_scheduler_aging_factor: float = 0.0
+    instance_runtime_profile_path: str | None = None
+    instance_runtime_profile_name: str | None = None
+    diffusion_engine_max_concurrency: int = 32
+    diffusion_enable_step_chunk: bool = False
+    diffusion_enable_chunk_preemption: bool = False
+    diffusion_chunk_budget_steps: int = 4
+    diffusion_image_chunk_budget_steps: int | None = None
+    diffusion_video_chunk_budget_steps: int | None = None
+    diffusion_small_request_latency_threshold_ms: float | None = None
+
     # Stage verification
     enable_stage_verification: bool = True
 
@@ -576,6 +591,34 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
+        valid_policies = {"fcfs", "sjf", "slo_first", "slack_age", "slack_cost_age"}
+        if self.instance_scheduler_policy not in valid_policies:
+            raise ValueError(
+                "instance_scheduler_policy must be one of "
+                f"{sorted(valid_policies)}, got {self.instance_scheduler_policy!r}"
+            )
+        if self.instance_scheduler_slo_target_ms is not None and self.instance_scheduler_slo_target_ms <= 0:
+            raise ValueError("instance_scheduler_slo_target_ms must be > 0 when provided")
+        if self.instance_scheduler_slo_floor_ms < 0:
+            raise ValueError("instance_scheduler_slo_floor_ms must be >= 0")
+        if self.instance_scheduler_aging_factor < 0:
+            raise ValueError("instance_scheduler_aging_factor must be >= 0")
+        if self.diffusion_engine_max_concurrency < 1:
+            raise ValueError("diffusion_engine_max_concurrency must be >= 1")
+        if self.diffusion_enable_chunk_preemption and not self.diffusion_enable_step_chunk:
+            raise ValueError("diffusion_enable_chunk_preemption requires diffusion_enable_step_chunk=True")
+        if self.diffusion_chunk_budget_steps < 1:
+            raise ValueError("diffusion_chunk_budget_steps must be >= 1")
+        if self.diffusion_image_chunk_budget_steps is not None and self.diffusion_image_chunk_budget_steps < 1:
+            raise ValueError("diffusion_image_chunk_budget_steps must be >= 1")
+        if self.diffusion_video_chunk_budget_steps is not None and self.diffusion_video_chunk_budget_steps < 1:
+            raise ValueError("diffusion_video_chunk_budget_steps must be >= 1")
+        if (
+            self.diffusion_small_request_latency_threshold_ms is not None
+            and self.diffusion_small_request_latency_threshold_ms <= 0
+        ):
+            raise ValueError("diffusion_small_request_latency_threshold_ms must be > 0")
+
     def update_multimodal_support(self) -> None:
         self.supports_multimodal_inputs = self.model_class_name in {"QwenImageEditPlusPipeline"}
 
@@ -613,6 +656,10 @@ class DiffusionOutput:
     trajectory_latents: torch.Tensor | None = None
     trajectory_decoded: list[torch.Tensor] | None = None
     error: str | None = None
+    error_code: str | None = None
+    request_id: str | None = None
+    finished: bool = True
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     post_process_func: Callable[..., Any] | None = None
 

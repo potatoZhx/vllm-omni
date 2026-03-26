@@ -111,6 +111,21 @@ class VideoGenerationRequest(BaseModel):
         description="True CFG scale (model-specific parameter, may be ignored if not supported)",
     )
     seed: int | None = Field(default=None, description="Random seed for reproducibility")
+    slo_ms: float | None = Field(default=None, ge=0.0, description="Per-request scheduler SLO target in milliseconds.")
+    slo_target_ms: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Explicit target SLO in milliseconds for scheduler use.",
+    )
+    deadline_ts: float | None = Field(
+        default=None,
+        description="Absolute deadline timestamp for scheduler use.",
+    )
+    estimated_cost_s: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Per-request runtime estimate in seconds for scheduler use.",
+    )
 
     # vllm-omni extension for per-request LoRA.
     lora: dict[str, Any] | None = Field(

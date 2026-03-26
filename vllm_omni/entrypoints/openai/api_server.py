@@ -1127,6 +1127,10 @@ async def generate_images(request: ImageGenerationRequest, raw_request: Request)
             gen_params, "seed", request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
         )
         _update_if_not_none(gen_params, "generator_device", request.generator_device)
+        for key in ("slo_ms", "slo_target_ms", "deadline_ts", "estimated_cost_s"):
+            value = getattr(request, key, None)
+            if value is not None:
+                gen_params.extra_args[key] = value
 
         request_id = request_id
 

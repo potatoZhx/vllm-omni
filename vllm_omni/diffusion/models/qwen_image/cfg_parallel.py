@@ -41,6 +41,7 @@ class QwenImageCFGParallelMixin(CFGParallelMixin):
         image_latents: torch.Tensor | None = None,
         cfg_normalize: bool = True,
         additional_transformer_kwargs: dict[str, Any] | None = None,
+        begin_index: int = 0,
     ) -> torch.Tensor:
         """
         Diffusion loop with optional classifier-free guidance.
@@ -65,7 +66,7 @@ class QwenImageCFGParallelMixin(CFGParallelMixin):
         Returns:
             Denoised latents
         """
-        self.scheduler.set_begin_index(0)
+        self.scheduler.set_begin_index(begin_index)
         self.transformer.do_true_cfg = do_true_cfg
         additional_transformer_kwargs = additional_transformer_kwargs or {}
 

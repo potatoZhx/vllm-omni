@@ -255,9 +255,85 @@ class OmniServeCommand(CLISubcommand):
             help="JSON string of cache configuration (e.g., '{\"rel_l1_thresh\": 0.2}').",
         )
         omni_config_group.add_argument(
+            "--instance-scheduler-policy",
+            type=str,
+            default="fcfs",
+            choices=["fcfs", "sjf", "slo_first", "slack_age", "slack_cost_age"],
+            help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
+            "'sjf' orders waiting requests by estimated cost, 'slo_first' keeps the current "
+            "slack-over-cost on-time ordering, 'slack_age' prioritizes tight/old requests, and "
+            "'slack_cost_age' adds a bounded remaining-cost penalty on top of slack+aging.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-slo-target-ms",
+            type=float,
+            default=None,
+            help="Static target SLO in milliseconds for the instance-local 'slo_first' scheduler. "
+            "If omitted, requests fall back to request-level overrides when present.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-slo-floor-ms",
+            type=float,
+            default=0.0,
+            help="Lower bound applied to the effective target SLO in milliseconds.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-aging-factor",
+            type=float,
+            default=0.0,
+            help="Aging factor used when ordering the delayed tail set in the instance-local 'slo_first' scheduler.",
+        )
+        omni_config_group.add_argument(
+            "--instance-runtime-profile-path",
+            type=str,
+            default=None,
+            help="Path to a JSON runtime profile file or a directory containing JSON profile files under /profile. "
+            "Used by instance-local scheduler cost estimation before falling back to heuristics.",
+        )
+        omni_config_group.add_argument(
+            "--instance-runtime-profile-name",
+            type=str,
+            default=None,
+            help="Optional instance/profile name used to filter records inside the runtime profile JSON.",
+        )
+        omni_config_group.add_argument(
             "--enable-cache-dit-summary",
             action="store_true",
             help="Enable cache-dit summary logging after diffusion forward passes.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-enable-step-chunk",
+            action="store_true",
+            help="Enable diffusion step-chunk execution and context resume support.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-enable-chunk-preemption",
+            action="store_true",
+            help="Enable chunk-boundary re-scheduling for unfinished diffusion requests.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-chunk-budget-steps",
+            type=int,
+            default=4,
+            help="Chunk budget in diffusion steps when chunk-boundary re-scheduling is enabled.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-image-chunk-budget-steps",
+            type=int,
+            default=None,
+            help="Image-specific chunk budget in diffusion steps. Falls back to --diffusion-chunk-budget-steps.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-video-chunk-budget-steps",
+            type=int,
+            default=None,
+            help="Video-specific chunk budget in diffusion steps. Falls back to --diffusion-chunk-budget-steps.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-small-request-latency-threshold-ms",
+            type=float,
+            default=None,
+            help="Requests with estimated remaining latency below this threshold run to completion without re-chunking.",
         )
 
         # VAE memory optimization parameters

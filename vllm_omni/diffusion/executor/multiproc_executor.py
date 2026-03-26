@@ -10,6 +10,7 @@ from vllm_omni.diffusion.data import SHUTDOWN_MESSAGE, DiffusionOutput
 from vllm_omni.diffusion.executor.abstract import DiffusionExecutor
 from vllm_omni.diffusion.request import OmniDiffusionRequest
 from vllm_omni.diffusion.scheduler import Scheduler
+from vllm_omni.diffusion.stage1_scheduler import Stage1Scheduler
 from vllm_omni.diffusion.worker import WorkerProc
 
 logger = init_logger(__name__)
@@ -52,7 +53,7 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
         self._closed = False
 
         # Initialize scheduler
-        self.scheduler = Scheduler()
+        self.scheduler = Stage1Scheduler()
         self.scheduler.initialize(self.od_config)
         broadcast_handle = self.scheduler.get_broadcast_handle()
 
