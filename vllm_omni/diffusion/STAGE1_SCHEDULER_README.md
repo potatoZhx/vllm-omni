@@ -48,6 +48,7 @@ CLI 入口：
   - 其中 `cost_weight = clip(sqrt(remaining_cost / 12.0), 1.0, 4.0)`，让大请求在相同等待时间下获得更快的老化补偿
   - 当 `instance_scheduler_aging_factor <= 0` 时，使用内建默认 aging 系数 `1.0`，保证不额外配参也具备防饥饿能力
   - 对 step chunk / chunk preemption 友好：chunk 重入队后继续按“剩余耗时 + 首次 arrival 老化”计算
+  - 在启用 step chunk 时，`sjf_aging` 请求一旦已经执行过至少一个 chunk，恢复运行后会直接跑完剩余 steps，优先保护尾延迟
 - `size_bucket_sjf_aging`
   - 先按固定分辨率 bucket 分组，再在 bucket 内按 `remaining_cost / (1 + aging_factor * age)` 做 SJF + Aging 排序
   - aging 会按等待时间逐步提升大 bucket 请求，避免长期饥饿

@@ -247,6 +247,38 @@ def test_plan_chunk_budget_uses_image_specific_budget_for_large_image_request():
     assert engine._plan_chunk_budget(request) == 3
 
 
+def test_plan_chunk_budget_runs_resumed_sjf_aging_request_to_completion():
+    engine = object.__new__(DiffusionEngine)
+    engine.od_config = SimpleNamespace(
+        instance_scheduler_policy="sjf_aging",
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=4,
+        diffusion_image_chunk_budget_steps=3,
+        diffusion_video_chunk_budget_steps=1,
+        diffusion_small_request_latency_threshold_ms=1000.0,
+    )
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="image",
+                width=1024,
+                height=1024,
+                num_frames=1,
+                steps=25,
+                latency_s=25.0,
+            )
+        ]
+    )
+    request = _make_request()
+    request.sampling_params.width = 1024
+    request.sampling_params.height = 1024
+    request.sampling_params.num_inference_steps = 25
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 5
+
+    assert engine._plan_chunk_budget(request) == 20
+
+
 def test_plan_chunk_budget_falls_back_to_global_budget_when_modality_budget_missing():
     engine = object.__new__(DiffusionEngine)
     engine.od_config = SimpleNamespace(
