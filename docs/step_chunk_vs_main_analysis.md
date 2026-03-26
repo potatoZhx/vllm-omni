@@ -90,3 +90,48 @@
    - 请求参数是否完全一致（尤其 `num_inference_steps` / 分辨率 / frame 数 / guidance）。
    - pipeline 改造后是否存在“实际执行步数 < 配置步数”的情况（重点核对日志中的 `executed_steps` 与 `total_steps`）。
    - 同 seed 下结果是否一致（若快很多但输出差异明显，通常意味着有效计算量或轨迹已变）。
+
+## 7. 推理调用路径（Qwen-Image / Wan）与 dispatch、cache 刷新语义
+
+### 7.1 端到端调用链路（服务侧到模型侧）
+
+1. `DiffusionEngine.step(request)` 是入口，内部调用 `self.add_req_and_wait_for_response(request)`。
+2. `MultiprocDiffusionExecutor.add_req()` 转发给 `Stage1Scheduler.add_req()`。
+3. `Stage1Scheduler.add_req()` 把请求入队、选中后通过 `mq.enqueue({type: "rpc", method: "generate", args: (request,)})` 发给 worker。
+4. worker 收到 RPC 后执行 `execute_method("generate", request)`，最终调用 `DiffusionWorker.generate()` → `DiffusionWorker.execute_model()` → `DiffusionModelRunner.execute_model(req)`。
+5. rank0 把 `DiffusionOutput` 回传 scheduler，scheduler 再回给 engine。
+
+### 7.2 什么是 dispatch
+
+- 在这里 **dispatch = scheduler 把一个 request（或其一个 chunk）下发给 worker 执行一次 `generate` RPC**。
+- 不抢占时：通常 1 个请求对应 1 次 dispatch（完成即返回 finished=True）。
+- 抢占时：同一请求会多次 dispatch（每次做一段 steps）。
+
+### 7.3 Qwen-Image / Wan 在 `execute_model` 内到底怎么跑
+
+`DiffusionModelRunner.execute_model()` 分两条路径：
+
+- `diffusion_enable_step_chunk=False`：直接 `pipeline.forward(req)`。
+- `diffusion_enable_step_chunk=True`：
+  1) 取/建 `ctx`（`prepare_generation`）
+  2) 按 `steps_this_turn` 执行 `step_generation`
+  3) 若 finished 则 `finalize_generation`，否则返回 unfinished 的 `DiffusionOutput`
+
+而 Qwen/Wan 的 `forward()` 目前都兼容了这两条：
+- 在 step-chunk 关闭时，仍走“prepare + 一次性跑完 + finalize”的 run-to-completion 语义。
+
+### 7.4 `cache_backend.refresh` 的真实含义
+
+- `refresh` 是“每次执行前同步/重置 cache backend 当前上下文”，不是“强制启用 cache”。
+- 代码有保护条件：
+  - `self.cache_backend is not None`
+  - `self.cache_backend.is_enabled()`
+- 所以在你确认 `cache_backend=none` 且环境变量也无覆盖时，`self.cache_backend` 会是 `None`，该分支不会执行。
+
+### 7.5 你当前场景下（无缓存、无抢占）它会不会导致波动？
+
+- 结论：**基本不会**。因为 refresh 分支根本不进。
+- 这意味着你观测到的速度波动/变快，优先看：
+  1) 实际是否进入 step-chunk 路径（即 `diffusion_enable_step_chunk` 最终值）；
+  2) 相同 benchmark 下，是否存在运行态差异（并行度、编译状态、负载干扰）；
+  3) 是否真的执行了相同步数（看 `executed_steps` 与 `total_steps` 日志）。
