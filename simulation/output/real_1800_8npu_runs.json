@@ -1,0 +1,122 @@
+[
+  {
+    "algorithm": "baseline_global_real",
+    "rps": 0.2,
+    "throughput_qps": 0.197,
+    "latency_p95": 42.07,
+    "latency_mean": 16.91,
+    "duration": 1822.89
+  },
+  {
+    "algorithm": "baseline_global_real",
+    "rps": 0.4,
+    "throughput_qps": 0.395,
+    "latency_p95": 42.1328,
+    "latency_mean": 17.1451,
+    "duration": 1822.96
+  },
+  {
+    "algorithm": "baseline_global_real",
+    "rps": 0.6,
+    "throughput_qps": 0.4693,
+    "latency_p95": 390.0003,
+    "latency_mean": 200.2502,
+    "duration": 2301.3524
+  },
+  {
+    "algorithm": "baseline_global_real",
+    "rps": 0.8,
+    "throughput_qps": 0.4825,
+    "latency_p95": 1005.3302,
+    "latency_mean": 555.22,
+    "duration": 2984.3544
+  },
+  {
+    "algorithm": "baseline_global_real",
+    "rps": 1.0,
+    "throughput_qps": 0.4966,
+    "latency_p95": 1668.6619,
+    "latency_mean": 908.5454,
+    "duration": 3624.6056
+  },
+  {
+    "algorithm": "min_queue_length_sjf_preempt_4_real",
+    "rps": 0.2,
+    "throughput_qps": 0.197,
+    "latency_p95": 42.1179,
+    "latency_mean": 16.84,
+    "duration": 1822.82
+  },
+  {
+    "algorithm": "min_queue_length_sjf_preempt_4_real",
+    "rps": 0.4,
+    "throughput_qps": 0.3949,
+    "latency_p95": 42.2416,
+    "latency_mean": 16.58,
+    "duration": 1823.33
+  },
+  {
+    "algorithm": "min_queue_length_sjf_preempt_4_real",
+    "rps": 0.6,
+    "throughput_qps": 0.5005,
+    "latency_p95": 340.8083,
+    "latency_mean": 108.7819,
+    "duration": 2157.9176
+  },
+  {
+    "algorithm": "min_queue_length_sjf_preempt_4_real",
+    "rps": 0.8,
+    "throughput_qps": 0.5192,
+    "latency_p95": 785.5992,
+    "latency_mean": 423.941,
+    "duration": 2773.5424
+  },
+  {
+    "algorithm": "min_queue_length_sjf_preempt_4_real",
+    "rps": 1.0,
+    "throughput_qps": 0.5266,
+    "latency_p95": 1423.2622,
+    "latency_mean": 753.1807,
+    "duration": 3418.1414
+  },
+  {
+    "algorithm": "round_robin_sjf_preempt_4_real",
+    "rps": 0.2,
+    "throughput_qps": 0.1975,
+    "latency_p95": 42.9732,
+    "latency_mean": 17.08,
+    "duration": 1822.2313
+  },
+  {
+    "algorithm": "round_robin_sjf_preempt_4_real",
+    "rps": 0.4,
+    "throughput_qps": 0.3893,
+    "latency_p95": 67.141,
+    "latency_mean": 22.6065,
+    "duration": 1849.45
+  },
+  {
+    "algorithm": "round_robin_sjf_preempt_4_real",
+    "rps": 0.6,
+    "throughput_qps": 0.4902,
+    "latency_p95": 371.2731,
+    "latency_mean": 122.2546,
+    "duration": 2203.2901
+  },
+  {
+    "algorithm": "round_robin_sjf_preempt_4_real",
+    "rps": 0.8,
+    "throughput_qps": 0.5163,
+    "latency_p95": 805.8588,
+    "latency_mean": 434.7752,
+    "duration": 2789.8336
+  },
+  {
+    "algorithm": "round_robin_sjf_preempt_4_real",
+    "rps": 1.0,
+    "throughput_qps": 0.5223,
+    "latency_p95": 1443.3117,
+    "latency_mean": 756.9594,
+    "duration": 3446.2501
+  }
+]
