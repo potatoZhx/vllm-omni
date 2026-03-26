@@ -661,6 +661,26 @@ def test_stage1_scheduler_sjf_aging_uses_cost_aware_weight_for_large_request():
     assert ordered[0].schedule_metrics["aged_cost_s"] < ordered[1].schedule_metrics["aged_cost_s"]
 
 
+def test_stage1_scheduler_sjf_aging_guarded_promotes_protected_old_large_request():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded")
+    now = time.monotonic()
+    older_large = _mock_request("older-large", num_inference_steps=35, extra_args={"estimated_cost_s": 37.0})
+    newer_medium = _mock_request("newer-medium", num_inference_steps=25, extra_args={"estimated_cost_s": 12.0})
+    older_large.arrival_time = now - 80.0
+    newer_medium.arrival_time = now
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(older_large)
+        sched._enqueue_request_locked(newer_medium)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["older-large", "newer-medium"]
+    assert ordered[0].schedule_metrics["scheduler_policy"] == "sjf_aging_guarded"
+    assert ordered[0].schedule_metrics["tail_protected"] == 1
+    assert ordered[0].schedule_metrics["dispatch_group"] == "protected"
+    assert getattr(ordered[0].request, "tail_protected", False) is True
+
+
 def test_stage1_scheduler_sjf_aging_adapts_to_step_chunk_requeue():
     sched, req_q, res_q = _make_stage1_scheduler(policy="sjf_aging")
     req1 = _mock_request("req-1", num_inference_steps=20, extra_args={"estimated_cost_s": 20.0})

@@ -247,10 +247,10 @@ def test_plan_chunk_budget_uses_image_specific_budget_for_large_image_request():
     assert engine._plan_chunk_budget(request) == 3
 
 
-def test_plan_chunk_budget_runs_resumed_sjf_aging_request_to_completion():
+def test_plan_chunk_budget_runs_protected_sjf_aging_guarded_request_to_completion():
     engine = object.__new__(DiffusionEngine)
     engine.od_config = SimpleNamespace(
-        instance_scheduler_policy="sjf_aging",
+        instance_scheduler_policy="sjf_aging_guarded",
         diffusion_enable_chunk_preemption=True,
         diffusion_chunk_budget_steps=4,
         diffusion_image_chunk_budget_steps=3,
@@ -275,6 +275,7 @@ def test_plan_chunk_budget_runs_resumed_sjf_aging_request_to_completion():
     request.sampling_params.num_inference_steps = 25
     request.sampling_params.num_frames = 1
     request.executed_steps = 5
+    request.tail_protected = True
 
     assert engine._plan_chunk_budget(request) == 20
 

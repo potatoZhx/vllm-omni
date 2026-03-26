@@ -24,6 +24,7 @@ _P95_FIRST_DEADLINE_POLICY = "p95-first-deadline"
 _P95_BUCKET_SJF_NORMALIZED_POLICY = "p95-bucket-sjf-normalized"
 _P95_BUCKET_SJF_POLICY = "p95-bucket-sjf"
 _SJF_AGING_POLICY = "sjf_aging"
+_SJF_AGING_GUARDED_POLICY = "sjf_aging_guarded"
 _SIZE_BUCKET_SJF_AGING_POLICY = "size_bucket_sjf_aging"
 _SLACK_HYBRID_POLICY = "slack_hybrid"
 _P95_FIRST_HISTORY_MAXLEN = 128
@@ -33,6 +34,8 @@ _SLACK_COST_ALPHA = 0.25
 _SJF_AGING_DEFAULT_FACTOR = 1.0
 _SJF_AGING_COST_REF_S = 12.0
 _SJF_AGING_COST_WEIGHT_MAX = 4.0
+_SJF_AGING_GUARDED_MIN_WAIT_S = 45.0
+_SJF_AGING_GUARDED_WAIT_COST_RATIO = 2.0
 _FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
 _SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
@@ -1081,6 +1084,10 @@ class Stage1Scheduler(Scheduler):
         normalized_cost = max(float(estimated_cost_s), 1e-9) / _SJF_AGING_COST_REF_S
         return min(max(sqrt(normalized_cost), 1.0), _SJF_AGING_COST_WEIGHT_MAX)
 
+    def _sjf_aging_guard_threshold_s(self, estimated_cost_s: float) -> float:
+        estimated_cost_s = max(float(estimated_cost_s), 1e-9)
+        return max(_SJF_AGING_GUARDED_MIN_WAIT_S, _SJF_AGING_GUARDED_WAIT_COST_RATIO * estimated_cost_s)
+
     def _fixed_size_bucket_id(self, queued_request: _QueuedRequest) -> int:
         request_summary = self._request_summary(queued_request.request)
         max_dim = max(request_summary["width"], request_summary["height"])
@@ -1307,6 +1314,56 @@ class Stage1Scheduler(Scheduler):
 
         return ordered_queue, metrics_by_sequence
 
+    def _build_sjf_aging_guarded_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        aging_factor = self._effective_sjf_aging_factor()
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        for queued_request in waiting_requests:
+            estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+            age_s = self._request_age_seconds(queued_request, now)
+            cost_weight = self._sjf_aging_cost_weight(estimated_cost_s)
+            aged_cost_s = estimated_cost_s / (1.0 + (aging_factor * cost_weight * age_s))
+            protection_threshold_s = self._sjf_aging_guard_threshold_s(estimated_cost_s)
+            tail_protected = age_s >= protection_threshold_s
+            setattr(queued_request.request, "tail_protected", tail_protected)
+            metrics_by_sequence[queued_request.sequence_id] = {
+                "scheduler_policy": _SJF_AGING_GUARDED_POLICY,
+                "queue_reorder_count": 1,
+                "estimated_cost_s": estimated_cost_s,
+                "age_s": age_s,
+                "aging_factor": aging_factor,
+                "aging_cost_weight": cost_weight,
+                "aged_cost_s": aged_cost_s,
+                "tail_protected": int(tail_protected),
+                "protection_threshold_s": protection_threshold_s,
+                "wait_ratio": age_s / estimated_cost_s,
+                "dispatch_group": "protected" if tail_protected else "normal",
+            }
+
+        ordered_queue = sorted(
+            waiting_requests,
+            key=lambda queued: (
+                0 if metrics_by_sequence[queued.sequence_id]["tail_protected"] else 1,
+                float(getattr(queued.request, "arrival_time", queued.enqueue_time))
+                if metrics_by_sequence[queued.sequence_id]["tail_protected"]
+                else float(metrics_by_sequence[queued.sequence_id]["aged_cost_s"]),
+                queued.enqueue_time
+                if metrics_by_sequence[queued.sequence_id]["tail_protected"]
+                else float(metrics_by_sequence[queued.sequence_id]["estimated_cost_s"]),
+                queued.sequence_id,
+            ),
+        )
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
+
+        return ordered_queue, metrics_by_sequence
+
     def _maybe_reorder_waiting_queue(self, new_request: _QueuedRequest, now: float) -> None:
         policy = self._policy_name()
         if policy == "fcfs":
@@ -1327,6 +1384,27 @@ class Stage1Scheduler(Scheduler):
                 float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
                 float(request_metrics.get("aged_cost_s", 0.0) or 0.0),
                 float(request_metrics.get("age_s", 0.0) or 0.0),
+                request_metrics.get("queue_rank"),
+            )
+            return
+
+        if policy == _SJF_AGING_GUARDED_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_sjf_aging_guarded_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s estimated_cost_s=%.4f aged_cost_s=%.4f age_s=%.4f tail_protected=%s protection_threshold_s=%.4f queue_rank=%s",
+                self._request_label(new_request.request),
+                policy,
+                float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
+                float(request_metrics.get("aged_cost_s", 0.0) or 0.0),
+                float(request_metrics.get("age_s", 0.0) or 0.0),
+                request_metrics.get("tail_protected"),
+                float(request_metrics.get("protection_threshold_s", 0.0) or 0.0),
                 request_metrics.get("queue_rank"),
             )
             return

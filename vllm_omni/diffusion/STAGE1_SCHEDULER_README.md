@@ -16,11 +16,12 @@
 
 ## 1. 当前支持的策略
 
-`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 12 种取值：
+`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 13 种取值：
 
 - `fcfs`
 - `sjf`
 - `sjf_aging`
+- `sjf_aging_guarded`
 - `size_bucket_sjf_aging`
 - `slo_first`
 - `p95-first`
@@ -34,7 +35,7 @@
 CLI 入口：
 
 ```bash
---instance-scheduler-policy {fcfs,sjf,sjf_aging,size_bucket_sjf_aging,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
+--instance-scheduler-policy {fcfs,sjf,sjf_aging,sjf_aging_guarded,size_bucket_sjf_aging,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
 ```
 
 其中：
@@ -48,7 +49,10 @@ CLI 入口：
   - 其中 `cost_weight = clip(sqrt(remaining_cost / 12.0), 1.0, 4.0)`，让大请求在相同等待时间下获得更快的老化补偿
   - 当 `instance_scheduler_aging_factor <= 0` 时，使用内建默认 aging 系数 `1.0`，保证不额外配参也具备防饥饿能力
   - 对 step chunk / chunk preemption 友好：chunk 重入队后继续按“剩余耗时 + 首次 arrival 老化”计算
-  - 在启用 step chunk 时，`sjf_aging` 请求一旦已经执行过至少一个 chunk，恢复运行后会直接跑完剩余 steps，优先保护尾延迟
+- `sjf_aging_guarded`
+  - 以 `sjf_aging` 的 cost-aware aging 为基础，但当请求等待超过 `max(45s, 2.0 * estimated_cost_s)` 时进入 protected 队列
+  - protected 队列按到达时间优先，避免老的大请求继续被新来的短请求无限插队
+  - protected 请求一旦开始执行，会直接跑完剩余 steps，用均值换取更低的 absolute p95
 - `size_bucket_sjf_aging`
   - 先按固定分辨率 bucket 分组，再在 bucket 内按 `remaining_cost / (1 + aging_factor * age)` 做 SJF + Aging 排序
   - aging 会按等待时间逐步提升大 bucket 请求，避免长期饥饿
@@ -484,7 +488,8 @@ sort_key = (
 | --- | --- | --- | --- |
 | `fcfs` | 按 `enqueue_time` 先来先服务 | 无 | 无 |
 | `sjf` | 按 `estimated_cost_s` 从小到大排序 | 无 | 无 |
-| `sjf_aging` | 按 `estimated_cost_s / (1 + aging_factor * age_s)` 排序 | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
+| `sjf_aging` | 按 `estimated_cost_s / (1 + aging_factor * cost_weight * age_s)` 排序，其中 `cost_weight = clip(sqrt(estimated_cost_s / 12.0), 1.0, 4.0)` | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
+| `sjf_aging_guarded` | 在 cost-aware `sjf_aging` 上增加 protected 队列；当 `age_s >= max(45.0, 2.0 * estimated_cost_s)` 时转入 protected，并按 `arrival_time` 优先；protected 请求开始执行后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>guard 阈值目前是代码内常量 |
 | `size_bucket_sjf_aging` | 先按固定分辨率 bucket 排序，再在 bucket 内按 `estimated_cost_s / (1 + aging_factor * age_s)` 排序；等待过久时允许跨 bucket 晋升 | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
 | `slo_first` | 先求 `on_time` 集合，再按 `slack / remaining_cost` 排序；尾部按 aging best-effort 排序 | `instance_scheduler_slo_target_ms`<br>`instance_scheduler_slo_floor_ms`<br>`instance_scheduler_aging_factor` | `None`<br>`0.0`<br>`0.0` |
 | `p95-first` | 基于 `learned_slowdown_p95`、`estimated_service_ms`、`pressure_ratio` 的 normalized tail-pressure 单队列排序 | `instance_scheduler_p95_first_size_bias`<br>`instance_scheduler_p95_first_age_bias`<br>`instance_scheduler_p95_first_starvation_threshold_s`<br>`instance_scheduler_p95_first_starvation_boost`<br>`instance_scheduler_p95_first_base_ms`（兼容保留）<br>`instance_scheduler_p95_first_min_ms`（兼容保留）<br>`instance_scheduler_p95_first_max_ms`（兼容保留）<br>`instance_scheduler_p95_first_backlog_alpha`（兼容保留） | `0.0`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`1.0` |
@@ -1164,6 +1169,7 @@ sampling_params.extra_args["slo_ms"] = 2500
   - `fcfs`
   - `sjf`
   - `sjf_aging`
+  - `sjf_aging_guarded`
   - `size_bucket_sjf_aging`
   - `slo_first`
   - `p95-first`

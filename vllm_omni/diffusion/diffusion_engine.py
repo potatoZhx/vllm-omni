@@ -250,7 +250,7 @@ class DiffusionEngine:
         if self._is_small_request_by_runtime(request):
             return remaining_steps
 
-        if self._should_run_to_completion_for_sjf_aging(request):
+        if self._should_run_to_completion_for_guarded_tail_request(request):
             return remaining_steps
 
         if not getattr(self.od_config, "diffusion_enable_chunk_preemption", False):
@@ -258,12 +258,11 @@ class DiffusionEngine:
 
         return min(remaining_steps, self._chunk_budget_steps_for_request(request))
 
-    def _should_run_to_completion_for_sjf_aging(self, request: OmniDiffusionRequest) -> bool:
+    def _should_run_to_completion_for_guarded_tail_request(self, request: OmniDiffusionRequest) -> bool:
         policy = str(getattr(self.od_config, "instance_scheduler_policy", "fcfs") or "fcfs")
-        if policy != "sjf_aging":
+        if policy != "sjf_aging_guarded":
             return False
-        executed_steps = max(int(getattr(request, "executed_steps", 0) or 0), 0)
-        return executed_steps > 0
+        return bool(getattr(request, "tail_protected", False))
 
     def _is_small_request_by_runtime(self, request: OmniDiffusionRequest) -> bool:
         threshold_ms = getattr(self.od_config, "diffusion_small_request_latency_threshold_ms", None)
