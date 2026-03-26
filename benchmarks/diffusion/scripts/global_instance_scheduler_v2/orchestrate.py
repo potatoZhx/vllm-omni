@@ -333,6 +333,7 @@ def resolve_benchmark_runtime(config_path: Path, options: dict[str, str]) -> dic
         'warmup_requests': int(benchmark.get('warmup_requests', 0)),
         'warmup_num_inference_steps': int(benchmark.get('warmup_num_inference_steps', 1)),
         'output_file': resolve_config_path(benchmark.get('output_file')),
+        'save_output_dir': options.get('BENCHMARK_SAVE_OUTPUT_DIR', '').strip(),
     }
 
 
@@ -488,6 +489,8 @@ def build_benchmark_command(runtime: dict[str, Any], rate: str, request_rates: l
         cmd.extend(['--warmup-request-config', runtime['warmup_request_config']])
     if output_file:
         cmd.extend(['--output-file', output_file])
+    if runtime['save_output_dir']:
+        cmd.extend(['--save-output-dir', runtime['save_output_dir']])
     return cmd
 
 
@@ -708,6 +711,7 @@ def collect_case_options() -> dict[str, str]:
         'BENCHMARK_MAX_CONCURRENCY': env_str('BENCHMARK_MAX_CONCURRENCY'),
         'BENCHMARK_WARMUP_REQUESTS': env_str('BENCHMARK_WARMUP_REQUESTS'),
         'BENCHMARK_WARMUP_NUM_INFERENCE_STEPS': env_str('BENCHMARK_WARMUP_NUM_INFERENCE_STEPS'),
+        'BENCHMARK_SAVE_OUTPUT_DIR': env_str('BENCHMARK_SAVE_OUTPUT_DIR'),
     }
 
 
