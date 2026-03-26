@@ -25,6 +25,20 @@ except ImportError:
 
 INF = float("inf")
 
+# ---------- 实例调度器常量（与 stage1_scheduler.py 对齐） ----------
+_SJF_AGING_DEFAULT_FACTOR = 1.0
+_FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
+_SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
+_P95_FIRST_HISTORY_MAXLEN = 128
+_P95_FIRST_MIN_HISTORY_FOR_QUANTILE = 20
+_P95_FIRST_SERVICE_RATE_EMA_ALPHA = 0.1
+_SJF_AGING_COST_REF_S = 12.0
+_SJF_AGING_COST_WEIGHT_MAX = 4.0
+_SJF_AGING_GUARDED_MIN_WAIT_S = 45.0
+_SJF_AGING_GUARDED_WAIT_COST_RATIO = 2.0
+_P95_BUCKET_DEFAULT_COUNT = 4
+_P95_BUCKET_DEFAULT_MIN_WINDOW_MS = 200.0
+
 
 def worker_config_id(w: dict) -> str:
     """Worker 三整数 sp, cfg, tp 拼接为 config_id。"""
@@ -457,6 +471,28 @@ def _remaining_latency_s(request: dict, profile_data: dict, worker: dict) -> flo
     return total_s * remaining_steps / total_steps
 
 
+def _heuristic_cost_s(request: dict) -> float:
+    """Heuristic cost = steps * num_frames * area_scale.
+
+    Matches stage1_scheduler._estimate_cost_seconds when no runtime profile
+    is configured (the profiled_estimate falls back to the heuristic).
+    Numerically identical to _work_units.
+    """
+    return max(_work_units(request), 1e-9)
+
+
+def _scheduling_cost_s(request: dict, profile_data: dict, worker: dict) -> float:
+    """Cost estimate for scheduling sort keys.
+
+    When worker["_use_heuristic_cost"] is True, returns the area-based
+    heuristic (matching real deployments without --diffusion-runtime-profile).
+    Otherwise returns the profile-based remaining latency.
+    """
+    if worker.get("_use_heuristic_cost"):
+        return _heuristic_cost_s(request)
+    return max(_remaining_latency_s(request, profile_data, worker), 1e-9)
+
+
 def _chunk_duration_s(
     request: dict,
     profile_data: dict,
@@ -499,54 +535,416 @@ def _sjf_preempt_budget_steps_for_request(
     return max(int(b), 1)
 
 
+def _policy_uses_chunk_preempt(policy: str) -> bool:
+    """判断实例调度策略是否使用 chunk 抢占。
+
+    - *_no_preempt 后缀: 强制不抢占（用于 sjf_aging_no_preempt 等）
+    - sjf_chunk_preempt / sjf_preempt: 显式抢占
+    - sjf_aging / sjf_aging_guarded / size_bucket_sjf_aging: 默认启用
+    - p95-first / p95-bucket-sjf / p95-bucket-sjf-normalized: 默认启用
+    - fcfs / sjf: 不抢占
+    """
+    if policy.endswith("_no_preempt"):
+        return False
+    if policy.startswith("sjf_chunk_preempt") or policy.startswith("sjf_preempt"):
+        return True
+    if policy.startswith("sjf_aging") or policy.startswith("size_bucket_sjf_aging"):
+        return True
+    if policy.startswith("p95"):
+        return True
+    return False
+
+
+def _parse_aging_factor(policy: str) -> float:
+    """从策略名解析 aging factor。与 stage1_scheduler._effective_sjf_aging_factor 对齐。
+
+    sjf_aging -> 1.0, sjf_aging_0.15 -> 0.15,
+    size_bucket_sjf_aging -> 1.0, size_bucket_sjf_aging_0.5 -> 0.5
+    """
+    for prefix in ("size_bucket_sjf_aging", "sjf_aging"):
+        if policy.startswith(prefix):
+            rest = policy[len(prefix):]
+            if rest.startswith("_"):
+                try:
+                    return float(rest[1:])
+                except ValueError:
+                    pass
+            return _SJF_AGING_DEFAULT_FACTOR
+    return _SJF_AGING_DEFAULT_FACTOR
+
+
+def _sjf_aging_cost_weight(estimated_cost_s: float) -> float:
+    """与 stage1_scheduler._sjf_aging_cost_weight 对齐。
+    大请求 aging 更快: weight = clamp(sqrt(cost / 12.0), 1.0, 4.0)
+    """
+    normalized_cost = max(float(estimated_cost_s), 1e-9) / _SJF_AGING_COST_REF_S
+    return min(max(math.sqrt(normalized_cost), 1.0), _SJF_AGING_COST_WEIGHT_MAX)
+
+
+def _sjf_aging_sort_key(
+    request: dict, profile_data: dict, worker: dict,
+    aging_factor: float, current_time: float,
+) -> tuple:
+    """sjf_aging 排序键。与 stage1_scheduler._build_sjf_aging_queue 对齐。
+
+    aged_cost = estimated_cost / (1 + aging_factor * cost_weight * age)
+    sort by (aged_cost, estimated_cost, enqueue_time)
+    """
+    estimated_cost = _scheduling_cost_s(request, profile_data, worker)
+    age_s = max(current_time - request.get("arrival_time", 0.0), 0.0)
+    cost_weight = _sjf_aging_cost_weight(estimated_cost)
+    aged_cost = estimated_cost / (1.0 + aging_factor * cost_weight * age_s)
+    return (aged_cost, estimated_cost, request.get("arrival_time", 0.0))
+
+
+def _sjf_aging_guarded_sort_key(
+    request: dict, profile_data: dict, worker: dict,
+    aging_factor: float, current_time: float,
+) -> tuple:
+    """sjf_aging_guarded 排序键。与 stage1_scheduler._build_sjf_aging_guarded_queue 对齐。
+
+    同 sjf_aging（含 cost_weight）+ 尾部保护：
+    等待过久的请求 (age >= max(45s, 2*cost)) 升级为 protected 组，组内 FIFO。
+    """
+    estimated_cost = _scheduling_cost_s(request, profile_data, worker)
+    age_s = max(current_time - request.get("arrival_time", 0.0), 0.0)
+    cost_weight = _sjf_aging_cost_weight(estimated_cost)
+    aged_cost = estimated_cost / (1.0 + aging_factor * cost_weight * age_s)
+    protection_threshold_s = max(
+        _SJF_AGING_GUARDED_MIN_WAIT_S,
+        _SJF_AGING_GUARDED_WAIT_COST_RATIO * estimated_cost,
+    )
+    tail_protected = age_s >= protection_threshold_s
+    if tail_protected:
+        return (0, request.get("arrival_time", 0.0), request.get("arrival_time", 0.0))
+    return (1, aged_cost, estimated_cost, request.get("arrival_time", 0.0))
+
+
+def _fixed_size_bucket_id(request: dict) -> int:
+    """按 max(width, height) 分桶。与 stage1_scheduler._fixed_size_bucket_id 对齐。"""
+    width = int(request.get("width", 1024))
+    height = int(request.get("height", 1024))
+    max_dim = max(width, height)
+    for bucket_id, threshold in enumerate(_FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS):
+        if max_dim <= threshold:
+            return bucket_id
+    return len(_FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS)
+
+
+def _size_bucket_sjf_aging_sort_key(
+    request: dict, profile_data: dict, worker: dict,
+    aging_factor: float, current_time: float,
+) -> tuple:
+    """size_bucket_sjf_aging 排序键。与 stage1_scheduler._build_size_bucket_sjf_aging_queue 对齐。
+
+    1. 按 max(w,h) 分桶 (512, 768, 1024 阈值)
+    2. bucket 内按 estimated_cost / (1 + aging_factor * age) 排序
+    3. 等待过久时 bucket 晋升：promotion_levels = int(aging_factor * age / 10.0)
+    """
+    estimated_cost = _scheduling_cost_s(request, profile_data, worker)
+    age_s = max(current_time - request.get("arrival_time", 0.0), 0.0)
+    aged_cost = estimated_cost / (1.0 + aging_factor * age_s)
+    raw_bucket = _fixed_size_bucket_id(request)
+    promotion_levels = int((aging_factor * age_s) / _SIZE_BUCKET_PROMOTION_WINDOW_S)
+    effective_bucket = max(raw_bucket - promotion_levels, 0)
+    return (effective_bucket, aged_cost, estimated_cost, request.get("arrival_time", 0.0))
+
+
+def _work_units(request: dict) -> float:
+    """计算 work_units。与 stage1_scheduler._request_work_units 对齐。
+
+    work_units = remaining_steps * num_frames * max(area / 1024^2, 0.0625)
+    """
+    total_steps = max(int(request.get("steps", 1) or 1), 1)
+    executed = int(request.get("_executed_steps", 0) or 0)
+    remaining_steps = max(total_steps - executed, 0)
+    if remaining_steps <= 0:
+        return 1e-9
+    width = int(request.get("width", 1024))
+    height = int(request.get("height", 1024))
+    num_frames = max(int(request.get("num_frames", 1) or 1), 1)
+    area_scale = max((width * height) / (1024 * 1024), 0.0625)
+    return max(float(remaining_steps * num_frames) * area_scale, 1e-9)
+
+
+def _p95_learned_slowdown(worker: dict) -> float:
+    """计算 learned slowdown p95。与 stage1_scheduler._learned_p95_first_slowdown 对齐。"""
+    history = worker.get("_p95_slowdown_history")
+    if not history:
+        return 1.0
+    samples = sorted(history)
+    if len(samples) < _P95_FIRST_MIN_HISTORY_FOR_QUANTILE:
+        return max(float(samples[-1]), 1.0)
+    index = max(math.ceil(len(samples) * 0.95) - 1, 0)
+    return max(float(samples[index]), 1.0)
+
+
+def _p95_learned_ms(worker: dict) -> float:
+    """从 worker 的绝对延迟历史计算 P95。与 stage1_scheduler._learned_p95_ms 对齐。"""
+    history = worker.get("_p95_latency_history_ms")
+    if not history:
+        return 0.0
+    samples = sorted(history)
+    if len(samples) < _P95_FIRST_MIN_HISTORY_FOR_QUANTILE:
+        return float(samples[-1])
+    index = max(math.ceil(len(samples) * 0.95) - 1, 0)
+    return float(samples[index])
+
+
+def _p95_record_latency_ms(worker: dict, latency_ms: float) -> None:
+    """记录完成请求的绝对延迟 ms。与 stage1_scheduler._record_p95_first_latency_ms 对齐。"""
+    history = worker.setdefault("_p95_latency_history_ms", [])
+    history.append(max(float(latency_ms), 0.0))
+    if len(history) > _P95_FIRST_HISTORY_MAXLEN:
+        worker["_p95_latency_history_ms"] = history[-_P95_FIRST_HISTORY_MAXLEN:]
+
+
+def _p95_estimated_service_ms(request: dict, profile_data: dict, worker: dict) -> float:
+    """估计服务时间（ms）。与 stage1_scheduler._p95_first_estimated_service_ms 对齐。
+
+    若有在线学习的 service_rate，使用 rate * work_units；否则回退到 scheduling cost。
+    """
+    rate = worker.get("_p95_service_rate_ms_per_wu")
+    if rate is not None:
+        wu = _work_units(request)
+        return max(rate * wu, 1e-9)
+    return max(_scheduling_cost_s(request, profile_data, worker) * 1000.0, 1e-9)
+
+
+def _p95_record_chunk_sample(worker: dict, chunk_duration_s: float, request: dict) -> None:
+    """记录 chunk 执行样本，更新 service rate EMA。与 stage1_scheduler._record_p95_first_execute_sample 对齐。"""
+    chunk_wu = _work_units_for_chunk(request)
+    if chunk_duration_s <= 0 or chunk_wu <= 0:
+        return
+    observed_rate = (chunk_duration_s * 1000.0) / max(chunk_wu, 1e-9)
+    if observed_rate <= 0:
+        return
+    current = worker.get("_p95_service_rate_ms_per_wu")
+    if current is None:
+        worker["_p95_service_rate_ms_per_wu"] = observed_rate
+    else:
+        alpha = _P95_FIRST_SERVICE_RATE_EMA_ALPHA
+        worker["_p95_service_rate_ms_per_wu"] = (1.0 - alpha) * current + alpha * observed_rate
+
+
+def _work_units_for_chunk(request: dict) -> float:
+    """计算本次 chunk 的 work_units（基于 _chunk_steps）。"""
+    chunk_steps = int(request.get("_chunk_steps", 0) or 0)
+    if chunk_steps <= 0:
+        return 0.0
+    width = int(request.get("width", 1024))
+    height = int(request.get("height", 1024))
+    num_frames = max(int(request.get("num_frames", 1) or 1), 1)
+    area_scale = max((width * height) / (1024 * 1024), 0.0625)
+    return max(float(chunk_steps * num_frames) * area_scale, 1e-9)
+
+
+def _p95_record_completion(worker: dict, latency_s: float, total_execute_s: float) -> None:
+    """记录完成请求的 slowdown，用于 p95 学习。与 stage1_scheduler._record_p95_first_latency_ms 对齐。"""
+    if total_execute_s <= 0:
+        return
+    slowdown = max(latency_s / max(total_execute_s, 1e-9), 1.0)
+    history = worker.setdefault("_p95_slowdown_history", [])
+    history.append(slowdown)
+    if len(history) > _P95_FIRST_HISTORY_MAXLEN:
+        worker["_p95_slowdown_history"] = history[-_P95_FIRST_HISTORY_MAXLEN:]
+
+
+def _pop_p95_first(w: dict, profile_data: dict, current_time: float) -> dict | None:
+    """p95-first greedy 选择下一个请求。与 stage1_scheduler._build_p95_first_queue 的首轮选择对齐。
+
+    worker 空闲时 cursor_ms = 0, active_chunk_blocking_ms = 0。
+    对每个候选计算 pressure_ratio = predicted_finish_ms / target_latency_ms，
+    选 final_priority_score (= -pressure_ratio) 最小（即 pressure 最大）的。
+    """
+    queue = w["queue"]
+    if not queue:
+        return None
+    learned_slowdown = _p95_learned_slowdown(w)
+    cursor_ms = 0.0
+    best_i = 0
+    best_key = None
+    for i, r in enumerate(queue):
+        est_service_ms = _p95_estimated_service_ms(r, profile_data, w)
+        age_s = max(current_time - r.get("arrival_time", 0.0), 0.0)
+        predicted_finish_ms = max(age_s * 1000.0 + cursor_ms + est_service_ms, 0.0)
+        target_latency_ms = max(learned_slowdown * est_service_ms, 1e-9)
+        pressure_ratio = predicted_finish_ms / target_latency_ms
+        final_score = -pressure_ratio
+        key = (final_score, -pressure_ratio, est_service_ms, r.get("arrival_time", 0.0), r.get("request_id", ""))
+        if best_key is None or key < best_key:
+            best_key = key
+            best_i = i
+    return queue.pop(best_i)
+
+
+def _pop_p95_bucket_sjf(w: dict, profile_data: dict, current_time: float) -> dict | None:
+    """p95-bucket-sjf: 按历史 P95 绝对延迟分桶 + 桶内 SJF。
+    与 stage1_scheduler._build_p95_bucket_sjf_queue 对齐。
+    """
+    queue = w["queue"]
+    if not queue:
+        return None
+    bucket_count = _P95_BUCKET_DEFAULT_COUNT
+    min_window_ms = _P95_BUCKET_DEFAULT_MIN_WINDOW_MS
+    availability_ts = current_time
+
+    history_p95_ms = max(_p95_learned_ms(w), min_window_ms)
+    max_estimated_cost_ms = max(
+        _scheduling_cost_s(r, profile_data, w) * 1000.0 for r in queue
+    )
+    anchor_window_ms = max(history_p95_ms, max_estimated_cost_ms, min_window_ms)
+    bucket_width_ms = max(anchor_window_ms / float(bucket_count), 1e-9)
+
+    best_i = 0
+    best_key = None
+    for i, r in enumerate(queue):
+        cost_s = _scheduling_cost_s(r, profile_data, w)
+        cost_ms = cost_s * 1000.0
+        target_p95_ms = max(history_p95_ms, cost_ms)
+        arrival = r.get("arrival_time", 0.0)
+        deadline_ts = arrival + (target_p95_ms / 1000.0)
+        urgency_ms = (deadline_ts - availability_ts) * 1000.0
+        bucket_id = 0 if urgency_ms <= 0.0 else min(
+            int(urgency_ms / bucket_width_ms), bucket_count - 1,
+        )
+        key = (bucket_id, cost_s, arrival, r.get("request_id", ""))
+        if best_key is None or key < best_key:
+            best_key = key
+            best_i = i
+    return queue.pop(best_i)
+
+
+def _pop_p95_bucket_sjf_normalized(
+    w: dict, profile_data: dict, current_time: float,
+) -> dict | None:
+    """p95-bucket-sjf-normalized: 按归一化 target_latency 分桶 + 桶内按 service_ms 排。
+    与 stage1_scheduler._build_p95_bucket_sjf_normalized_queue 对齐。
+    """
+    queue = w["queue"]
+    if not queue:
+        return None
+    bucket_count = _P95_BUCKET_DEFAULT_COUNT
+    min_window_ms = _P95_BUCKET_DEFAULT_MIN_WINDOW_MS
+    availability_ts = current_time
+
+    learned_slowdown = _p95_learned_slowdown(w)
+
+    max_target_latency_ms = min_window_ms
+    estimated_services: list[float] = []
+    for r in queue:
+        est_svc = _p95_estimated_service_ms(r, profile_data, w)
+        target_latency_ms = max(learned_slowdown * est_svc, 1e-9)
+        max_target_latency_ms = max(max_target_latency_ms, target_latency_ms)
+        estimated_services.append(est_svc)
+
+    bucket_width_ms = max(max_target_latency_ms / float(bucket_count), 1e-9)
+
+    best_i = 0
+    best_key = None
+    for i, r in enumerate(queue):
+        est_svc = estimated_services[i]
+        target_latency_ms = max(learned_slowdown * est_svc, 1e-9)
+        arrival = r.get("arrival_time", 0.0)
+        synthetic_deadline_ts = arrival + (target_latency_ms / 1000.0)
+        urgency_ms = (synthetic_deadline_ts - availability_ts) * 1000.0
+        bucket_id = 0 if urgency_ms <= 0.0 else min(
+            int(urgency_ms / bucket_width_ms), bucket_count - 1,
+        )
+        key = (bucket_id, est_svc, arrival, r.get("request_id", ""))
+        if best_key is None or key < best_key:
+            best_key = key
+            best_i = i
+    return queue.pop(best_i)
+
+
 def _pop_next_from_queue(
     w: dict, profile_data: dict, instance_policy: str, current_time: float = 0.0,
 ) -> dict | None:
-    """从 worker 队列中取下一个待执行请求。fcfs=队首，sjf=最短服务时间，sjf_aging=SJF+老化，sjf_preempt=SRPT（chunk 边界抢占）。"""
+    """从 worker 队列中取下一个待执行请求。与 stage1_scheduler.py 各策略对齐。
+
+    _no_preempt 后缀仅影响抢占开关，不影响队列排序（在此剥离）。
+
+    fcfs: 队首 (FIFO)
+    sjf: 按总服务时间最短优先（无 chunk 抢占）
+    sjf_chunk_preempt / sjf_preempt: 按剩余服务时间最短优先 (SRPT)，chunk 边界抢占
+    sjf_aging: remaining_cost / (1 + aging_factor * cost_weight * age) 排序
+    sjf_aging_guarded: sjf_aging + 尾部保护（等待过久 FIFO 优先）
+    size_bucket_sjf_aging: 先按分辨率分桶，桶内 sjf_aging 排序
+    p95-first: tail pressure greedy 排序
+    p95-bucket-sjf: 按历史 P95 分桶 + 桶内 SJF
+    p95-bucket-sjf-normalized: 按归一化 target_latency 分桶 + 桶内按 service_ms
+    """
     if not w["queue"]:
         return None
-    if instance_policy.startswith("sjf_preempt"):
-        # SRPT：选剩余服务时间最短的，与 instance_local_schd 的 sjf+chunk_preemption 对应
-        best_i = 0
-        best_rem = _remaining_latency_s(w["queue"][0], profile_data, w)
-        for i in range(1, len(w["queue"])):
-            rem = _remaining_latency_s(w["queue"][i], profile_data, w)
-            if rem < best_rem:
-                best_rem = rem
-                best_i = i
-        return w["queue"].pop(best_i)
-    if instance_policy == "sjf":
+
+    base = instance_policy.removesuffix("_no_preempt")
+
+    if base == "fcfs":
+        return w["queue"].pop(0)
+
+    if base == "sjf":
         best_i = 0
         best_st = lookup(profile_data, w["queue"][0], w)
         for i in range(1, len(w["queue"])):
             st = lookup(profile_data, w["queue"][i], w)
-            if st < best_st:
+            if st < best_st or (st == best_st and w["queue"][i].get("arrival_time", 0) < w["queue"][best_i].get("arrival_time", 0)):
                 best_st = st
                 best_i = i
         return w["queue"].pop(best_i)
-    if instance_policy.startswith("sjf_aging"):
-        # SJF + 老化：effective_st = service_time - factor * waiting_time，等待越久优先级越高
-        # policy 格式：sjf_aging 或 sjf_aging_0.15（后者指定 factor）
-        aging_factor = 0.1
-        if "_" in instance_policy and instance_policy != "sjf_aging":
-            try:
-                aging_factor = float(instance_policy.split("_")[-1])
-            except ValueError:
-                pass
+
+    if base.startswith("sjf_chunk_preempt") or base.startswith("sjf_preempt"):
         best_i = 0
-        r0 = w["queue"][0]
-        st0 = lookup(profile_data, r0, w)
-        wait0 = current_time - r0.get("arrival_time", 0.0)
-        best_score = st0 - aging_factor * max(0, wait0)
+        best_rem = _remaining_latency_s(w["queue"][0], profile_data, w)
         for i in range(1, len(w["queue"])):
-            r = w["queue"][i]
-            st = lookup(profile_data, r, w)
-            wait = current_time - r.get("arrival_time", 0.0)
-            score = st - aging_factor * max(0, wait)
-            if score < best_score:
-                best_score = score
+            rem = _remaining_latency_s(w["queue"][i], profile_data, w)
+            if rem < best_rem or (rem == best_rem and w["queue"][i].get("arrival_time", 0) < w["queue"][best_i].get("arrival_time", 0)):
+                best_rem = rem
                 best_i = i
         return w["queue"].pop(best_i)
+
+    if base.startswith("sjf_aging_guarded"):
+        aging_factor = _parse_aging_factor(base)
+        best_i = 0
+        best_key = _sjf_aging_guarded_sort_key(w["queue"][0], profile_data, w, aging_factor, current_time)
+        for i in range(1, len(w["queue"])):
+            key = _sjf_aging_guarded_sort_key(w["queue"][i], profile_data, w, aging_factor, current_time)
+            if key < best_key:
+                best_key = key
+                best_i = i
+        return w["queue"].pop(best_i)
+
+    if base.startswith("sjf_aging"):
+        aging_factor = _parse_aging_factor(base)
+        best_i = 0
+        best_key = _sjf_aging_sort_key(w["queue"][0], profile_data, w, aging_factor, current_time)
+        for i in range(1, len(w["queue"])):
+            key = _sjf_aging_sort_key(w["queue"][i], profile_data, w, aging_factor, current_time)
+            if key < best_key:
+                best_key = key
+                best_i = i
+        return w["queue"].pop(best_i)
+
+    if base.startswith("size_bucket_sjf_aging"):
+        aging_factor = _parse_aging_factor(base)
+        best_i = 0
+        best_key = _size_bucket_sjf_aging_sort_key(w["queue"][0], profile_data, w, aging_factor, current_time)
+        for i in range(1, len(w["queue"])):
+            key = _size_bucket_sjf_aging_sort_key(w["queue"][i], profile_data, w, aging_factor, current_time)
+            if key < best_key:
+                best_key = key
+                best_i = i
+        return w["queue"].pop(best_i)
+
+    if base.startswith("p95-bucket-sjf-normalized"):
+        return _pop_p95_bucket_sjf_normalized(w, profile_data, current_time)
+
+    if base.startswith("p95-bucket-sjf"):
+        return _pop_p95_bucket_sjf(w, profile_data, current_time)
+
+    if base.startswith("p95-first"):
+        return _pop_p95_first(w, profile_data, current_time)
+
     return w["queue"].pop(0)
 
 
@@ -558,20 +956,37 @@ def run_simulation(
     t_end: float,
     algorithm: str,
     instance_scheduler_policy: str = "fcfs",
-    sjf_preempt_small_request_threshold_ms: float | None = None,
-    sjf_preempt_image_chunk_budget_steps: int | None = None,
-    sjf_preempt_video_chunk_budget_steps: int | None = None,
+    chunk_preempt_budget_steps: int = 4,
+    chunk_preempt_small_request_threshold_ms: float | None = None,
+    chunk_preempt_image_budget_steps: int | None = None,
+    chunk_preempt_video_budget_steps: int | None = None,
+    use_heuristic_cost: bool = False,
 ) -> dict:
     """单次模拟，返回与 plot_results 对齐的指标 + algorithm。
 
-    instance_scheduler_policy: fcfs（队首）或 sjf（最短作业优先），与 benchmark --instance-scheduler-policy 对齐。
-    sjf_preempt_*：与 diffusion_engine / stage1 的 small_request 阈值及 image/video chunk budget 对齐；image/video 键缺省则
-    对两类请求均使用策略名中的 sjf_preempt_N 作为 default_budget。
+    instance_scheduler_policy: 实例内调度策略，与 benchmark --instance-scheduler-policy 对齐。
+      支持: fcfs, sjf, sjf_chunk_preempt (sjf_preempt), sjf_aging, sjf_aging_guarded,
+            size_bucket_sjf_aging, p95-first, p95-bucket-sjf, p95-bucket-sjf-normalized
+      后缀 _no_preempt 可关闭 chunk 抢占（如 sjf_aging_no_preempt）。
+    chunk_preempt_*: 对齐 diffusion_engine / stage1 的 chunk 预算及 small_request 阈值。
+      仅对 _policy_uses_chunk_preempt 返回 True 的策略生效。
+    use_heuristic_cost: 调度排序使用面积 heuristic 而非 profile 成本估算，
+      对齐 real deployment 未配置 --diffusion-runtime-profile 时的行为。
     """
     if algorithm not in DISPATCH:
         raise ValueError(f"不支持的算法: {algorithm}，可选: {list(DISPATCH.keys())}")
     dispatch_fn = DISPATCH[algorithm]
     state = {"profile_data": profile_data}
+    _base_pol = instance_scheduler_policy.removesuffix("_no_preempt")
+    is_chunk_preempt = _policy_uses_chunk_preempt(instance_scheduler_policy)
+
+    # 对 sjf_chunk_preempt_N / sjf_preempt_N，从策略名解析 chunk budget
+    chunk_budget = chunk_preempt_budget_steps
+    if instance_scheduler_policy.startswith(("sjf_chunk_preempt_", "sjf_preempt_")):
+        try:
+            chunk_budget = int(instance_scheduler_policy.rsplit("_", 1)[1])
+        except ValueError:
+            pass
 
     # 复制 worker 状态：config_id, queue, next_time
     ws = []
@@ -582,14 +997,19 @@ def run_simulation(
             "instance_type": w.get("instance_type", cid),
             "queue": [],
             "next_time": INF,
+            "_use_heuristic_cost": use_heuristic_cost,
         }
         if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
-            wr["_queued_work"] = 0.0  # 增量维护队列总工作量，避免 O(n^2)
+            wr["_queued_work"] = 0.0
         if algorithm == "short_queue_runtime_max_class_balanced":
-            wr["_max_class_count"] = 0  # 最大类作业数（队列+运行中），用于均衡
+            wr["_max_class_count"] = 0
+        _base_pol = instance_scheduler_policy.removesuffix("_no_preempt")
+        if _base_pol.startswith("p95"):
+            wr["_p95_slowdown_history"] = []
+            wr["_p95_service_rate_ms_per_wu"] = None
+            wr["_p95_latency_history_ms"] = []
         ws.append(wr)
     n_workers = len(ws)
-    # 调度器下一事件 = 下一请求的到达时间（请求发起时间），不是 rps 均匀间隔
     req_index = [0]
 
     def scheduler_next_time():
@@ -616,7 +1036,7 @@ def run_simulation(
         if t == INF and all(w["next_time"] == INF and len(w["queue"]) == 0 for w in ws):
             break
 
-        # 请求到达：在 arrival_time 将请求入队（请求发起时间，此时不一定被执行）
+        # 请求到达
         if t == scheduler_next and req_index[0] < len(requests):
             req = next_request()
             if req is not None:
@@ -624,7 +1044,6 @@ def run_simulation(
                 wi = dispatch_fn(req, ws, state)
                 req["assigned_worker_index"] = wi
                 req["assigned_worker_config"] = ws[wi]["config_id"]
-                # 默认行为：任务放到队列末尾。入队后、立即派工前由调度器对队列排序为占位，以后可在此扩展。
                 if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
                     st = lookup(profile_data, req, ws[wi])
                     req["_svc"] = st
@@ -636,65 +1055,70 @@ def run_simulation(
                 ws[wi]["queue"].append(req)
             scheduler_next = scheduler_next_time()
 
-        # Worker 完成：request_time_s 为从开始执行到执行结束的时间，finish_time = 当前时钟
-        # sjf_preempt：chunk 完成时若未跑完则重新入队（抢占）
-        chunk_budget = 4
-        if instance_scheduler_policy.startswith("sjf_preempt") and "_" in instance_scheduler_policy:
-            try:
-                chunk_budget = int(instance_scheduler_policy.split("_")[-1])
-            except ValueError:
-                pass
-
+        # Worker 完成
         for w in ws:
             if w["next_time"] == t:
                 rec = w.get("current_request")
                 w["next_time"] = INF
                 w["current_request"] = None
                 if rec is not None:
-                    is_preempt = instance_scheduler_policy.startswith("sjf_preempt")
                     total_steps = max(int(rec.get("steps", 1) or 1), 1)
                     executed_before = int(rec.get("_executed_steps", 0) or 0)
                     chunk_done = int(rec.get("_chunk_steps", 0) or 0)
                     executed_after = executed_before + chunk_done
-                    if is_preempt and executed_after < total_steps:
-                        # Chunk 完成但请求未完成：重新入队（仍属该 worker，_max_class_count 不变）
+                    chunk_duration = rec.get("_last_chunk_duration_s", 0.0)
+
+                    if is_chunk_preempt and executed_after < total_steps:
+                        # Chunk 完成但请求未完成：记录 p95 样本后重新入队
+                        if _base_pol.startswith("p95") and chunk_done > 0:
+                            _p95_record_chunk_sample(w, chunk_duration, rec)
                         rec["_executed_steps"] = executed_after
                         rem = _remaining_latency_s(rec, profile_data, w)
                         if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
                             w["_queued_work"] += rem
                         w["queue"].append(rec)
                     else:
-                        # 请求完成：离开 worker，需更新 _max_class_count
+                        # 请求完成
+                        if is_chunk_preempt:
+                            rec["_executed_steps"] = executed_after
+                        if _base_pol.startswith("p95") and chunk_done > 0:
+                            _p95_record_chunk_sample(w, chunk_duration, rec)
                         if algorithm == "short_queue_runtime_max_class_balanced":
                             max_st = _max_service_time(profile_data)
                             if lookup(profile_data, rec, w) >= max_st * 0.99:
                                 w["_max_class_count"] -= 1
                         rec["finish_time"] = t
                         rec["latency"] = t - rec["arrival_time"]
+                        if _base_pol.startswith("p95"):
+                            svc = rec.get("service_time") or sum(float(x) for x in rec.get("chunk_service_times", []))
+                            if rec["latency"] > 0 and svc > 0:
+                                _p95_record_completion(w, rec["latency"], svc)
+                            _p95_record_latency_ms(w, rec["latency"] * 1000.0)
                         completed.append(rec)
 
-        # 立即派工：空闲 worker 从队列取请求，fcfs=队首/sjf=最短服务时间/sjf_aging=防饥饿/sjf_preempt=SRPT
+        # 立即派工
         for w in ws:
             if w["next_time"] == INF and w["queue"]:
                 req = _pop_next_from_queue(w, profile_data, instance_scheduler_policy, current_time=t)
                 if algorithm in ("short_queue_runtime", "short_queue_runtime_max_class_balanced"):
-                    sub = _remaining_latency_s(req, profile_data, w) if instance_scheduler_policy.startswith("sjf_preempt") else req.get("_svc", 0.0)
+                    sub = _remaining_latency_s(req, profile_data, w) if is_chunk_preempt else req.get("_svc", 0.0)
                     w["_queued_work"] -= sub
                 if "first_start_time" not in req:
                     req["first_start_time"] = t
-                req["start_time"] = req["first_start_time"]  # 兼容旧字段：表示首次开始执行时间
+                req["start_time"] = req["first_start_time"]
                 req.setdefault("start_times", []).append(t)
-                if instance_scheduler_policy.startswith("sjf_preempt"):
+                if is_chunk_preempt:
                     per_req_budget = _sjf_preempt_budget_steps_for_request(
                         req, chunk_budget,
-                        sjf_preempt_image_chunk_budget_steps,
-                        sjf_preempt_video_chunk_budget_steps,
+                        chunk_preempt_image_budget_steps,
+                        chunk_preempt_video_budget_steps,
                     )
                     chunk_dur, chunk_steps = _chunk_duration_s(
                         req, profile_data, w, per_req_budget,
-                        small_request_threshold_ms=sjf_preempt_small_request_threshold_ms,
+                        small_request_threshold_ms=chunk_preempt_small_request_threshold_ms,
                     )
                     req["_chunk_steps"] = chunk_steps
+                    req["_last_chunk_duration_s"] = chunk_dur
                     st = chunk_dur
                 else:
                     st = lookup(profile_data, req, w)
@@ -881,24 +1305,26 @@ def main() -> None:
         if isinstance(policies_raw, (list, tuple))
         else [str(policies_raw).strip().lower()]
     )
-    # sjf_aging 可展开为多个 factor：sjf_aging_0.05, sjf_aging_0.1, ...
+    # sjf_aging / size_bucket_sjf_aging 可展开为多个 factor；默认 1.0 与 stage1_scheduler._SJF_AGING_DEFAULT_FACTOR 对齐
     sjf_aging_factors = sched.get("sjf_aging_factors")
     if sjf_aging_factors is None:
-        sjf_aging_factors = [0.1]
+        sjf_aging_factors = [_SJF_AGING_DEFAULT_FACTOR]
     if not isinstance(sjf_aging_factors, (list, tuple)):
         sjf_aging_factors = [float(sjf_aging_factors)]
-    # sjf_preempt 可展开为多个 chunk_budget：sjf_preempt_4, sjf_preempt_8, ...
-    sjf_preempt_chunk_budgets = sched.get("sjf_preempt_chunk_budgets")
-    if sjf_preempt_chunk_budgets is None:
-        sjf_preempt_chunk_budgets = [4]
-    if not isinstance(sjf_preempt_chunk_budgets, (list, tuple)):
-        sjf_preempt_chunk_budgets = [int(sjf_preempt_chunk_budgets)]
+    # sjf_chunk_preempt / sjf_preempt 可展开为多个 chunk_budget
+    chunk_preempt_budgets = sched.get("chunk_preempt_chunk_budgets") or sched.get("sjf_preempt_chunk_budgets")
+    if chunk_preempt_budgets is None:
+        chunk_preempt_budgets = [4]
+    if not isinstance(chunk_preempt_budgets, (list, tuple)):
+        chunk_preempt_budgets = [int(chunk_preempt_budgets)]
     instance_policies = []
     for p in policies_flat:
         if p == "sjf_aging":
             instance_policies.extend(f"sjf_aging_{f}" for f in sjf_aging_factors)
-        elif p == "sjf_preempt":
-            instance_policies.extend(f"sjf_preempt_{b}" for b in sjf_preempt_chunk_budgets)
+        elif p == "size_bucket_sjf_aging":
+            instance_policies.extend(f"size_bucket_sjf_aging_{f}" for f in sjf_aging_factors)
+        elif p in ("sjf_chunk_preempt", "sjf_preempt"):
+            instance_policies.extend(f"sjf_chunk_preempt_{b}" for b in chunk_preempt_budgets)
         else:
             instance_policies.append(p)
     # 笛卡尔乘积：(algo, policy) 每个组合视为一个算法，输出 algorithm="{algo}_{policy}"
@@ -915,8 +1341,9 @@ def main() -> None:
             return None
         return int(v)
 
-    sjf_img_chunk_bs = _sched_optional_int("sjf_preempt_image_chunk_budget_steps")
-    sjf_vid_chunk_bs = _sched_optional_int("sjf_preempt_video_chunk_budget_steps")
+    img_chunk_bs = _sched_optional_int("chunk_preempt_image_budget_steps") or _sched_optional_int("sjf_preempt_image_chunk_budget_steps")
+    vid_chunk_bs = _sched_optional_int("chunk_preempt_video_budget_steps") or _sched_optional_int("sjf_preempt_video_chunk_budget_steps")
+    default_chunk_budget = int(sched.get("chunk_preempt_budget_steps", 4) or 4)
 
     all_runs = []
     for algo, instance_policy in algorithm_combos:
@@ -926,14 +1353,15 @@ def main() -> None:
             requests = build_requests(cfg, rps, t_end)
             assign_slo(requests, profile_data, workers, slo_scale)
             try:
-                thresh = sched.get("sjf_preempt_small_request_threshold_ms")
+                thresh = sched.get("chunk_preempt_small_request_threshold_ms") or sched.get("sjf_preempt_small_request_threshold_ms")
                 thresh_f = float(thresh) if thresh not in (None, "") else None
                 out = run_simulation(
                     requests, workers, profile_data, rps, t_end, algo,
                     instance_scheduler_policy=instance_policy,
-                    sjf_preempt_small_request_threshold_ms=thresh_f,
-                    sjf_preempt_image_chunk_budget_steps=sjf_img_chunk_bs,
-                    sjf_preempt_video_chunk_budget_steps=sjf_vid_chunk_bs,
+                    chunk_preempt_budget_steps=default_chunk_budget,
+                    chunk_preempt_small_request_threshold_ms=thresh_f,
+                    chunk_preempt_image_budget_steps=img_chunk_bs,
+                    chunk_preempt_video_budget_steps=vid_chunk_bs,
                 )
                 out["algorithm"] = combo_name  # 覆盖为组合名，画图时每条线一个组合
                 runs_for_combo.append(out)

@@ -3,18 +3,19 @@
 
 simulation:
   # 模拟时长（秒），与 benchmark NUM_PROMPTS_DURATION_SECONDS 对齐；请求数 N = ceil(t_end * rps)
-  t_end: 1800.0
-  rps: [0.2, 0.4, 0.6, 0.8, 1.0]   # 请求到达速率列表：对每个算法在每个 rps 下各跑一轮，得到曲线数据（横轴 rps，纵轴指标）
+  t_end: 100.0
+  rps: [0.2]   # 请求到达速率列表：对每个算法在每个 rps 下各跑一轮，得到曲线数据（横轴 rps，纵轴指标）
   slo_scale: 3             # SLO 倍数，slo_ms = 预估执行时间(ms) * slo_scale，默认 3
-  profile_path: "../profile/qwen_npu.json"   # profile 文件路径
+  profile_path: "../profile/qwen.json"   # profile 文件路径
   # 请求数据集来源：
   #   - "trace"   : 使用 trace_path（若存在）提供的 size/steps 序列，仅用于请求类型顺序，arrival_time 仍按 rps 均匀注入
   #   - "random"  : 使用 random_request_config，模拟 benchmarks/diffusion 中的 --random-request-config（按 weight 采样）
-  dataset: "random"
+  # dataset: "random"
+  dataset: "trace"
   # 请求 trace：设为 sd3_trace_redistributed.txt 时按 trace 顺序提供 size/steps；
   # 路径相对本 yaml 所在目录。
   # 从 simulation 目录起：实际文件在 benchmarks/dataset/；若从项目根运行可改为 "benchmarks/dataset/sd3_trace_redistributed.txt"
-  trace_path: "../../benchmarks/dataset/sd3_trace_redistributed.txt"
+  trace_path: "../datasets/datasetX.trace.txt"
   # random 数据集配置：用于 dataset=random 时，模拟 --random-request-config
   # 下面是一个示例（Qwen-Image 文生图），字段含义：
   #   width/height     : 分辨率
@@ -47,30 +48,34 @@ workers:
 
 # 调度算法
 #   instance_scheduler_policies：实例内调度策略，与 algorithms_to_run 做笛卡尔乘积，每个组合一条曲线画在一起
-#     fcfs: 先到先服务
-#     sjf: 最短作业优先（长作业易饥饿，P95 差）
-#     sjf_aging: SJF+老化，等待越久优先级越高，缓解长作业饥饿，改善 P95
-#     sjf_preempt: SJF+chunk 抢占，每 chunk_budget_steps 步可抢占重入队，实现 SRPT；剩余时间 <= threshold 时直接跑完
-#   【注意】笛卡尔乘积下每条曲线独立实例策略：仅 sjf_preempt_* 会按 chunk 切分执行；fcfs / sjf / sjf_aging 始终用 profile
-#     整段 latency_s 一次排程，不因同文件里配置了 sjf_preempt_chunk_budgets 等而分块。
-#   sjf_aging_factors: 展开为多条曲线；0.15 推荐
-#   sjf_preempt_chunk_budgets: 展开为 sjf_preempt_4 等；对齐 diffusion_chunk_budget_steps（默认 N）
-#   sjf_preempt_image_chunk_budget_steps / sjf_preempt_video_chunk_budget_steps: 可选，对齐 diffusion_image_chunk_budget_steps /
-#     diffusion_video_chunk_budget_steps；省略或 null 时 image 与 video 均用上一项的 N（纯图负载行为与未扩展前一致）
-#   sjf_preempt_small_request_threshold_ms: 对齐 diffusion_small_request_latency_threshold_ms；不设或 null 则始终按 chunk 切
+#     fcfs: 先到先服务，无 chunk 抢占
+#     sjf: 最短作业优先（按总服务时间排序），无 chunk 抢占
+#     sjf_chunk_preempt: SJF + chunk 抢占，每 chunk_budget_steps 步可抢占重入队，按剩余时间排序 (SRPT)
+#     sjf_aging: SJF + 老化，score = remaining_cost / (1 + aging_factor * age)，与 stage1_scheduler 对齐，含 chunk 抢占
+#     size_bucket_sjf_aging: 先按分辨率分桶 (512/768/1024)，桶内 sjf_aging 排序，等待过久可跨桶晋升，含 chunk 抢占
+#     p95-first: 基于 tail pressure 的 greedy 排序（在线学习 slowdown p95），含 chunk 抢占
+#   【注意】fcfs / sjf 不使用 chunk 抢占，始终用 profile 整段 latency_s 一次排程。
+#     其余策略 (sjf_chunk_preempt / sjf_aging / size_bucket_sjf_aging / p95-first) 使用 chunk 抢占。
+#   sjf_aging_factors: 展开为多条曲线；默认 1.0（与 stage1_scheduler._SJF_AGING_DEFAULT_FACTOR 对齐）
+#   chunk_preempt_chunk_budgets: 展开为 sjf_chunk_preempt_4 等；对齐 diffusion_chunk_budget_steps
+#   chunk_preempt_budget_steps: sjf_aging / size_bucket_sjf_aging / p95-first 的默认 chunk budget（默认 4）
+#   chunk_preempt_small_request_threshold_ms: 对齐 diffusion_small_request_latency_threshold_ms
+#   chunk_preempt_image_budget_steps / chunk_preempt_video_budget_steps: 对齐 diffusion_image/video_chunk_budget_steps
 #   algorithms_to_run：全局调度算法
 scheduler:
   instance_scheduler_policies:
-    - fcfs                # 实例内 FCFS（qwen_n8_fcfs_rr）
-    - sjf                 # 实例内 SJF（qwen_n8_sjf_qz_rr）
-    # - sjf_aging           # SJF+老化，score=service_time-aging_factor*waiting_time，score 越低越先调度
-    - sjf_preempt         # SJF+chunk 抢占，SRPT 语义，按 sjf_preempt_chunk_budgets 展开
-  # sjf_aging_factors: [0.15]  # 对比选优
-  # 与 global_scheduler.qwen.yaml 示例对齐示例：--diffusion-chunk-budget-steps 4、--diffusion-small-request-latency-threshold-ms 1200
-  sjf_preempt_chunk_budgets: [4]
-  sjf_preempt_small_request_threshold_ms: 1200
-  # sjf_preempt_image_chunk_budget_steps: 4   # 与引擎分项一致时可显式写出；省略则等于 sjf_preempt_N
-  # sjf_preempt_video_chunk_budget_steps: 2   # 仅 video（num_frames>1）负载时需要与引擎分项对齐时再设
+    - fcfs                    # 实例内 FCFS
+    - sjf                     # 实例内 SJF（无抢占）
+    # - sjf_chunk_preempt       # SJF + chunk 抢占 (SRPT)，按 chunk_preempt_chunk_budgets 展开
+    # - sjf_aging             # SJF + 老化 + chunk 抢占，按 sjf_aging_factors 展开
+    # - size_bucket_sjf_aging # 分辨率分桶 + SJF 老化 + chunk 抢占
+    # - p95-first             # tail pressure greedy + chunk 抢占
+  # sjf_aging_factors: [1.0]     # sjf_aging / size_bucket_sjf_aging 的 aging factor
+  # chunk_preempt_chunk_budgets: [4]
+  # chunk_preempt_budget_steps: 4
+  # chunk_preempt_small_request_threshold_ms: 1200
+  # chunk_preempt_image_budget_steps: 4  # 与引擎分项一致时可显式写出
+  # chunk_preempt_video_budget_steps: 2  # 仅 video（num_frames>1）负载时需要
   # algorithms_to_run：要参与测试的算法列表。对每个算法，在 rps 列表的每个取值下各跑一轮模拟，
   # 得到 (算法, rps) 的指标点，用于画图：横轴 rps、纵轴为延迟/吞吐等，每算法一条曲线。
   # 全局路由与 instance_local_schd 对齐要点：

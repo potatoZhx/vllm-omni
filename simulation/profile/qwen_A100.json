@@ -1,0 +1,40 @@
+{
+  "profiles": [
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 512,
+      "height": 512,
+      "num_frames": 1,
+      "steps": 20,
+      "latency_s": 2.504
+    },
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 768,
+      "height": 768,
+      "num_frames": 1,
+      "steps": 20,
+      "latency_s": 4.793
+    },
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 1024,
+      "height": 1024,
+      "num_frames": 1,
+      "steps": 25,
+      "latency_s": 11.071
+    },
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 1536,
+      "height": 1536,
+      "num_frames": 1,
+      "steps": 35,
+      "latency_s": 35.912
+    }
+  ]
+}

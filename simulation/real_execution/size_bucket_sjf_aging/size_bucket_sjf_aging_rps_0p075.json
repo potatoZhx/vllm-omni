@@ -1,0 +1,19 @@
+{
+  "algorithm": "size_bucket_sjf_aging",
+  "rps": 0.075,
+  "duration": 1399.2831,
+  "completed_requests": 100,
+  "failed_requests": 0,
+  "throughput_qps": 0.0715,
+  "latency_mean": 21.1935,
+  "latency_median": 16.0994,
+  "latency_p50": 16.0994,
+  "latency_p95": 57.035,
+  "latency_p99": 77.712,
+  "waiting_time_mean": 9.7059,
+  "waiting_time_p95": 30.3913,
+  "waiting_time_p99": 42.9804,
+  "service_time_mean": 11.4875,
+  "service_time_p95": 35.9598,
+  "service_time_p99": 38.5685
+}

@@ -1,0 +1,56 @@
+{
+  "profiles": [
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 512,
+      "height": 512,
+      "num_frames": 1,
+      "steps": 20,
+      "latency_s": 2.5057,
+      "count": 15,
+      "latency_median": 2.4976,
+      "latency_min": 2.4876,
+      "latency_max": 2.5812
+    },
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 768,
+      "height": 768,
+      "num_frames": 1,
+      "steps": 20,
+      "latency_s": 4.7935,
+      "count": 32,
+      "latency_median": 4.7905,
+      "latency_min": 4.7688,
+      "latency_max": 4.8226
+    },
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 1024,
+      "height": 1024,
+      "num_frames": 1,
+      "steps": 25,
+      "latency_s": 11.0663,
+      "count": 39,
+      "latency_median": 11.0605,
+      "latency_min": 11.0433,
+      "latency_max": 11.2309
+    },
+    {
+      "instance_type": "sp1_cfg1_tp1",
+      "task_type": "image",
+      "width": 1536,
+      "height": 1536,
+      "num_frames": 1,
+      "steps": 35,
+      "latency_s": 35.896,
+      "count": 14,
+      "latency_median": 35.8932,
+      "latency_min": 35.8244,
+      "latency_max": 35.9758
+    }
+  ]
+}

@@ -33,14 +33,14 @@ python simulation.py
 
 - **配置与代码分离**：全局参数、worker 列表、算法列表、输入输出路径等均在 YAML 中配置，模拟器只读配置。
 - **查表严格**：size 或 config 在 profile 中无匹配即报错；steps 按约定档位映射（4–6→5，25–35→30，40–50→50）。
-- **调度可插拔**：仅替换调度模块即可切换算法，其他模块（事件循环、worker、队列、统计、输出）保持不变。
+- **两级调度可插拔**：全局调度（选哪台 worker）与实例内调度（worker 队列中选哪个请求执行）均为可插拔模块，二者做笛卡尔乘积运行。
 - **输出即画图输入**：输出 JSON 带 `algorithm` 且字段名与 `diffusion_bench/plot_results.py` 一致，支持单文件多算法或每算法一文件、跑完后可自动画图或手动画图；自动画图时**一指标一图**，每图内为各算法的曲线，避免多指标挤在一张图里。
 
 ### 设计小结
 
 - **配置**：YAML 统一管理；worker 用 (sp, cfg, tp) 三整数，程序拼接为 config_id；算法列表可配置并带注释命名。
 - **查表**：size、config_id 必须与 profile 一致，steps 按档位映射；查不到即报错；不输出显存等无关字段。
-- **算法**：与 global_scheduler 一致（round_robin、fcfs、short_queue_runtime、estimated_completion_time），可插拔；首推实现 round_robin。
+- **算法**：全局调度与 global_scheduler 一致（round_robin、fcfs、short_queue_runtime、estimated_completion_time）；实例内调度与 stage1_scheduler 一致（fcfs、sjf、sjf_chunk_preempt、sjf_aging、size_bucket_sjf_aging、p95-first）。均可插拔。
 - **输出**：必含 `algorithm`，与 plot_results 对齐；多算法可多 JSON 或单 JSON + `group-by algorithm`；SLO 默认 slo_scale=3；跑完后可配置自动画图（默认 P95 与平均延迟，一指标一图）。
 
 ---
@@ -55,7 +55,7 @@ python simulation.py
 
 - **模拟参数**：模拟时长 `T_end`、**rps 列表**（如 `[0.5, 1.0, 1.5]`；对每个算法在每个 rps 下各跑一轮，得到横轴为 rps 的曲线数据）、SLO 相关（见下）。
 - **Worker 列表**：每个 worker 用三个整数 `sp`、`cfg`、`tp` 表示，程序内部拼接为完整 config_id（见下节）。
-- **调度算法**：要参与测试的算法列表（可多选）；调度逻辑为可插拔模块。
+- **调度算法**：要参与测试的全局算法列表和实例内调度策略列表（可多选）；调度逻辑为可插拔模块。
 - **输入/输出**：profile 路径、**请求数据集来源与 trace/random 配置**、输出目录；多算法时可指定输出多个 JSON 或单 JSON 带 `algorithm` 字段。
 - **画图**（可选）：跑完后是否自动画图、默认画图指标（每个指标单独一张图）、图保存目录与前缀。
 
@@ -81,7 +81,7 @@ python simulation.py
 
 #### random_request_config：对齐 benchmark 的 random 数据集
 
-当 `dataset: random` 时，simulation 使用 `simulation.random_request_config` 作为“请求类型池”：
+当 `dataset: random` 时，simulation 使用 `simulation.random_request_config` 作为"请求类型池"：
 
 ```yaml
 simulation:
@@ -156,16 +156,18 @@ simulation:
 
 ---
 
-### 3. 调度算法：可插拔与对齐 global_scheduler
+### 3. 调度算法：两级可插拔架构
 
-模拟器要对 `tests/global_scheduler`（及 `vllm_omni.global_scheduler.policies`）中的 **每个算法** 提供支持，且为 **可插拔**：
+模拟器实现**两级调度**，均为可插拔模块：
 
-- 仅 **更换调度器所用的调度模块**（即“选哪个算法”），事件循环、worker、队列、统计等 **其余模块不改**。
-- 通过配置（YAML）选择当前运行的算法；可配置 **要测试的算法列表**，对每个算法在 rps 列表的每个取值下各跑一轮模拟，输出供画图（横轴 rps，每算法一条曲线）。
+- **全局调度（global scheduler）**：决定每个到达请求被派发到**哪个 worker 实例**。
+- **实例内调度（instance scheduler）**：决定每个 worker 从其等待队列中**选择哪个请求**下一个执行。
 
-支持的算法名称与 global_scheduler 保持一致，便于一一对应。**无论采用哪种算法，每个到达的请求都会被立即派发到某一实例**：调度器只做“选哪台”的决策，不会因为实例都忙而拒绝或延迟派发；请求会进入目标实例的队列等待执行。因此 **arrival_time 表示请求到达调度器并被派发（入队）的时刻**，不会失真；请求可能在该时刻之后才开始执行（start_time），二者之差即为排队等待时间（waiting_time）。
+二者做**笛卡尔乘积**：每个 (全局算法, 实例策略) 组合独立运行一次仿真。
 
-各算法含义如下（均为“选哪个实例”，选完后请求进入该实例队列）：
+#### 3.1 全局调度算法
+
+全局调度与 `vllm_omni.global_scheduler.policies` 对齐。**无论采用哪种算法，每个到达的请求都会被立即派发到某一实例**：调度器只做"选哪台"的决策，不会因为实例都忙而拒绝或延迟派发；请求会进入目标实例的队列等待执行。因此 **arrival_time 表示请求到达调度器并被派发（入队）的时刻**。
 
 | 配置名 | 含义（简要） |
 |--------|----------------|
@@ -178,31 +180,86 @@ simulation:
 
 - **round_robin（轮询）**  
   维护一个游标，按实例列表顺序依次选择下一个实例。  
-  - 若有空闲实例：只在“当前空闲”的实例集合内轮询，选下一个空闲的。  
+  - 若有空闲实例：只在"当前空闲"的实例集合内轮询，选下一个空闲的。  
   - 若**全部忙碌**：仍会选一个实例（按游标选），请求进入该实例的队列排队；游标照常前移，下次请求换到下一个实例，从而在负载高时也尽量均匀分摊到各实例，不把请求堆在某一台上。  
-  因此“该发请求时没有实例空闲”时依然会发，只是请求会排队；arrival_time 仍是本次派发时刻。
+  因此"该发请求时没有实例空闲"时依然会发，只是请求会排队；arrival_time 仍是本次派发时刻。
 
 - **fcfs（先到先服务）**  
-  优先选“当前空闲”的实例（inflight < 该实例并发上限）；若有多个空闲，取配置中**排在前面**的第一个空闲实例。  
+  优先选"当前空闲"的实例（inflight < 该实例并发上限）；若有多个空闲，取配置中**排在前面**的第一个空闲实例。  
   - 若**全部忙碌**：退化为选当前负载最小的实例（inflight 最小）；相同时按 tie_breaker（random 或 lexical）打破平局。请求进入该实例队列。  
   同样，请求一定会被派发，arrival_time 为派发时刻。
 
 - **short_queue_runtime（最短队列预估时间）**  
-  选**当前剩余总工作量（秒）**最小的实例。剩余工作量 = 正在执行任务的剩余时间 + 队列中所有等待请求的 service_time 之和（对队列内每个请求按 size/steps 与实例 config 查表）。与“队列长度×本请求时间”的近似不同，本实现基于**剩余工作量**，适合异构与混合请求。
+  选**当前剩余总工作量（秒）**最小的实例。剩余工作量 = 正在执行任务的剩余时间 + 队列中所有等待请求的 service_time 之和（对队列内每个请求按 size/steps 与实例 config 查表）。与"队列长度×本请求时间"的近似不同，本实现基于**剩余工作量**，适合异构与混合请求。  
+  **注意**：当实例内策略启用 chunk 抢占时，`_queued_work` 使用 `_remaining_latency_s`（剩余时间）而非总时间，保持与实际系统一致。
 
 - **estimated_completion_time（预估完成时间最小，ECT）**  
-  选**本请求在该实例上的预估完成时间**最小的实例。预估完成时间 = 该实例当前剩余总工作量（同上）+ 本请求在该实例的 service_time。即让本请求尽量在“能最早完成”的实例上排队。
+  选**本请求在该实例上的预估完成时间**最小的实例。预估完成时间 = 该实例当前剩余总工作量（同上）+ 本请求在该实例的 service_time。即让本请求尽量在"能最早完成"的实例上排队。
 
-在 YAML 的算法参数配置部分，应为每个可选项添加 **注释标出算法名称**，避免与实现或 global_scheduler 的命名对不上号。
+#### 3.2 实例内调度策略（instance_scheduler_policy）
 
-**入队与队列**：请求被派发到某实例后放入该实例队列**末尾**；**入队后、worker 立即派工检查之前**保留“调度器对队列排序”的扩展点，当前为占位，以后可在此扩展。默认行为仅为将任务放到队列末尾。
+实例内调度策略决定**每个 worker 从其等待队列中选择下一个执行请求的方式**。所有策略实现与 `vllm_omni/diffusion/stage1_scheduler.py` 严格对齐。
 
-**配置示例（片段）：**
+| 策略名 | chunk 抢占 | 排序逻辑 | 对齐 stage1 函数 |
+|--------|-----------|---------|----------------|
+| `fcfs` | 否 | 先进先出 (FIFO) | — |
+| `sjf` | 否 | 按总服务时间升序 | `_build_sjf_queue` |
+| `sjf_chunk_preempt` | 是 | 按剩余服务时间升序 (SRPT) | sjf + chunk_preemption |
+| `sjf_aging` | 是 | `remaining_cost / (1 + aging_factor × age)` | `_build_sjf_aging_queue` |
+| `size_bucket_sjf_aging` | 是 | 先按 max(w,h) 分桶，桶内 sjf_aging，等待过久可跨桶晋升 | `_build_size_bucket_sjf_aging_queue` |
+| `p95-first` | 是 | 基于 tail pressure 的 greedy 排序（在线学习 slowdown p95） | `_build_p95_first_queue` |
+
+**chunk 抢占机制**：
+
+启用 chunk 抢占时，请求每执行 `chunk_budget_steps` 步后可被中断并重新入队，下次调度时按策略重新排序。对齐 `diffusion_enable_step_chunk` + `diffusion_enable_chunk_preemption`。剩余预估时间 ≤ `chunk_preempt_small_request_threshold_ms` 的请求直接跑完不切 chunk。
+
+`sjf` 和 `sjf_chunk_preempt` 的关键区别：
+- `sjf`：纯排序、无抢占——按总服务时间升序取队首，请求一旦开始执行就跑到完成。
+- `sjf_chunk_preempt`：排序 + chunk 抢占——按**剩余**服务时间升序，每 chunk 执行完后回队重新排序，等效于 SRPT（Shortest Remaining Processing Time）。
+
+**sjf_aging 公式**（与 stage1_scheduler 严格对齐）：
+
+- `aged_cost = remaining_cost_s / (1 + aging_factor × age_s)`
+- aging_factor 默认 1.0（当配置值 ≤ 0 时回退的内建默认值）
+- 可在策略名中指定 factor：`sjf_aging_0.15` 表示 factor=0.15
+
+**size_bucket_sjf_aging**（与 stage1_scheduler 严格对齐）：
+
+- 固定分桶阈值：`(512, 768, 1024)`，共 4 个桶（≤512 / ≤768 / ≤1024 / >1024）
+- 桶内按 `aged_cost` 排序
+- 桶晋升机制：`promotion_levels = int(aging_factor × age_s / 10.0)`，等待时间越长，请求可以跨越越多桶级别
+
+**p95-first**（与 stage1_scheduler 严格对齐）：
+
+- 在线学习量：`service_rate_ms_per_work_unit`（EMA, α=0.1）、`learned_slowdown_p95`（历史窗口 128 条）
+- work_units = `remaining_steps × num_frames × max(area / 1024², 0.0625)`
+- pressure_ratio = `predicted_finish_latency_ms / target_latency_ms`
+- target_latency_ms = `learned_slowdown_p95 × estimated_service_ms`
+- greedy 选择：取 `pressure_ratio` 最大者（尾延迟压力最大优先）
+
+**与全局调度的兼容性**：
+
+- `short_queue_length`：queue 长度含 chunk 抢占重入队的请求，与实际系统一致。
+- `short_queue_runtime`：增量维护 `_queued_work`；chunk 抢占时入队/出队使用 `_remaining_latency_s`（剩余时间）而非总服务时间，确保全局调度器看到的工作量估计准确。
+
+**入队与队列**：请求被全局调度派发到某实例后放入该实例队列**末尾**；当 worker 空闲需从队列取请求时，由实例内调度策略决定取出哪个请求。
+
+**配置示例：**
 
 ```yaml
 scheduler:
-  algorithm: round_robin
-  algorithms_to_run: [round_robin, fcfs]
+  algorithms_to_run: [round_robin, short_queue_runtime]
+  instance_scheduler_policies:
+    - fcfs
+    - sjf
+    - sjf_chunk_preempt       # 按 chunk_preempt_chunk_budgets 展开
+    - sjf_aging               # 按 sjf_aging_factors 展开
+    - size_bucket_sjf_aging   # 按 sjf_aging_factors 展开
+    - p95-first
+  sjf_aging_factors: [1.0]
+  chunk_preempt_chunk_budgets: [4]
+  chunk_preempt_budget_steps: 4
+  chunk_preempt_small_request_threshold_ms: 1200
 ```
 
 ---
@@ -217,11 +274,13 @@ scheduler:
 - **完成时间**：该请求执行完毕的时刻（`finish_time`）。  
 因此：`latency = finish_time - arrival_time`，`waiting_time = start_time - arrival_time`，`service_time = finish_time - start_time`（与 profile 查表得到的 `request_time_s` 一致）。
 
+**注意**：启用 chunk 抢占时，`start_time` 为该请求**首次开始执行**的时刻；`service_time` 为实际累积执行时间（可能跨多个 chunk）；`finish_time` 为最后一个 chunk 完成的时刻。
+
 #### 单次运行输出（单算法）
 
 每次运行输出的 JSON 必须包含 **算法字段**，以便与 `diffusion_bench/plot_results.py` 对接：
 
-- 必含字段：**`algorithm`**（字符串，与配置中的算法名一致，如 `round_robin`、`fcfs`）。
+- 必含字段：**`algorithm`**（字符串，格式为 `{全局算法}_{实例策略}`，如 `round_robin_fcfs`、`short_queue_runtime_sjf_aging_1.0`）。
 - 与画图脚本对齐的汇总字段（命名保持一致）：  
   `rps`、`duration`、`completed_requests`、`failed_requests`、`throughput_qps`、  
   `latency_mean`、`latency_median`、`latency_p50`、`latency_p95`、`latency_p99`、  
@@ -229,21 +288,21 @@ scheduler:
   `service_time_mean`、`service_time_p95`、`service_time_p99`、  
   `slo_attainment_rate`（若启用 SLO）等。
 - **统计与请求明细分两个文件**：  
-  - **统计文件**（如 `round_robin.json`）：每个 rps 一条汇总记录，含 `algorithm`、`rps` 及各项汇总指标，不含每请求明细，供画图与对比。  
-  - **请求明细文件**（如 `round_robin_requests.csv`）：**CSV 格式**，每行一个已完成请求，列包括 `algorithm`、`rps`、`request_id`、`assigned_worker_index`、`assigned_worker_config`、`arrival_time`、`start_time`、`finish_time`、`latency`、`waiting_time`、`service_time`、`size`、`steps`，便于用表格工具查看与筛选。
+  - **统计文件**（如 `round_robin_fcfs.json`）：每个 rps 一条汇总记录，含 `algorithm`、`rps` 及各项汇总指标，不含每请求明细，供画图与对比。  
+  - **请求明细文件**（如 `round_robin_fcfs_requests.csv`）：**CSV 格式**，每行一个已完成请求，列包括 `algorithm`、`rps`、`request_id`、`assigned_worker_index`、`assigned_worker_config`、`arrival_time`、`start_time`、`finish_time`、`latency`、`waiting_time`、`service_time`、`size`、`steps`，便于用表格工具查看与筛选。
 
 全部输出指标字段见 `simulation_config.yaml` 内注释。输出中不包含与画图无关的字段（如显存占用等），直接舍弃。
 
 #### 多算法时的输出与画图对接
 
-- **方式 A**：每个算法两个文件——统计 `round_robin.json`、`fcfs.json` 等（数组，每 rps 一条汇总）；请求明细 `round_robin_requests.csv`、`fcfs_requests.csv` 等（CSV，每行一个请求）。画图使用统计文件：`plot_results.py --input-dir <输出目录> --algorithms round_robin fcfs ...`。
+- **方式 A**：每个算法两个文件——统计 `round_robin_fcfs.json`、`short_queue_runtime_sjf.json` 等（数组，每 rps 一条汇总）；请求明细 CSV。画图使用统计文件：`plot_results.py --input-dir <输出目录> --algorithms ... ...`。
 - **方式 B**：配置 `output_merged: true` 时额外生成 `merged.json`（统计）、`merged_requests.csv`（请求明细，CSV）；画图使用 `plot_results.py -i output/merged.json --split-by-type --group-by algorithm`。
 
 **与 plot_results 对接示例：**
 
 - 多算法各输出一个 JSON 到目录 `output/`，画图时：
   ```bash
-  python diffusion_bench/plot_results.py --input-dir output --algorithms round_robin fcfs -o figs/compare --split-by-type
+  python diffusion_bench/plot_results.py --input-dir output --algorithms round_robin_fcfs short_queue_runtime_sjf -o figs/compare --split-by-type
   ```
 - 或合并为单 JSON（每条记录含 `algorithm`），画图时：
   ```bash
@@ -257,9 +316,9 @@ scheduler:
 ### 5. 系统组成与数据结构
 
 - **Actor**：调度器（scheduler）、若干 worker；系统维护全局时钟 `global_time`。
-- **调度器状态**：`scheduler_next_time`（下一次发送请求的时点）、`rps`、当前选中的 **调度模块**（可插拔）。
-- **Worker 状态**：每个 worker 具有 (sp, cfg, tp) 及拼接得到的 config_id、一个任务队列、`worker_next_time`（下一次完成事件时点，空闲为 `inf`）。
-- **请求状态**：请求 ID、请求类型（含 size、steps）、到达时间、开始执行时间、完成时间、分配到的 worker、目标 SLO（若启用）。
+- **调度器状态**：`scheduler_next_time`（下一次发送请求的时点）、`rps`、当前选中的 **全局调度模块**（可插拔）。
+- **Worker 状态**：每个 worker 具有 (sp, cfg, tp) 及拼接得到的 config_id、一个任务队列、`worker_next_time`（下一次完成事件时点，空闲为 `inf`）、**实例内调度策略**相关状态（如 p95-first 的 service_rate EMA 和 slowdown 历史）。
+- **请求状态**：请求 ID、请求类型（含 size、steps、num_frames、task_type）、到达时间、开始执行时间、完成时间、分配到的 worker、目标 SLO（若启用）、**chunk 抢占相关**（_remaining_steps、_remaining_latency_s、_chunk_started 等）。
 
 ---
 
@@ -268,9 +327,9 @@ scheduler:
 每轮流程固定如下：
 
 1. **选择下一个 actor**：在调度器下一次发送时点与各 worker 下一次完成时点中取最小者；对应时点最小者即为当前执行 actor。
-2. **执行事件并推进时钟**：若为调度器则发送一个请求并按当前调度模块选 worker 入队；若为 worker 则完成当前请求并更新统计。两者都先用自身时点更新 `global_time`。
-3. **入队后、立即派工前**：调度器对队列的排序为占位（当前默认仅将任务放到队列末尾，以后可在此扩展）。此步不推进全局时钟。
-4. **立即派工检查**：在全局时钟更新后、进入下一轮选择前，对每个 worker 检查：若当前空闲且队列非空，则从**队首**取请求、查表得到 `request_time_s`、安排完成事件。此步不推进全局时钟。
+2. **执行事件并推进时钟**：若为调度器则发送一个请求并按当前全局调度模块选 worker 入队；若为 worker 则完成当前请求（或当前 chunk）并更新统计。两者都先用自身时点更新 `global_time`。
+3. **chunk 抢占处理**（仅当实例策略启用 chunk 抢占时）：worker 完成当前 chunk 后，若请求尚有剩余步数，将其重新入队（不算新到达），并更新 `_remaining_steps` 和 `_remaining_latency_s`。
+4. **立即派工检查**：在全局时钟更新后、进入下一轮选择前，对每个 worker 检查：若当前空闲且队列非空，则由**实例内调度策略**从队列中选择请求（而非简单取队首）、查表得到 `request_time_s`（或 chunk 时间）、安排完成事件。此步不推进全局时钟。
 5. **结束条件**：调度器时点为 `inf`、所有 worker 时点为 `inf`、所有队列为空时，模拟结束。
 
 ---
@@ -317,24 +376,25 @@ python simulation.py
 
 **输出**：
 
-- 默认在配置的 `output_dir` 下每个算法生成两个文件：**统计** `{algo}.json`（每 rps 一条汇总）、**请求明细** `{algo}_requests.csv`（CSV，每行一个请求）。
+- 默认在配置的 `output_dir` 下每个算法组合生成两个文件：**统计** `{global}_{instance}.json`（每 rps 一条汇总）、**请求明细** `{global}_{instance}_requests.csv`（CSV，每行一个请求）。
 - 若配置中 `output_merged: true` 则额外生成 `merged.json`（统计）、`merged_requests.csv`（请求明细，CSV）。
 - 若 `plot.after_run: true`，则在同一目录（或 `plot.output_dir`）下生成按指标命名的图（一指标一图，前缀由 `plot.output_prefix` 指定）。实际文件名会带类型后缀，例如 `compare_latency_p95_latency.png`、`compare_latency_mean_latency.png`。
 
 **手动画图**（多算法对比）：
 
 ```bash
-python diffusion_bench/plot_results.py --input-dir simulation/output --algorithms round_robin fcfs short_queue_runtime -o figs/compare --split-by-type
+python diffusion_bench/plot_results.py --input-dir simulation/output --algorithms round_robin_fcfs short_queue_runtime_sjf -o figs/compare --split-by-type
 ```
 
 ---
 
-### 9. 第一版实现约束
+### 9. 实现约束与扩展记录
 
-以下约束明确第一版的边界，避免首版过度复杂；后续版本可再放宽。
+以下约束明确当前版本的边界。
 
-- **请求注入**：请求发送按**时间驱动**：到达时刻 t = 0, 1/rps, 2/rps, …，**当 t ≤ T_end 时**生成该请求（与“下一次发送时点 ≤ T_end 继续发送”一致）。例如 rps=0.1、T_end=200 时为 21 个请求（t=0,10,…,200）。第 i 个请求的 `arrival_time = i/rps`。trace 仅提供请求顺序对应的 size、steps，**数据集中的 timestamp 不使用**。
-- **查表**：第一版仅支持 **profile 严格查表**（size、config_id、steps 档位均需命中），**不支持**插值、外推或默认回退。
-- **失败机制**：第一版**不模拟**超时、队列溢出等失败；统计中 **failed_requests 固定为 0**，接口预留即可。
-- **输出方式**：统计与请求明细分两个文件（统计 JSON + 请求明细 CSV，如 `round_robin_requests.csv`）；可选合并为 `merged.json` / `merged_requests.csv` 由配置控制。
-- **调度算法**：第一版**首个实现**的算法为 **round_robin**，其余算法在此基础上按同一接口可插拔扩展。
+- **请求注入**：请求发送按**时间驱动**：到达时刻 t = 0, 1/rps, 2/rps, …，**当 t ≤ T_end 时**生成该请求。trace 仅提供请求顺序对应的 size、steps，**数据集中的 timestamp 不使用**。
+- **查表**：仅支持 **profile 严格查表**（size、config_id、steps 档位均需命中），**不支持**插值、外推或默认回退。
+- **失败机制**：**不模拟**超时、队列溢出等失败；统计中 **failed_requests 固定为 0**，接口预留即可。
+- **输出方式**：统计与请求明细分两个文件（统计 JSON + 请求明细 CSV）；可选合并为 `merged.json` / `merged_requests.csv` 由配置控制。
+- **全局调度算法**：round_robin、fcfs、short_queue_runtime、estimated_completion_time。
+- **实例内调度策略**（v2 新增）：fcfs、sjf、sjf_chunk_preempt、sjf_aging、size_bucket_sjf_aging、p95-first。与 `vllm_omni/diffusion/stage1_scheduler.py` 对齐。

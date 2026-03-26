@@ -1,0 +1,19 @@
+{
+  "algorithm": "fcfs",
+  "rps": 0.05,
+  "duration": 2039.4611,
+  "completed_requests": 100,
+  "failed_requests": 0,
+  "throughput_qps": 0.049,
+  "latency_mean": 16.6419,
+  "latency_median": 11.0701,
+  "latency_p50": 11.0701,
+  "latency_p95": 37.3371,
+  "latency_p99": 51.7937,
+  "waiting_time_mean": 5.3903,
+  "waiting_time_p95": 23.0312,
+  "waiting_time_p99": 32.592,
+  "service_time_mean": 11.2515,
+  "service_time_p95": 35.9262,
+  "service_time_p99": 35.9492
+}

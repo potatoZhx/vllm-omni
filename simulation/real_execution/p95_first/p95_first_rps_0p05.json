@@ -1,0 +1,19 @@
+{
+  "algorithm": "p95_first",
+  "rps": 0.05,
+  "duration": 2039.4752,
+  "completed_requests": 100,
+  "failed_requests": 0,
+  "throughput_qps": 0.049,
+  "latency_mean": 13.9315,
+  "latency_median": 11.0454,
+  "latency_p50": 11.0454,
+  "latency_p95": 35.9396,
+  "latency_p99": 57.1996,
+  "waiting_time_mean": 2.5881,
+  "waiting_time_p95": 15.9096,
+  "waiting_time_p99": 17.2343,
+  "service_time_mean": 11.3435,
+  "service_time_p95": 35.9284,
+  "service_time_p99": 38.4197
+}

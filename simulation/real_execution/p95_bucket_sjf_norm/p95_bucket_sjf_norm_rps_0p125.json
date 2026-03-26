@@ -1,0 +1,19 @@
+{
+  "algorithm": "p95_bucket_sjf_norm",
+  "rps": 0.125,
+  "duration": 1134.8144,
+  "completed_requests": 100,
+  "failed_requests": 0,
+  "throughput_qps": 0.0881,
+  "latency_mean": 60.4495,
+  "latency_median": 15.5374,
+  "latency_p50": 15.5374,
+  "latency_p95": 338.8164,
+  "latency_p99": 353.5983,
+  "waiting_time_mean": 46.6104,
+  "waiting_time_p95": 292.6312,
+  "waiting_time_p99": 310.9844,
+  "service_time_mean": 13.8391,
+  "service_time_p95": 36.7904,
+  "service_time_p99": 84.4382
+}
