@@ -178,7 +178,7 @@ class Stage1Scheduler(Scheduler):
         payload = cls._request_log_payload(request)
         payload.update(extra_fields)
         logger.info(
-            "%s request_id=%s width=%s height=%s total_steps=%s executed_steps=%s remaining_steps=%s dispatch_epoch=%s chunk_budget_steps=%s arrival_ts=%s first_enqueue_ts=%s first_dispatch_ts=%s last_dispatch_ts=%s last_preempted_ts=%s completion_ts=%s failure_ts=%s aborted_ts=%s queue_len=%s latency_ms=%s policy=%s",
+            "%s request_id=%s width=%s height=%s total_steps=%s executed_steps=%s remaining_steps=%s dispatch_epoch=%s chunk_budget_steps=%s arrival_ts=%s first_enqueue_ts=%s first_dispatch_ts=%s last_dispatch_ts=%s last_preempted_ts=%s completion_ts=%s failure_ts=%s aborted_ts=%s queue_len=%s queue_wait_ms=%s latency_ms=%s policy=%s",
             event,
             cls._request_label(request),
             payload.get("width"),
@@ -197,6 +197,7 @@ class Stage1Scheduler(Scheduler):
             payload.get("failure_ts"),
             payload.get("aborted_ts"),
             payload.get("queue_len"),
+            payload.get("queue_wait_ms"),
             payload.get("latency_ms"),
             payload.get("scheduler_policy"),
         )
@@ -1764,6 +1765,7 @@ class Stage1Scheduler(Scheduler):
             self._active_started_at = time.monotonic()
             self._set_request_state(queued_request.request, "running")
             dispatch_time = self._active_started_at
+            queue_wait_ms = max((dispatch_time - queued_request.enqueue_time) * 1000.0, 0.0)
             if getattr(queued_request.request, "first_dispatch_time", None) is None:
                 setattr(queued_request.request, "first_dispatch_time", dispatch_time)
             setattr(queued_request.request, "last_dispatch_time", dispatch_time)
@@ -1771,12 +1773,14 @@ class Stage1Scheduler(Scheduler):
                 "QUEUE_DEQUEUE",
                 queued_request.request,
                 queue_len=len(self._waiting_queue),
+                queue_wait_ms=queue_wait_ms,
                 scheduler_policy=self._policy_name(),
             )
             self._log_request_event(
                 "REQUEST_RESUMED" if getattr(queued_request.request, "last_preempted_time", None) is not None else "REQUEST_STARTED",
                 queued_request.request,
                 queue_len=len(self._waiting_queue),
+                queue_wait_ms=queue_wait_ms,
                 scheduler_policy=self._policy_name(),
             )
             return queued_request.request
@@ -1867,12 +1871,14 @@ class Stage1Scheduler(Scheduler):
                         "QUEUE_DEQUEUE",
                         request,
                         queue_len=len(self._waiting_queue),
+                        queue_wait_ms=queue_wait_ms,
                         scheduler_policy=self._policy_name(),
                     )
                     self._log_request_event(
                         "REQUEST_RESUMED" if getattr(request, "last_preempted_time", None) is not None else "REQUEST_STARTED",
                         request,
                         queue_len=len(self._waiting_queue),
+                        queue_wait_ms=queue_wait_ms,
                         scheduler_policy=self._policy_name(),
                     )
                     break
@@ -1906,6 +1912,7 @@ class Stage1Scheduler(Scheduler):
                 "REQUEST_FAILED",
                 request,
                 queue_len=len(self._waiting_queue),
+                queue_wait_ms=queue_wait_ms,
                 scheduler_policy=self._policy_name(),
             )
             logger.error("REQUEST_FAIL request_id=%s error_code=SCHEDULER_TIMEOUT", request_label)
@@ -1931,6 +1938,7 @@ class Stage1Scheduler(Scheduler):
                 "REQUEST_FAILED",
                 request,
                 queue_len=output.metrics.get("queue_len", -1),
+                queue_wait_ms=output.metrics.get("queue_wait_ms"),
                 latency_ms=output.metrics.get("scheduler_latency_ms", -1.0),
                 scheduler_policy=output.metrics.get("scheduler_policy"),
             )
@@ -1957,6 +1965,7 @@ class Stage1Scheduler(Scheduler):
                 "REQUEST_PREEMPTED",
                 request,
                 queue_len=output.metrics.get("queue_len", -1),
+                queue_wait_ms=output.metrics.get("queue_wait_ms"),
                 latency_ms=output.metrics.get("scheduler_latency_ms", -1.0),
                 scheduler_policy=output.metrics.get("scheduler_policy"),
             )
@@ -1986,6 +1995,7 @@ class Stage1Scheduler(Scheduler):
                 "REQUEST_COMPLETED",
                 request,
                 queue_len=output.metrics.get("queue_len", -1),
+                queue_wait_ms=output.metrics.get("queue_wait_ms"),
                 latency_ms=output.metrics.get("scheduler_latency_ms", -1.0),
                 scheduler_policy=output.metrics.get("scheduler_policy"),
             )
