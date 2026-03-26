@@ -260,9 +260,11 @@ class DiffusionEngine:
 
     def _should_run_to_completion_for_guarded_tail_request(self, request: OmniDiffusionRequest) -> bool:
         policy = str(getattr(self.od_config, "instance_scheduler_policy", "fcfs") or "fcfs")
-        if policy != "sjf_aging_guarded":
-            return False
-        return bool(getattr(request, "tail_protected", False))
+        if policy == "sjf_aging_guarded":
+            return bool(getattr(request, "tail_protected", False))
+        if policy == "bypass_guard_sjf":
+            return int(getattr(request, "can_bypass", 1) or 0) == 0
+        return False
 
     def _is_small_request_by_runtime(self, request: OmniDiffusionRequest) -> bool:
         threshold_ms = getattr(self.od_config, "diffusion_small_request_latency_threshold_ms", None)

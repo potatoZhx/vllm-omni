@@ -16,12 +16,13 @@
 
 ## 1. 当前支持的策略
 
-`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 13 种取值：
+`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 14 种取值：
 
 - `fcfs`
 - `sjf`
 - `sjf_aging`
 - `sjf_aging_guarded`
+- `bypass_guard_sjf`
 - `size_bucket_sjf_aging`
 - `slo_first`
 - `p95-first`
@@ -35,7 +36,7 @@
 CLI 入口：
 
 ```bash
---instance-scheduler-policy {fcfs,sjf,sjf_aging,sjf_aging_guarded,size_bucket_sjf_aging,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
+--instance-scheduler-policy {fcfs,sjf,sjf_aging,sjf_aging_guarded,bypass_guard_sjf,size_bucket_sjf_aging,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
 ```
 
 其中：
@@ -50,9 +51,13 @@ CLI 入口：
   - 当 `instance_scheduler_aging_factor <= 0` 时，使用内建默认 aging 系数 `1.0`，保证不额外配参也具备防饥饿能力
   - 对 step chunk / chunk preemption 友好：chunk 重入队后继续按“剩余耗时 + 首次 arrival 老化”计算
 - `sjf_aging_guarded`
-  - 以 `sjf_aging` 的 cost-aware aging 为基础，但当请求等待超过 `max(45s, 2.0 * estimated_cost_s)` 时进入 protected 队列
+  - 以 `sjf_aging` 的 cost-aware aging 为基础，但保护阈值不再固定；系统会用最近滑动窗口里已完成请求的 queue-wait 高分位学习 `learned_wait_guard_s`，再与 `2.0 * estimated_cost_s` 取更大值
   - protected 队列按到达时间优先，避免老的大请求继续被新来的短请求无限插队
   - protected 请求一旦开始执行，会直接跑完剩余 steps，用均值换取更低的 absolute p95
+- `bypass_guard_sjf`
+  - 默认仍按 cost-aware `sjf_aging` 排序，但每个请求会维护一个 `can_bypass ∈ {0,1}` 状态
+  - 系统会从最近滑动窗口里学习 `learned_wait_guard_s`；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时，请求会锁定为 `can_bypass=0`
+  - `can_bypass=0` 的请求会按到达时间优先，并在首次拿到执行权后直接跑完，用非常直接的“禁止继续插队”语义保护尾部请求
 - `size_bucket_sjf_aging`
   - 先按固定分辨率 bucket 分组，再在 bucket 内按 `remaining_cost / (1 + aging_factor * age)` 做 SJF + Aging 排序
   - aging 会按等待时间逐步提升大 bucket 请求，避免长期饥饿
@@ -489,7 +494,8 @@ sort_key = (
 | `fcfs` | 按 `enqueue_time` 先来先服务 | 无 | 无 |
 | `sjf` | 按 `estimated_cost_s` 从小到大排序 | 无 | 无 |
 | `sjf_aging` | 按 `estimated_cost_s / (1 + aging_factor * cost_weight * age_s)` 排序，其中 `cost_weight = clip(sqrt(estimated_cost_s / 12.0), 1.0, 4.0)` | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
-| `sjf_aging_guarded` | 在 cost-aware `sjf_aging` 上增加 protected 队列；当 `age_s >= max(45.0, 2.0 * estimated_cost_s)` 时转入 protected，并按 `arrival_time` 优先；protected 请求开始执行后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>guard 阈值目前是代码内常量 |
+| `sjf_aging_guarded` | 在 cost-aware `sjf_aging` 上增加 protected 队列；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时转入 protected，并按 `arrival_time` 优先；protected 请求开始执行后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
+| `bypass_guard_sjf` | 默认按 cost-aware `sjf_aging` 排序；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时将 `can_bypass` 置为 `0`，锁定请求不再允许被后到请求插队，并在 dispatch 后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
 | `size_bucket_sjf_aging` | 先按固定分辨率 bucket 排序，再在 bucket 内按 `estimated_cost_s / (1 + aging_factor * age_s)` 排序；等待过久时允许跨 bucket 晋升 | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
 | `slo_first` | 先求 `on_time` 集合，再按 `slack / remaining_cost` 排序；尾部按 aging best-effort 排序 | `instance_scheduler_slo_target_ms`<br>`instance_scheduler_slo_floor_ms`<br>`instance_scheduler_aging_factor` | `None`<br>`0.0`<br>`0.0` |
 | `p95-first` | 基于 `learned_slowdown_p95`、`estimated_service_ms`、`pressure_ratio` 的 normalized tail-pressure 单队列排序 | `instance_scheduler_p95_first_size_bias`<br>`instance_scheduler_p95_first_age_bias`<br>`instance_scheduler_p95_first_starvation_threshold_s`<br>`instance_scheduler_p95_first_starvation_boost`<br>`instance_scheduler_p95_first_base_ms`（兼容保留）<br>`instance_scheduler_p95_first_min_ms`（兼容保留）<br>`instance_scheduler_p95_first_max_ms`（兼容保留）<br>`instance_scheduler_p95_first_backlog_alpha`（兼容保留） | `0.0`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`1.0` |
@@ -504,7 +510,7 @@ sort_key = (
 
 - `estimated_cost_s` 不是实例级配置，而是请求运行时输入；若请求未提供，调度器会回退到 runtime profile 或启发式估算。
 - `deadline_ts`、`slo_target_ms`、`slo_ms` 也是请求运行时输入；若 deadline-aware 策略没有显式 deadline，会回退到 learned-p95 synthetic deadline。
-- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid` 在当前实现里会自动启用：
+- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid`、`bypass_guard_sjf` 在当前实现里会自动启用：
   - `diffusion_enable_step_chunk=True`
   - `diffusion_enable_chunk_preemption=True`
 
@@ -546,15 +552,15 @@ sort_key = (
 
 不需要额外参数。
 
-### 3.2 `sjf` / `sjf_aging` / `size_bucket_sjf_aging`
+### 3.2 `sjf` / `sjf_aging` / `sjf_aging_guarded` / `bypass_guard_sjf` / `size_bucket_sjf_aging`
 
-这三种策略都不要求提供 deadline，但强烈建议提供更准确的耗时估计来源。当前耗时估计优先级是：
+这几种策略都不要求提供 deadline，但强烈建议提供更准确的耗时估计来源。当前耗时估计优先级是：
 
 1. `sampling_params.extra_args["estimated_cost_s"]`
 2. runtime profile 估算
 3. 启发式估算
 
-其中 `size_bucket_sjf_aging` 额外会先按固定分辨率 bucket 分组：
+其中 `sjf_aging_guarded` 会维护一个滑动窗口学习得到的 `learned_wait_guard_s`，用于决定请求何时进入不可继续插队的 protected 状态；`bypass_guard_sjf` 也会学习同样语义的等待阈值，但它直接维护 `can_bypass ∈ {0,1}`，一旦降为 `0` 就不再允许新请求继续插队；而 `size_bucket_sjf_aging` 额外会先按固定分辨率 bucket 分组：
 
 - `max(width, height) <= 512`
 - `512 < max(width, height) <= 768`
@@ -1170,6 +1176,7 @@ sampling_params.extra_args["slo_ms"] = 2500
   - `sjf`
   - `sjf_aging`
   - `sjf_aging_guarded`
+  - `bypass_guard_sjf`
   - `size_bucket_sjf_aging`
   - `slo_first`
   - `p95-first`

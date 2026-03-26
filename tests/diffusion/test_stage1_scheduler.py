@@ -681,6 +681,58 @@ def test_stage1_scheduler_sjf_aging_guarded_promotes_protected_old_large_request
     assert getattr(ordered[0].request, "tail_protected", False) is True
 
 
+def test_stage1_scheduler_sjf_aging_guarded_uses_learned_wait_threshold():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded")
+    for idx in range(20):
+        sample_request = _mock_request(f"sample-{idx}", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+        setattr(sample_request, "_sjf_aging_guarded_cumulative_execute_ms", 10000.0)
+        sched._record_sjf_aging_guarded_wait_ms(70000.0, request=sample_request)
+
+    now = time.monotonic()
+    old_request = _mock_request("learned-old", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+    new_request = _mock_request("learned-new", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    old_request.arrival_time = now - 65.0
+    new_request.arrival_time = now
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_request)
+        sched._enqueue_request_locked(new_request)
+        ordered = list(sched._waiting_queue)
+
+    assert sched._learned_sjf_aging_guarded_wait_s() == pytest.approx(60.0)
+    assert ordered[0].request.request_ids[0] == "learned-old"
+    assert ordered[0].schedule_metrics["tail_protected"] == 1
+    assert ordered[0].schedule_metrics["learned_wait_guard_s"] == pytest.approx(60.0)
+    assert ordered[0].schedule_metrics["protection_threshold_s"] == pytest.approx(60.0)
+
+def test_stage1_scheduler_bypass_guard_sjf_locks_old_request_from_bypass():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="bypass_guard_sjf")
+    for idx in range(20):
+        sample_request = _mock_request(f"sample-bypass-{idx}", num_inference_steps=10, extra_args={"estimated_cost_s": 10.0})
+        setattr(sample_request, "_bypass_guard_cumulative_execute_ms", 10000.0)
+        sched._record_bypass_guard_wait_ms(70000.0, request=sample_request)
+
+    now = time.monotonic()
+    old_request = _mock_request("locked-old", num_inference_steps=35, extra_args={"estimated_cost_s": 37.0})
+    new_request = _mock_request("new-short", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    old_request.arrival_time = now - 80.0
+    new_request.arrival_time = now
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_request)
+        sched._enqueue_request_locked(new_request)
+        ordered = list(sched._waiting_queue)
+
+    assert sched._learned_bypass_guard_wait_s() == pytest.approx(60.0)
+    assert [queued.request.request_ids[0] for queued in ordered] == ["locked-old", "new-short"]
+    assert ordered[0].schedule_metrics["scheduler_policy"] == "bypass_guard_sjf"
+    assert ordered[0].schedule_metrics["can_bypass"] == 0
+    assert ordered[0].schedule_metrics["dispatch_group"] == "locked"
+    assert ordered[0].schedule_metrics["learned_wait_guard_s"] == pytest.approx(60.0)
+    assert ordered[0].schedule_metrics["guard_threshold_s"] == pytest.approx(74.0)
+    assert getattr(ordered[0].request, "can_bypass", 1) == 0
+
+
 def test_stage1_scheduler_sjf_aging_adapts_to_step_chunk_requeue():
     sched, req_q, res_q = _make_stage1_scheduler(policy="sjf_aging")
     req1 = _mock_request("req-1", num_inference_steps=20, extra_args={"estimated_cost_s": 20.0})
