@@ -44,7 +44,8 @@ CLI 入口：
 - `sjf`
   - 按估算剩余耗时从小到大排序
 - `sjf_aging`
-  - 在 `sjf` 的剩余耗时排序上叠加等待时长老化分数 `remaining_cost / (1 + aging_factor * age)`
+  - 在 `sjf` 的剩余耗时排序上叠加等待时长老化分数 `remaining_cost / (1 + aging_factor * cost_weight * age)`
+  - 其中 `cost_weight = clip(sqrt(remaining_cost / 12.0), 1.0, 4.0)`，让大请求在相同等待时间下获得更快的老化补偿
   - 当 `instance_scheduler_aging_factor <= 0` 时，使用内建默认 aging 系数 `1.0`，保证不额外配参也具备防饥饿能力
   - 对 step chunk / chunk preemption 友好：chunk 重入队后继续按“剩余耗时 + 首次 arrival 老化”计算
 - `size_bucket_sjf_aging`

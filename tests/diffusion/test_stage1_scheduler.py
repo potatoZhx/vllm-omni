@@ -640,6 +640,25 @@ def test_stage1_scheduler_sjf_aging_promotes_old_request_over_short_new_request(
     assert ordered[0].schedule_metrics["scheduler_policy"] == "sjf_aging"
     assert ordered[0].schedule_metrics["aged_cost_s"] < ordered[1].schedule_metrics["aged_cost_s"]
     assert ordered[0].schedule_metrics["aging_factor"] == pytest.approx(1.0)
+    assert ordered[0].schedule_metrics["aging_cost_weight"] == pytest.approx(1.0)
+
+
+def test_stage1_scheduler_sjf_aging_uses_cost_aware_weight_for_large_request():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging")
+    now = time.monotonic()
+    older_large = _mock_request("older-large", num_inference_steps=35, extra_args={"estimated_cost_s": 37.0})
+    newer_medium = _mock_request("newer-medium", num_inference_steps=25, extra_args={"estimated_cost_s": 12.0})
+    older_large.arrival_time = now - 2.0
+    newer_medium.arrival_time = now
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(older_large)
+        sched._enqueue_request_locked(newer_medium)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["older-large", "newer-medium"]
+    assert ordered[0].schedule_metrics["aging_cost_weight"] > ordered[1].schedule_metrics["aging_cost_weight"]
+    assert ordered[0].schedule_metrics["aged_cost_s"] < ordered[1].schedule_metrics["aged_cost_s"]
 
 
 def test_stage1_scheduler_sjf_aging_adapts_to_step_chunk_requeue():

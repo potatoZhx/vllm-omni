@@ -5,7 +5,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from math import ceil, inf
+from math import ceil, inf, sqrt
 from typing import Any
 
 import zmq
@@ -31,6 +31,8 @@ _P95_FIRST_MIN_HISTORY_FOR_QUANTILE = 20
 _P95_FIRST_SERVICE_RATE_EMA_ALPHA = 0.1
 _SLACK_COST_ALPHA = 0.25
 _SJF_AGING_DEFAULT_FACTOR = 1.0
+_SJF_AGING_COST_REF_S = 12.0
+_SJF_AGING_COST_WEIGHT_MAX = 4.0
 _FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
 _SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
@@ -1075,6 +1077,10 @@ class Stage1Scheduler(Scheduler):
             return aging_factor
         return _SJF_AGING_DEFAULT_FACTOR
 
+    def _sjf_aging_cost_weight(self, estimated_cost_s: float) -> float:
+        normalized_cost = max(float(estimated_cost_s), 1e-9) / _SJF_AGING_COST_REF_S
+        return min(max(sqrt(normalized_cost), 1.0), _SJF_AGING_COST_WEIGHT_MAX)
+
     def _fixed_size_bucket_id(self, queued_request: _QueuedRequest) -> int:
         request_summary = self._request_summary(queued_request.request)
         max_dim = max(request_summary["width"], request_summary["height"])
@@ -1275,13 +1281,15 @@ class Stage1Scheduler(Scheduler):
         for queued_request in waiting_requests:
             estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
             age_s = self._request_age_seconds(queued_request, now)
-            aged_cost_s = estimated_cost_s / (1.0 + aging_factor * age_s)
+            cost_weight = self._sjf_aging_cost_weight(estimated_cost_s)
+            aged_cost_s = estimated_cost_s / (1.0 + (aging_factor * cost_weight * age_s))
             metrics_by_sequence[queued_request.sequence_id] = {
                 "scheduler_policy": _SJF_AGING_POLICY,
                 "queue_reorder_count": 1,
                 "estimated_cost_s": estimated_cost_s,
                 "age_s": age_s,
                 "aging_factor": aging_factor,
+                "aging_cost_weight": cost_weight,
                 "aged_cost_s": aged_cost_s,
             }
 
