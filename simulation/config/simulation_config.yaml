@@ -6,7 +6,7 @@ simulation:
   t_end: 1800.0
   rps: [0.2, 0.4, 0.6, 0.8, 1.0]   # 请求到达速率列表：对每个算法在每个 rps 下各跑一轮，得到曲线数据（横轴 rps，纵轴指标）
   slo_scale: 3             # SLO 倍数，slo_ms = 预估执行时间(ms) * slo_scale，默认 3
-  profile_path: "../profile/newest_profile_A100.json"   # profile 文件路径
+  profile_path: "../profile/qwen_npu.json"   # profile 文件路径
   # 请求数据集来源：
   #   - "trace"   : 使用 trace_path（若存在）提供的 size/steps 序列，仅用于请求类型顺序，arrival_time 仍按 rps 均匀注入
   #   - "random"  : 使用 random_request_config，模拟 benchmarks/diffusion 中的 --random-request-config（按 weight 采样）
@@ -51,9 +51,13 @@ workers:
 #     sjf: 最短作业优先（长作业易饥饿，P95 差）
 #     sjf_aging: SJF+老化，等待越久优先级越高，缓解长作业饥饿，改善 P95
 #     sjf_preempt: SJF+chunk 抢占，每 chunk_budget_steps 步可抢占重入队，实现 SRPT；剩余时间 <= threshold 时直接跑完
+#   【注意】笛卡尔乘积下每条曲线独立实例策略：仅 sjf_preempt_* 会按 chunk 切分执行；fcfs / sjf / sjf_aging 始终用 profile
+#     整段 latency_s 一次排程，不因同文件里配置了 sjf_preempt_chunk_budgets 等而分块。
 #   sjf_aging_factors: 展开为多条曲线；0.15 推荐
-#   sjf_preempt_chunk_budgets: 展开为 sjf_preempt_4 等；与 instance_local_schd 的 chunk_preemption 对应
-#   sjf_preempt_small_request_threshold_ms: 剩余预估时间 <= 该值(ms)时直接跑完不抢占；不设或 null 则始终按 chunk 切
+#   sjf_preempt_chunk_budgets: 展开为 sjf_preempt_4 等；对齐 diffusion_chunk_budget_steps（默认 N）
+#   sjf_preempt_image_chunk_budget_steps / sjf_preempt_video_chunk_budget_steps: 可选，对齐 diffusion_image_chunk_budget_steps /
+#     diffusion_video_chunk_budget_steps；省略或 null 时 image 与 video 均用上一项的 N（纯图负载行为与未扩展前一致）
+#   sjf_preempt_small_request_threshold_ms: 对齐 diffusion_small_request_latency_threshold_ms；不设或 null 则始终按 chunk 切
 #   algorithms_to_run：全局调度算法
 scheduler:
   instance_scheduler_policies:
@@ -62,21 +66,30 @@ scheduler:
     # - sjf_aging           # SJF+老化，score=service_time-aging_factor*waiting_time，score 越低越先调度
     - sjf_preempt         # SJF+chunk 抢占，SRPT 语义，按 sjf_preempt_chunk_budgets 展开
   # sjf_aging_factors: [0.15]  # 对比选优
-  sjf_preempt_chunk_budgets: [8]  # 每 chunk 最多执行步数，与 diffusion chunk_preemption 对齐
-  sjf_preempt_small_request_threshold_ms: 3000  # 剩余预估 <= 阈值时直接跑完不抢占，与 diffusion_small_request_latency_threshold_ms 对齐
+  # 与 global_scheduler.qwen.yaml 示例对齐示例：--diffusion-chunk-budget-steps 4、--diffusion-small-request-latency-threshold-ms 1200
+  sjf_preempt_chunk_budgets: [4]
+  sjf_preempt_small_request_threshold_ms: 1200
+  # sjf_preempt_image_chunk_budget_steps: 4   # 与引擎分项一致时可显式写出；省略则等于 sjf_preempt_N
+  # sjf_preempt_video_chunk_budget_steps: 2   # 仅 video（num_frames>1）负载时需要与引擎分项对齐时再设
   # algorithms_to_run：要参与测试的算法列表。对每个算法，在 rps 列表的每个取值下各跑一轮模拟，
   # 得到 (算法, rps) 的指标点，用于画图：横轴 rps、纵轴为延迟/吞吐等，每算法一条曲线。
+  # 全局路由与 instance_local_schd 对齐要点：
+  #   min_queue_length：score = 等待队列条数 + (正在执行则 +1)，选 score 最小实例（按「任务个数」而非按秒）
+  #   short_queue_runtime：score = 队列中各请求预估剩余执行时间之和 + 正在执行请求的剩余时间，选 score 最小实例
   algorithms_to_run:
-    # - round_robin          # 轮询
-    # - min_queue_length     # 最小队列长度（仅看等待队列，不计正在运行）
-    - short_queue_runtime  # 最小队列等待时间（队列中所有请求 service_time 之和）
-    # - short_queue_runtime_max_class_balanced  # 上者 + 最大类作业强制均衡分布
+    - round_robin          # 轮询
+    # - min_queue_length     # 最小「条数+inflight」：len(queue) + (有 current_request 则 1)
+    # - short_queue_runtime  # 最小预估剩余总工作量（秒）：队列剩余 + 运行中剩余，非全量 service_time 简单相加
+    # - short_queue_runtime_max_class_balanced  # 在 short_queue_runtime 基础上对最大类作业做实例间均衡
 
 # 跑完 simulation 后是否自动画图并保存
 plot:
   after_run: true
   # 默认画图指标（跑完即画）：可配置，与下方「输出指标字段」名称一致；每个指标单独一张图，每图内为各算法的曲线
   metrics: [latency_p95, latency_mean, throughput_qps]
+  # 可选：额外追加 runs JSON（与 simulation 输出同结构的 list[dict]），合并后一起画图。
+  # 路径相对本 yaml 所在目录。示例文件：simulation/output/real_1800_8npu_runs.json
+  append_runs_files: ["../output/real_1800_8npu_runs.json"]
   output_dir: "../output"      # 与 simulation.output_dir 一致时，图也保存到 output/{profile名}/
   output_prefix: "compare"  # 图文件名前缀，得到 compare_latency_p95.png、compare_latency_mean.png 等（一指标一图）
 

@@ -484,6 +484,21 @@ def _chunk_duration_s(
     return duration, chunk_steps
 
 
+def _sjf_preempt_budget_steps_for_request(
+    request: dict,
+    default_budget: int,
+    image_budget: int | None,
+    video_budget: int | None,
+) -> int:
+    """与 diffusion_engine._chunk_budget_steps_for_request 一致：仅 num_frames>1 用 video_budget，否则 image_budget；缺省回退 default。"""
+    num_frames = max(int(request.get("num_frames", 1) or 1), 1)
+    if num_frames > 1:
+        b = video_budget if video_budget is not None else default_budget
+    else:
+        b = image_budget if image_budget is not None else default_budget
+    return max(int(b), 1)
+
+
 def _pop_next_from_queue(
     w: dict, profile_data: dict, instance_policy: str, current_time: float = 0.0,
 ) -> dict | None:
@@ -544,10 +559,14 @@ def run_simulation(
     algorithm: str,
     instance_scheduler_policy: str = "fcfs",
     sjf_preempt_small_request_threshold_ms: float | None = None,
+    sjf_preempt_image_chunk_budget_steps: int | None = None,
+    sjf_preempt_video_chunk_budget_steps: int | None = None,
 ) -> dict:
     """单次模拟，返回与 plot_results 对齐的指标 + algorithm。
 
     instance_scheduler_policy: fcfs（队首）或 sjf（最短作业优先），与 benchmark --instance-scheduler-policy 对齐。
+    sjf_preempt_*：与 diffusion_engine / stage1 的 small_request 阈值及 image/video chunk budget 对齐；image/video 键缺省则
+    对两类请求均使用策略名中的 sjf_preempt_N 作为 default_budget。
     """
     if algorithm not in DISPATCH:
         raise ValueError(f"不支持的算法: {algorithm}，可选: {list(DISPATCH.keys())}")
@@ -666,8 +685,13 @@ def run_simulation(
                 req["start_time"] = req["first_start_time"]  # 兼容旧字段：表示首次开始执行时间
                 req.setdefault("start_times", []).append(t)
                 if instance_scheduler_policy.startswith("sjf_preempt"):
+                    per_req_budget = _sjf_preempt_budget_steps_for_request(
+                        req, chunk_budget,
+                        sjf_preempt_image_chunk_budget_steps,
+                        sjf_preempt_video_chunk_budget_steps,
+                    )
                     chunk_dur, chunk_steps = _chunk_duration_s(
-                        req, profile_data, w, chunk_budget,
+                        req, profile_data, w, per_req_budget,
                         small_request_threshold_ms=sjf_preempt_small_request_threshold_ms,
                     )
                     req["_chunk_steps"] = chunk_steps
@@ -885,6 +909,15 @@ def main() -> None:
     output_merged = sim.get("output_merged", False)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    def _sched_optional_int(key: str) -> int | None:
+        v = sched.get(key)
+        if v in (None, ""):
+            return None
+        return int(v)
+
+    sjf_img_chunk_bs = _sched_optional_int("sjf_preempt_image_chunk_budget_steps")
+    sjf_vid_chunk_bs = _sched_optional_int("sjf_preempt_video_chunk_budget_steps")
+
     all_runs = []
     for algo, instance_policy in algorithm_combos:
         combo_name = f"{algo}_{instance_policy}"
@@ -899,6 +932,8 @@ def main() -> None:
                     requests, workers, profile_data, rps, t_end, algo,
                     instance_scheduler_policy=instance_policy,
                     sjf_preempt_small_request_threshold_ms=thresh_f,
+                    sjf_preempt_image_chunk_budget_steps=sjf_img_chunk_bs,
+                    sjf_preempt_video_chunk_budget_steps=sjf_vid_chunk_bs,
                 )
                 out["algorithm"] = combo_name  # 覆盖为组合名，画图时每条线一个组合
                 runs_for_combo.append(out)
@@ -930,6 +965,9 @@ def main() -> None:
         plot_metrics = plot_cfg.get("metrics", ["latency_p95", "latency_mean"])
         if isinstance(plot_metrics, str):
             plot_metrics = [plot_metrics]
+        append_files = plot_cfg.get("append_runs_files") or []
+        if isinstance(append_files, (str, Path)):
+            append_files = [append_files]
         plot_output_dir = plot_cfg.get("output_dir")
         if plot_output_dir in (None, "output", "../output"):
             plot_output_dir = output_dir  # 与仿真结果同目录：output/{profile名}/
@@ -947,6 +985,30 @@ def main() -> None:
             from diffusion_bench.plot_results import plot_results as plot_results_fn
             merged_for_plot = output_dir / "_merged_for_plot.json"
             plot_runs = [{k: v for k, v in run.items() if k != "requests"} for run in all_runs]
+
+            # 追加外部 runs（例如 real 指标点），与 plot_runs 合并后一起画图
+            base = config_path.parent
+            for ap in append_files:
+                ap_path = Path(ap)
+                if not ap_path.is_absolute():
+                    ap_path = base / ap_path
+                if not ap_path.exists():
+                    raise FileNotFoundError(f"append_runs_files 不存在: {ap_path}")
+                with open(ap_path, encoding="utf-8") as f:
+                    extra = json.load(f)
+                if isinstance(extra, dict) and "runs" in extra:
+                    extra = extra["runs"]
+                if not isinstance(extra, list):
+                    raise ValueError(f"append_runs_files 内容必须是 list[dict]（或 {{'runs': [...]}}），得到: {type(extra)}: {ap_path}")
+                for i, run in enumerate(extra):
+                    if not isinstance(run, dict):
+                        raise ValueError(f"append run[{i}] 必须为 dict，得到 {type(run)}: {ap_path}")
+                    if "algorithm" not in run or "rps" not in run:
+                        raise ValueError(f"append run[{i}] 缺少 algorithm/rps: {ap_path}")
+                    for m in plot_metrics:
+                        if m not in run:
+                            raise ValueError(f"append run[{i}] 缺少绘图指标 {m!r}: {ap_path}")
+                    plot_runs.append(run)
             with open(merged_for_plot, "w", encoding="utf-8") as f:
                 json.dump(plot_runs, f, indent=2)
             saved_list = []
