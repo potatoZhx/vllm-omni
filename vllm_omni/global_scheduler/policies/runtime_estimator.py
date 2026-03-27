@@ -28,6 +28,9 @@ class RuntimeEstimator:
         Returns:
             Estimated runtime in seconds.
         """
+        if request.estimated_cost_s is not None:
+            return request.estimated_cost_s
+
         if self.profiling_data is None:
             return ewma_fallback_s
 

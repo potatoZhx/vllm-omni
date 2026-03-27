@@ -60,7 +60,7 @@ def test_ewma_updates_on_finish():
     """EWMA service time should update on request finish with latency."""
     store = _make_store(ewma_alpha=0.5)
     store.on_request_start("worker-0", _request("r1"))
-    stats = store.on_request_finish("worker-0", latency_s=3.0, ok=True)
+    stats = store.on_request_finish("worker-0", latency_s=3.0, ok=True, request_id="r1")
 
     assert stats.ewma_service_time_s == pytest.approx(2.0)
 
@@ -79,12 +79,13 @@ def test_concurrent_start_and_finish_updates_are_consistent():
     assert len(mid.waiting_requests) == operations - 1
 
     with ThreadPoolExecutor(max_workers=16) as executor:
-        list(executor.map(lambda _: store.on_request_finish("worker-1", latency_s=1.0, ok=True), range(operations)))
+        list(executor.map(lambda idx: store.on_request_finish("worker-1", latency_s=1.0, ok=True, request_id=f"r{idx}"), range(operations)))
 
     final = store.snapshot()["worker-1"]
     assert final.queue_len == 0
     assert final.inflight == 0
     assert final.waiting_requests == ()
+    assert final.outstanding_runtime_s == pytest.approx(0.0)
 
 
 def test_unknown_instance_raises_key_error():
@@ -117,12 +118,24 @@ def test_sync_instances_keeps_draining_instance_until_finish_converges():
     assert "worker-1" in after_sync
     assert after_sync["worker-1"].inflight == 1
 
-    finished = store.on_request_finish("worker-1", latency_s=0.8, ok=False)
+    finished = store.on_request_finish("worker-1", latency_s=0.8, ok=False, request_id="r1")
     assert finished.queue_len == 0
     assert finished.inflight == 0
 
     final_snapshot = store.snapshot()
     assert "worker-1" not in final_snapshot
+
+
+def test_start_and_finish_track_outstanding_runtime_by_request_id():
+    """Outstanding runtime should be reserved on start and cleared on matching finish."""
+    store = _make_store()
+    request = RequestMeta(request_id="r-cost", estimated_cost_s=2.5)
+
+    started = store.on_request_start("worker-0", request)
+    finished = store.on_request_finish("worker-0", latency_s=0.4, ok=True, request_id="r-cost")
+
+    assert started.outstanding_runtime_s == pytest.approx(2.5)
+    assert finished.outstanding_runtime_s == pytest.approx(0.0)
 
 
 def test_start_over_capacity_tracks_fifo_waiting_queue():
@@ -160,7 +173,7 @@ def test_finish_promotes_waiting_request_to_inflight():
 
     store.on_request_start("worker-0", _request("r1"))
     store.on_request_start("worker-0", _request("r2"))
-    stats = store.on_request_finish("worker-0", latency_s=0.5, ok=True)
+    stats = store.on_request_finish("worker-0", latency_s=0.5, ok=True, request_id="r1")
 
     assert stats.inflight == 1
     assert stats.queue_len == 0
@@ -185,5 +198,5 @@ def test_wait_for_available_capacity_unblocks_after_finish():
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(store.wait_for_available_capacity, ["worker-0"], 1.0)
         time.sleep(0.05)
-        store.on_request_finish("worker-0", latency_s=0.2, ok=True)
+        store.on_request_finish("worker-0", latency_s=0.2, ok=True, request_id="r1")
         assert future.result(timeout=1.0) is True

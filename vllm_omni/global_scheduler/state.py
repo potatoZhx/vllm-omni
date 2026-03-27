@@ -4,6 +4,7 @@ import time
 from dataclasses import replace
 from threading import Condition, RLock
 
+from .policies.runtime_estimator import RuntimeEstimator
 from .types import InstanceSpec, RequestMeta, RuntimeStats
 
 
@@ -15,6 +16,7 @@ class RuntimeStateStore:
         instances: list[InstanceSpec],
         ewma_alpha: float = 0.2,
         default_ewma_service_time_s: float = 1.0,
+        estimator: RuntimeEstimator | None = None,
     ) -> None:
         """Initialize runtime state for all configured instances.
 
@@ -39,8 +41,10 @@ class RuntimeStateStore:
         self._lock = RLock()
         self._capacity_cv = Condition(self._lock)
         self._default_ewma_service_time_s = default_ewma_service_time_s
+        self._estimator = estimator or RuntimeEstimator()
         self._draining_instance_ids: set[str] = set()
         self._instance_specs: dict[str, InstanceSpec] = {instance.id: instance for instance in instances}
+        self._active_request_runtime_s: dict[str, dict[str, float]] = {instance.id: {} for instance in instances}
         self._stats: dict[str, RuntimeStats] = {
             instance.id: RuntimeStats(
                 queue_len=0,
@@ -81,6 +85,7 @@ class RuntimeStateStore:
                 stats = self._stats[instance_id]
                 if stats.queue_len == 0 and stats.inflight == 0:
                     del self._stats[instance_id]
+                    self._active_request_runtime_s.pop(instance_id, None)
                     self._draining_instance_ids.discard(instance_id)
                 else:
                     self._draining_instance_ids.add(instance_id)
@@ -94,6 +99,7 @@ class RuntimeStateStore:
                         ewma_service_time_s=self._default_ewma_service_time_s,
                         waiting_requests=(),
                     )
+                self._active_request_runtime_s.setdefault(instance.id, {})
 
             for instance_id in list(self._instance_specs):
                 if instance_id not in desired_ids and instance_id not in self._stats:
@@ -113,6 +119,9 @@ class RuntimeStateStore:
         """
         with self._lock:
             stats = self._get_stats(instance_id)
+            reserved_runtime_s = self._estimate_request_runtime_s(instance_id, request, stats)
+            self._active_request_runtime_s.setdefault(instance_id, {})[request.request_id] = reserved_runtime_s
+            stats.outstanding_runtime_s += reserved_runtime_s
             if stats.inflight < self._max_concurrency(instance_id):
                 stats.inflight += 1
             else:
@@ -120,13 +129,20 @@ class RuntimeStateStore:
                 stats.waiting_requests = stats.waiting_requests + (request,)
             return replace(stats)
 
-    def on_request_finish(self, instance_id: str, latency_s: float, ok: bool) -> RuntimeStats:
+    def on_request_finish(
+        self,
+        instance_id: str,
+        latency_s: float,
+        ok: bool,
+        request_id: str | None = None,
+    ) -> RuntimeStats:
         """Apply finish-of-request counters and EWMA update.
 
         Args:
             instance_id: Target routed instance id.
             latency_s: Observed end-to-end upstream latency in seconds.
             ok: Whether upstream handling succeeded.
+            request_id: Optional completed request id used to clear reserved runtime exactly.
 
         Returns:
             Snapshot of updated runtime stats.
@@ -134,6 +150,8 @@ class RuntimeStateStore:
         del ok
         with self._lock:
             stats = self._get_stats(instance_id)
+            reserved_runtime_s = self._pop_reserved_runtime_s(instance_id, request_id)
+            stats.outstanding_runtime_s = max(0.0, stats.outstanding_runtime_s - reserved_runtime_s)
             if stats.inflight > 0:
                 stats.inflight -= 1
             elif stats.queue_len > 0:
@@ -153,9 +171,15 @@ class RuntimeStateStore:
             if instance_id in self._draining_instance_ids and stats.queue_len == 0 and stats.inflight == 0:
                 self._draining_instance_ids.remove(instance_id)
                 del self._stats[instance_id]
+                self._active_request_runtime_s.pop(instance_id, None)
                 self._instance_specs.pop(instance_id, None)
                 self._capacity_cv.notify_all()
-                return RuntimeStats(queue_len=0, inflight=0, ewma_service_time_s=stats.ewma_service_time_s)
+                return RuntimeStats(
+                    queue_len=0,
+                    inflight=0,
+                    ewma_service_time_s=stats.ewma_service_time_s,
+                    outstanding_runtime_s=0.0,
+                )
 
             self._capacity_cv.notify_all()
             return replace(stats)
@@ -190,6 +214,23 @@ class RuntimeStateStore:
         if instance_id not in self._stats:
             raise KeyError(f"Unknown instance id: {instance_id}")
         return self._stats[instance_id]
+
+    def _estimate_request_runtime_s(self, instance_id: str, request: RequestMeta, stats: RuntimeStats) -> float:
+        instance = self._instance_specs.get(instance_id)
+        return self._estimator.estimate_runtime_s(
+            request=request,
+            ewma_fallback_s=stats.ewma_service_time_s,
+            instance_type=instance.instance_type if instance is not None else None,
+        )
+
+    def _pop_reserved_runtime_s(self, instance_id: str, request_id: str | None) -> float:
+        request_runtimes = self._active_request_runtime_s.setdefault(instance_id, {})
+        if request_id is not None:
+            return request_runtimes.pop(request_id, 0.0)
+        if not request_runtimes:
+            return 0.0
+        first_request_id = next(iter(request_runtimes))
+        return request_runtimes.pop(first_request_id, 0.0)
 
     def _has_available_capacity_locked(self, instance_ids: list[str]) -> bool:
         return any(

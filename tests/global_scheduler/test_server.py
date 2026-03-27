@@ -8,10 +8,56 @@ from fastapi.testclient import TestClient
 
 from vllm_omni.global_scheduler.config import load_config
 from vllm_omni.global_scheduler.process_controller import ProcessController
-from vllm_omni.global_scheduler.server import UpstreamHTTPError, create_app
+from vllm_omni.global_scheduler.server import (
+    UpstreamHTTPError,
+    _extract_request_meta_from_form_fields,
+    _extract_request_meta_from_payload,
+    create_app,
+)
 from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
+
+
+def test_extract_request_meta_from_payload_reads_estimated_cost_s():
+    """JSON payload metadata should include benchmark-estimated_cost_s."""
+    request_meta = _extract_request_meta_from_payload(
+        {
+            "model": "demo",
+            "extra_body": {
+                "width": 1024,
+                "height": 1024,
+                "num_inference_steps": 30,
+                "estimated_cost_s": 1.25,
+            },
+        },
+        request_id="req-est-1",
+    )
+
+    assert request_meta.width == 1024
+    assert request_meta.height == 1024
+    assert request_meta.num_inference_steps == 30
+    assert request_meta.estimated_cost_s == pytest.approx(1.25)
+
+
+def test_extract_request_meta_from_form_fields_reads_estimated_cost_s():
+    """Form payload metadata should include benchmark-estimated_cost_s."""
+    request_meta = _extract_request_meta_from_form_fields(
+        {
+            "width": "832",
+            "height": "480",
+            "num_frames": "33",
+            "num_inference_steps": "4",
+            "estimated_cost_s": "2.5",
+        },
+        request_id="req-est-form-1",
+    )
+
+    assert request_meta.width == 832
+    assert request_meta.height == 480
+    assert request_meta.num_frames == 33
+    assert request_meta.num_inference_steps == 4
+    assert request_meta.estimated_cost_s == pytest.approx(2.5)
 
 
 def test_health_endpoint_returns_scheduler_and_ok(tmp_path):
@@ -538,6 +584,62 @@ def test_chat_completions_streaming_passthrough_and_state_cleanup(tmp_path, monk
     snapshot = app.state.runtime_state_store.snapshot()
     assert snapshot["worker-0"].queue_len == 0
     assert snapshot["worker-0"].inflight == 0
+
+
+def test_image_generations_finish_passes_request_id_to_runtime_store(tmp_path, monkeypatch):
+    """Image endpoint should release reserved runtime using the routed request_id."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            policy:
+              baseline:
+                algorithm: fcfs
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+
+    finish_calls: list[tuple[str, float, bool, str | None]] = []
+    original_finish = app.state.runtime_state_store.on_request_finish
+
+    def _record_finish(instance_id, latency_s, ok, request_id=None):
+        finish_calls.append((instance_id, latency_s, ok, request_id))
+        return original_finish(instance_id, latency_s=latency_s, ok=ok, request_id=request_id)
+
+    def _fake_proxy(endpoint, upstream_path, body, headers, timeout_s):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert upstream_path == "/v1/images/generations"
+        assert timeout_s == 2
+        return type("_Resp", (), {
+            "status_code": 200,
+            "body": b'{"created": 1, "data": []}',
+            "headers": {"content-type": "application/json"},
+        })()
+
+    monkeypatch.setattr(app.state.runtime_state_store, "on_request_finish", _record_finish)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request", _fake_proxy)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/images/generations",
+        headers={"content-type": "application/json", "x-request-id": "req-img-finish-1"},
+        json={"model": "demo", "prompt": "test", "size": "1024x1024", "num_inference_steps": 20},
+    )
+
+    assert response.status_code == 200
+    assert finish_calls
+    assert finish_calls[-1][0] == "worker-0"
+    assert finish_calls[-1][2] is True
+    assert finish_calls[-1][3] == "req-img-finish-1"
 
 
 def test_image_generations_success_sets_route_headers_and_state(tmp_path, monkeypatch):

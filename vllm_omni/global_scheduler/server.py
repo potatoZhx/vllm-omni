@@ -35,7 +35,7 @@ from .process_controller import (
     ProcessController,
     get_instance_log_path,
 )
-from .router import build_policy
+from .router import build_policy, build_runtime_estimator
 from .state import RuntimeStateStore
 from .types import InstanceSpec, RequestMeta, RouteDecision, SUPPORTED_BACKENDS
 
@@ -132,6 +132,17 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _coerce_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_openai_size(size: Any) -> tuple[int | None, int | None]:
     if not isinstance(size, str):
         return None, None
@@ -157,6 +168,7 @@ def _extract_request_meta_from_payload(payload: dict[str, Any], request_id: str)
     height = _coerce_int(extra_body.get("height"))
     num_frames = _coerce_int(extra_body.get("num_frames"))
     num_inference_steps = _coerce_int(extra_body.get("num_inference_steps"))
+    estimated_cost_s = _coerce_float(extra_body.get("estimated_cost_s"))
 
     if width is None:
         width = _coerce_int(payload.get("width"))
@@ -166,6 +178,8 @@ def _extract_request_meta_from_payload(payload: dict[str, Any], request_id: str)
         num_frames = _coerce_int(payload.get("num_frames"))
     if num_inference_steps is None:
         num_inference_steps = _coerce_int(payload.get("num_inference_steps"))
+    if estimated_cost_s is None:
+        estimated_cost_s = _coerce_float(payload.get("estimated_cost_s"))
 
     if width is None or height is None:
         parsed_width, parsed_height = _parse_openai_size(payload.get("size"))
@@ -180,6 +194,7 @@ def _extract_request_meta_from_payload(payload: dict[str, Any], request_id: str)
         height=height,
         num_frames=num_frames,
         num_inference_steps=num_inference_steps,
+        estimated_cost_s=estimated_cost_s,
     )
 
 
@@ -216,6 +231,7 @@ def _extract_request_meta_from_form_fields(form_fields: dict[str, str], request_
         height=_coerce_int(form_fields.get("height")),
         num_frames=_coerce_int(form_fields.get("num_frames")),
         num_inference_steps=_coerce_int(form_fields.get("num_inference_steps")),
+        estimated_cost_s=_coerce_float(form_fields.get("estimated_cost_s")),
     )
 
 
@@ -604,12 +620,14 @@ def create_app(
     app = FastAPI(title="vLLM-Omni Global Scheduler", version=__version__, lifespan=lifespan)
     app.state.global_scheduler_config = config
     instance_specs = _to_instance_specs(config)
+    runtime_estimator = build_runtime_estimator(config)
     app.state.runtime_state_store = RuntimeStateStore(
         instances=instance_specs,
         ewma_alpha=config.scheduler.ewma_alpha,
+        estimator=runtime_estimator,
     )
     app.state.instance_lifecycle_manager = InstanceLifecycleManager(instance_specs)
-    app.state.policy = build_policy(config)
+    app.state.policy = build_policy(config, estimator=runtime_estimator)
     app.state.config_loader = config_loader
     app.state.health_probe_task = None
     app.state.process_controller = process_controller or LocalProcessController()
@@ -958,6 +976,7 @@ def create_app(
                     decision.instance_id,
                     latency_s=time.monotonic() - started_at,
                     ok=False,
+                    request_id=request_id,
                 )
                 return _attach_route_headers(
                     JSONResponse(
@@ -979,6 +998,7 @@ def create_app(
                     decision.instance_id,
                     latency_s=time.monotonic() - started_at,
                     ok=False,
+                    request_id=request_id,
                 )
                 return _attach_route_headers(
                     JSONResponse(
@@ -1001,6 +1021,7 @@ def create_app(
                     decision.instance_id,
                     latency_s=time.monotonic() - started_at,
                     ok=False,
+                    request_id=request_id,
                 )
                 return _attach_route_headers(
                     JSONResponse(
@@ -1040,6 +1061,7 @@ def create_app(
                         decision.instance_id,
                         latency_s=elapsed_s,
                         ok=stream_ok,
+                        request_id=request_id,
                     )
 
             response = StreamingResponse(
@@ -1143,6 +1165,7 @@ def create_app(
                 decision.instance_id,
                 latency_s=elapsed_s,
                 ok=ok,
+                request_id=request_id,
             )
 
         return _attach_route_headers(response)
@@ -1235,6 +1258,7 @@ def create_app(
                 decision.instance_id,
                 latency_s=time.monotonic() - started_at,
                 ok=ok,
+                request_id=request_id,
             )
 
         return _attach_route_headers(response)
@@ -1374,6 +1398,7 @@ def create_app(
                 decision.instance_id,
                 latency_s=elapsed_s,
                 ok=ok,
+                request_id=request_id,
             )
 
         return _attach_route_headers(response)
