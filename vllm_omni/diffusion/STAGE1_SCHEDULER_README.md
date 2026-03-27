@@ -16,7 +16,7 @@
 
 ## 1. 当前支持的策略
 
-`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 14 种取值：
+`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 15 种取值：
 
 - `fcfs`
 - `sjf`
@@ -24,6 +24,7 @@
 - `sjf_aging_guarded`
 - `bypass_guard_sjf`
 - `size_bucket_sjf_aging`
+- `type_fifo_defer_budget`
 - `slo_first`
 - `p95-first`
 - `p95-first-deadline`
@@ -36,7 +37,7 @@
 CLI 入口：
 
 ```bash
---instance-scheduler-policy {fcfs,sjf,sjf_aging,sjf_aging_guarded,bypass_guard_sjf,size_bucket_sjf_aging,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
+--instance-scheduler-policy {fcfs,sjf,sjf_aging,sjf_aging_guarded,bypass_guard_sjf,size_bucket_sjf_aging,type_fifo_defer_budget,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
 ```
 
 其中：
@@ -61,6 +62,14 @@ CLI 入口：
 - `size_bucket_sjf_aging`
   - 先按固定分辨率 bucket 分组，再在 bucket 内按 `remaining_cost / (1 + aging_factor * age)` 做 SJF + Aging 排序
   - aging 会按等待时间逐步提升大 bucket 请求，避免长期饥饿
+- `type_fifo_defer_budget`
+  - 先按 `(width, height, num_frames, total_steps, num_outputs)` 把请求分成少量 type，每个 type 内严格 FIFO
+  - type 之间只比较各自队头；默认按队头 `aged_cost` 选下一条，利用“种类少”的结构而不打破类内先来先服务
+  - 对当前最重 type 的老队头，若 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 且仍有更轻 type 在排队，可把该请求标记为 `deferred`
+  - `deferred` 请求统一沉到队尾；当前实现里的 defer 预算是单次 waiting queue 重排的局部预算，不是全局预算：
+    - `defer_budget_limit = floor(len(waiting_queue) * instance_scheduler_type_fifo_defer_budget_ratio)`
+    - 默认 `ratio = 0.05`
+    - 因此它只保证“本次重排里最多 defer 当前等待队列的 5%”，不保证整个 workload 全局最多只牺牲 5%
 - `slo_first`
   - 先求可按时完成的 `on_time` 集合，再按 `slack / remaining_cost` 排序
 - `p95-first-deadline`
@@ -497,6 +506,7 @@ sort_key = (
 | `sjf_aging_guarded` | 在 cost-aware `sjf_aging` 上增加 protected 队列；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时转入 protected，并按 `arrival_time` 优先；protected 请求开始执行后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
 | `bypass_guard_sjf` | 默认按 cost-aware `sjf_aging` 排序；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时将 `can_bypass` 置为 `0`，锁定请求不再允许被后到请求插队，并在 dispatch 后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
 | `size_bucket_sjf_aging` | 先按固定分辨率 bucket 排序，再在 bucket 内按 `estimated_cost_s / (1 + aging_factor * age_s)` 排序；等待过久时允许跨 bucket 晋升 | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
+| `type_fifo_defer_budget` | 先按 request type 分 FIFO 子队列；type 间只比较队头 `aged_cost_s`；对最重 type 的老队头允许做 bounded defer，统一沉到尾队列 | `instance_scheduler_aging_factor`<br>`instance_scheduler_type_fifo_defer_budget_ratio` | `0.0`<br>`0.05`<br>defer threshold 由策略根据自身完成请求的 wait history 在线学习，并与 `2.0 * estimated_cost_s` 取更大值；defer 预算按 `floor(len(waiting_queue) * ratio)` 计算 |
 | `slo_first` | 先求 `on_time` 集合，再按 `slack / remaining_cost` 排序；尾部按 aging best-effort 排序 | `instance_scheduler_slo_target_ms`<br>`instance_scheduler_slo_floor_ms`<br>`instance_scheduler_aging_factor` | `None`<br>`0.0`<br>`0.0` |
 | `p95-first` | 基于 `learned_slowdown_p95`、`estimated_service_ms`、`pressure_ratio` 的 normalized tail-pressure 单队列排序 | `instance_scheduler_p95_first_size_bias`<br>`instance_scheduler_p95_first_age_bias`<br>`instance_scheduler_p95_first_starvation_threshold_s`<br>`instance_scheduler_p95_first_starvation_boost`<br>`instance_scheduler_p95_first_base_ms`（兼容保留）<br>`instance_scheduler_p95_first_min_ms`（兼容保留）<br>`instance_scheduler_p95_first_max_ms`（兼容保留）<br>`instance_scheduler_p95_first_backlog_alpha`（兼容保留） | `0.0`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`0.0`<br>`None`<br>`1.0` |
 | `p95-first-deadline` | 复用 `learned_slowdown_p95` 与 `estimated_service_ms` 生成 `synthetic_deadline_ts`，再按 `slack_s` / `deadline` / `estimated_service_ms` 排序 | `instance_scheduler_p95_first_base_ms`（兼容保留）<br>`instance_scheduler_p95_first_min_ms`（兼容保留）<br>`instance_scheduler_p95_first_max_ms`（兼容保留）<br>`instance_scheduler_p95_first_backlog_alpha`（兼容保留） | `None`<br>`0.0`<br>`None`<br>`1.0` |
@@ -510,7 +520,7 @@ sort_key = (
 
 - `estimated_cost_s` 不是实例级配置，而是请求运行时输入；若请求未提供，调度器会回退到 runtime profile 或启发式估算。
 - `deadline_ts`、`slo_target_ms`、`slo_ms` 也是请求运行时输入；若 deadline-aware 策略没有显式 deadline，会回退到 learned-p95 synthetic deadline。
-- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid`、`bypass_guard_sjf` 在当前实现里会自动启用：
+- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid`、`bypass_guard_sjf`、`type_fifo_defer_budget` 在当前实现里会自动启用：
   - `diffusion_enable_step_chunk=True`
   - `diffusion_enable_chunk_preemption=True`
 
@@ -552,7 +562,7 @@ sort_key = (
 
 不需要额外参数。
 
-### 3.2 `sjf` / `sjf_aging` / `sjf_aging_guarded` / `bypass_guard_sjf` / `size_bucket_sjf_aging`
+### 3.2 `sjf` / `sjf_aging` / `sjf_aging_guarded` / `bypass_guard_sjf` / `size_bucket_sjf_aging` / `type_fifo_defer_budget`
 
 这几种策略都不要求提供 deadline，但强烈建议提供更准确的耗时估计来源。当前耗时估计优先级是：
 
@@ -560,7 +570,7 @@ sort_key = (
 2. runtime profile 估算
 3. 启发式估算
 
-其中 `sjf_aging_guarded` 会维护一个滑动窗口学习得到的 `learned_wait_guard_s`，用于决定请求何时进入不可继续插队的 protected 状态；`bypass_guard_sjf` 也会学习同样语义的等待阈值，但它直接维护 `can_bypass ∈ {0,1}`，一旦降为 `0` 就不再允许新请求继续插队；而 `size_bucket_sjf_aging` 额外会先按固定分辨率 bucket 分组：
+其中 `sjf_aging_guarded` 会维护一个滑动窗口学习得到的 `learned_wait_guard_s`，用于决定请求何时进入不可继续插队的 protected 状态；`bypass_guard_sjf` 也会学习同样语义的等待阈值，但它直接维护 `can_bypass ∈ {0,1}`，一旦降为 `0` 就不再允许新请求继续插队；`type_fifo_defer_budget` 会先按 `(width, height, num_frames, total_steps, num_outputs)` 聚成少量 type，并要求同 type 内严格 FIFO，只允许把最重 type 的极少数老队头延后到 bounded tail；defer 阈值来自该策略自身完成请求的 wait history 学习，而不是显式硬编码；当前 defer 配额按 `floor(len(waiting_queue) * ratio)` 在每次 waiting queue 重排时单独计算，而不是维护全局/滑动窗口累计预算；而 `size_bucket_sjf_aging` 额外会先按固定分辨率 bucket 分组：
 
 - `max(width, height) <= 512`
 - `512 < max(width, height) <= 768`
@@ -1186,6 +1196,7 @@ sampling_params.extra_args["slo_ms"] = 2500
   - `slack_age`
   - `slack_cost_age`
   - `slack_hybrid`
+  - `type_fifo_defer_budget`
 - `instance_scheduler_slo_target_ms` 如果设置，必须 `> 0`
 - `instance_scheduler_slo_floor_ms >= 0`
 - `instance_scheduler_aging_factor >= 0`
@@ -1203,7 +1214,8 @@ sampling_params.extra_args["slo_ms"] = 2500
 - `instance_scheduler_p95_bucket_starvation_promote_levels >= 0`
 - `instance_scheduler_slack_panic_threshold >= 0`
 - `instance_scheduler_slack_swap_overhead_ms >= 0`
-- 当策略为 `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid` 时，会自动启用：
+- `instance_scheduler_type_fifo_defer_budget_ratio` 必须在 `[0, 1]`
+- 当策略为 `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid`、`type_fifo_defer_budget` 时，会自动启用：
   - `diffusion_enable_step_chunk=True`
   - `diffusion_enable_chunk_preemption=True`
 - `diffusion_enable_chunk_preemption=True` 时，`diffusion_enable_step_chunk` 必须为 `True`

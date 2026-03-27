@@ -258,11 +258,11 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid"],
+            choices=["fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'sjf_aging' adds wait-time aging "
             "on top of SJF to prevent starvation and works with chunk requeue, 'sjf_aging_guarded' adds a protected queue once requests age past a learned wait guard, 'bypass_guard_sjf' learns when a request should stop being bypassable and then runs it to completion, 'size_bucket_sjf_aging' "
-            "groups requests into fixed resolution buckets and applies SJF+aging within each bucket, "
+            "groups requests into fixed resolution buckets and applies SJF+aging within each bucket, 'type_fifo_defer_budget' groups same-shape requests into per-type FIFO lanes, ranks lane heads by aged cost, and allows only a bounded tail-defer budget for the heaviest aged heads, "
             "'slo_first' keeps "
             "the current deadline-aware on-time/tail ordering, 'p95-first' uses normalized "
             "tail-pressure ranking learned from observed runtime and request slowdown, 'p95-first-deadline' uses the same normalized learning path to derive synthetic deadlines and then orders by slack/deadline pressure, 'p95-bucket-sjf' derives a local target p95 from request cost and history, then orders by deadline buckets with intra-bucket SJF, while 'p95-bucket-sjf-normalized' keeps the same bucketed SJF structure but replaces that target with the normalized p95-first estimator, 'slack_age' prioritizes tight/old requests, 'slack_cost_age' adds "
@@ -371,6 +371,12 @@ class OmniServeCommand(CLISubcommand):
             type=float,
             default=0.0,
             help="Context-switch overhead in milliseconds subtracted from the slack numerator in 'slack_hybrid'.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-type-fifo-defer-budget-ratio",
+            type=float,
+            default=0.05,
+            help="Maximum fraction of waiting requests that 'type_fifo_defer_budget' may mark as deferred tail requests.",
         )
         omni_config_group.add_argument(
             "--instance-runtime-profile-path",

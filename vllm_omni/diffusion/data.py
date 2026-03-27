@@ -433,6 +433,7 @@ class OmniDiffusionConfig:
     instance_scheduler_p95_bucket_starvation_promote_levels: int = 1
     instance_scheduler_slack_panic_threshold: float = 1.0
     instance_scheduler_slack_swap_overhead_ms: float = 0.0
+    instance_scheduler_type_fifo_defer_budget_ratio: float = 0.05
     instance_runtime_profile_path: str | None = None
     instance_runtime_profile_name: str | None = None
     diffusion_engine_max_concurrency: int = 32
@@ -605,7 +606,7 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
-        valid_policies = {"fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid"}
+        valid_policies = {"fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid"}
         if self.instance_scheduler_policy not in valid_policies:
             raise ValueError(
                 "instance_scheduler_policy must be one of "
@@ -656,7 +657,9 @@ class OmniDiffusionConfig:
             raise ValueError("instance_scheduler_slack_panic_threshold must be >= 0")
         if self.instance_scheduler_slack_swap_overhead_ms < 0:
             raise ValueError("instance_scheduler_slack_swap_overhead_ms must be >= 0")
-        if self.instance_scheduler_policy in {"p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_hybrid", "sjf_aging_guarded", "bypass_guard_sjf"}:
+        if not 0 <= self.instance_scheduler_type_fifo_defer_budget_ratio <= 1:
+            raise ValueError("instance_scheduler_type_fifo_defer_budget_ratio must be within [0, 1]")
+        if self.instance_scheduler_policy in {"p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_hybrid", "sjf_aging_guarded", "bypass_guard_sjf", "type_fifo_defer_budget"}:
             self.diffusion_enable_step_chunk = True
             self.diffusion_enable_chunk_preemption = True
         if self.diffusion_engine_max_concurrency < 1:
