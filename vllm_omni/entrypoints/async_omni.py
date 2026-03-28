@@ -209,6 +209,15 @@ class AsyncOmni(OmniBase):
                     "instance_scheduler_slack_swap_overhead_ms": kwargs.get(
                         "instance_scheduler_slack_swap_overhead_ms", 0.0
                     ),
+                    "instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio": kwargs.get(
+                        "instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio", 0.02
+                    ),
+                    "instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier": kwargs.get(
+                        "instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier", 100.0
+                    ),
+                    "instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier": kwargs.get(
+                        "instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier", 100.0
+                    ),
                     "instance_scheduler_p95_fusion_tail_budget_ratio": kwargs.get(
                         "instance_scheduler_p95_fusion_tail_budget_ratio", 0.10
                     ),

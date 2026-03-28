@@ -41,14 +41,14 @@ _SJF_AGING_COST_WEIGHT_MAX = 4.0
 _SJF_AGING_GUARDED_MIN_WAIT_S = 45.0
 _SJF_AGING_GUARDED_MAX_WAIT_S = 120.0
 _SJF_AGING_GUARDED_WAIT_COST_RATIO = 2.0
-_SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO = 0.05
+_SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO = 0.02
 _SJF_AGING_GUARDED_TAIL_BOOTSTRAP_MIN_UNIQUE = 2
 _SJF_AGING_GUARDED_TAIL_WINDOW_MAXLEN = _P95_FIRST_HISTORY_MAXLEN
 _SJF_AGING_GUARDED_TAIL_COST_SCALE = 1.5
 _SJF_AGING_GUARDED_TAIL_DEFER_WAIT_MULTIPLIER = 1.0
 _SJF_AGING_GUARDED_TAIL_DEFER_COST_MULTIPLIER = 1.5
-_SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_WAIT_MULTIPLIER = 2.0
-_SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_COST_MULTIPLIER = 4.0
+_SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_WAIT_MULTIPLIER = 100.0
+_SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_COST_MULTIPLIER = 100.0
 _BYPASS_GUARD_MIN_WAIT_S = 45.0
 _BYPASS_GUARD_MAX_WAIT_S = 120.0
 _BYPASS_GUARD_WAIT_COST_RATIO = 2.0
@@ -1162,6 +1162,36 @@ class Stage1Scheduler(Scheduler):
         estimated_cost_s = max(float(estimated_cost_s), 1e-9)
         return max(self._learned_sjf_aging_guarded_wait_s(), _SJF_AGING_GUARDED_WAIT_COST_RATIO * estimated_cost_s)
 
+    def _sjf_aging_guarded_tail_defer_budget_ratio(self) -> float:
+        return float(
+            getattr(
+                self.od_config,
+                "instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio",
+                _SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO,
+            )
+            or _SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO
+        )
+
+    def _sjf_aging_guarded_tail_hard_escape_wait_multiplier(self) -> float:
+        return float(
+            getattr(
+                self.od_config,
+                "instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier",
+                _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_WAIT_MULTIPLIER,
+            )
+            or _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_WAIT_MULTIPLIER
+        )
+
+    def _sjf_aging_guarded_tail_hard_escape_cost_multiplier(self) -> float:
+        return float(
+            getattr(
+                self.od_config,
+                "instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier",
+                _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_COST_MULTIPLIER,
+            )
+            or _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_COST_MULTIPLIER
+        )
+
     def _sjf_aging_guarded_tail_request_key(self, request: OmniDiffusionRequest) -> str:
         return self._request_label(request)
 
@@ -1178,15 +1208,14 @@ class Stage1Scheduler(Scheduler):
             self._sjf_aging_guarded_tail_window_deferred_request_ids.discard(evicted_request_key)
 
     def _sjf_aging_guarded_tail_budget_status(self) -> dict[str, int]:
+        budget_ratio = self._sjf_aging_guarded_tail_defer_budget_ratio()
         global_arrived_unique = len(self._sjf_aging_guarded_tail_arrived_request_ids)
-        global_limit = int(global_arrived_unique * _SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO)
+        global_limit = int(global_arrived_unique * budget_ratio)
         if global_arrived_unique >= _SJF_AGING_GUARDED_TAIL_BOOTSTRAP_MIN_UNIQUE:
             global_limit = max(global_limit, 1)
         global_used = len(self._sjf_aging_guarded_tail_deferred_request_ids)
         window_arrived_unique = len(self._sjf_aging_guarded_tail_arrival_window_id_set)
-        window_limit = int(
-            window_arrived_unique * _SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO
-        )
+        window_limit = int(window_arrived_unique * budget_ratio)
         if window_arrived_unique >= _SJF_AGING_GUARDED_TAIL_BOOTSTRAP_MIN_UNIQUE:
             window_limit = max(window_limit, 1)
         window_used = len(self._sjf_aging_guarded_tail_window_deferred_request_ids)
@@ -1956,6 +1985,9 @@ class Stage1Scheduler(Scheduler):
 
         aging_factor = self._effective_sjf_aging_factor()
         learned_wait_guard_s = self._learned_sjf_aging_guarded_wait_s()
+        budget_ratio = self._sjf_aging_guarded_tail_defer_budget_ratio()
+        hard_escape_wait_multiplier = self._sjf_aging_guarded_tail_hard_escape_wait_multiplier()
+        hard_escape_cost_multiplier = self._sjf_aging_guarded_tail_hard_escape_cost_multiplier()
         queue_costs = sorted(max(self._queued_cost_seconds(queued_request), 1e-9) for queued_request in waiting_requests)
         mid = len(queue_costs) // 2
         if len(queue_costs) % 2 == 1:
@@ -1982,17 +2014,22 @@ class Stage1Scheduler(Scheduler):
                 _SJF_AGING_GUARDED_TAIL_DEFER_COST_MULTIPLIER * estimated_cost_s,
             )
             hard_escape_threshold_s = max(
-                _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_WAIT_MULTIPLIER * learned_wait_guard_s,
-                _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_COST_MULTIPLIER * estimated_cost_s,
+                hard_escape_wait_multiplier * learned_wait_guard_s,
+                hard_escape_cost_multiplier * estimated_cost_s,
             )
             request_key = self._sjf_aging_guarded_tail_request_key(queued_request.request)
             tail_sunk = request_key in self._sjf_aging_guarded_tail_active_sunk_request_ids
-            hard_escape = False
+            hard_escape = age_s >= hard_escape_threshold_s
+            if tail_sunk and hard_escape:
+                self._clear_sjf_aging_guarded_tail_sunk_state(queued_request.request)
+                tail_sunk = False
             setattr(queued_request.request, "tail_protected", tail_protected)
             setattr(queued_request.request, "tail_sunk", tail_sunk)
             setattr(queued_request.request, "tail_hard_escape", hard_escape)
             dispatch_group = "normal"
-            if tail_sunk:
+            if hard_escape:
+                dispatch_group = "protected_hard_escape"
+            elif tail_sunk:
                 dispatch_group = "sunk_tail"
             elif tail_protected:
                 dispatch_group = "protected_soft"
@@ -2031,7 +2068,7 @@ class Stage1Scheduler(Scheduler):
             budget_status["window_budget_remaining"],
         )
         for request_metrics in metrics_by_sequence.values():
-            request_metrics["tail_defer_budget_ratio"] = _SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO
+            request_metrics["tail_defer_budget_ratio"] = budget_ratio
             request_metrics["tail_defer_budget_limit"] = sink_budget_limit
             request_metrics["global_arrived_unique"] = budget_status["global_arrived_unique"]
             request_metrics["global_budget_limit"] = budget_status["global_budget_limit"]
@@ -2050,6 +2087,7 @@ class Stage1Scheduler(Scheduler):
                     not request_metrics["tail_protected"]
                     or not request_metrics["super_heavy"]
                     or request_metrics["tail_sunk"]
+                    or request_metrics["hard_escape"]
                 ):
                     continue
                 estimated_cost_s = float(request_metrics["estimated_cost_s"])
@@ -2071,7 +2109,6 @@ class Stage1Scheduler(Scheduler):
                 request_metrics["lighter_mean_cost_s"] = lighter_mean_cost_s
                 request_metrics["defer_relief_score"] = defer_relief_score
                 request_metrics["defer_harm_score"] = defer_harm_score
-                request_metrics["hard_escape"] = 0
                 if age_s >= sink_threshold_s:
                     eligible_candidates.append(
                         (
@@ -2101,17 +2138,23 @@ class Stage1Scheduler(Scheduler):
         ordered_queue = sorted(
             waiting_requests,
             key=lambda queued: (
-                2
-                if metrics_by_sequence[queued.sequence_id]["tail_sunk"]
-                else 1
-                if metrics_by_sequence[queued.sequence_id]["tail_protected"]
-                else 0,
+                (
+                    3
+                    if metrics_by_sequence[queued.sequence_id]["tail_sunk"]
+                    else 0
+                    if metrics_by_sequence[queued.sequence_id]["hard_escape"]
+                    else 2
+                    if metrics_by_sequence[queued.sequence_id]["tail_protected"]
+                    else 1
+                ),
                 float(getattr(queued.request, "arrival_time", queued.enqueue_time))
-                if metrics_by_sequence[queued.sequence_id]["tail_protected"]
+                if metrics_by_sequence[queued.sequence_id]["hard_escape"]
+                or metrics_by_sequence[queued.sequence_id]["tail_protected"]
                 or metrics_by_sequence[queued.sequence_id]["tail_sunk"]
                 else float(metrics_by_sequence[queued.sequence_id]["aged_cost_s"]),
                 queued.enqueue_time
-                if metrics_by_sequence[queued.sequence_id]["tail_protected"]
+                if metrics_by_sequence[queued.sequence_id]["hard_escape"]
+                or metrics_by_sequence[queued.sequence_id]["tail_protected"]
                 or metrics_by_sequence[queued.sequence_id]["tail_sunk"]
                 else float(metrics_by_sequence[queued.sequence_id]["estimated_cost_s"]),
                 queued.sequence_id,

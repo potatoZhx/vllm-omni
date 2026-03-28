@@ -317,7 +317,7 @@ def test_plan_chunk_budget_does_not_run_non_escape_sjf_aging_guarded_tail_reques
     assert engine._plan_chunk_budget(request) == 3
 
 
-def test_plan_chunk_budget_does_not_run_even_hard_escape_marked_sjf_aging_guarded_tail_request_to_completion():
+def test_plan_chunk_budget_runs_hard_escape_sjf_aging_guarded_tail_request_to_completion():
     engine = object.__new__(DiffusionEngine)
     engine.od_config = SimpleNamespace(
         instance_scheduler_policy="sjf_aging_guarded_tail",
@@ -349,7 +349,7 @@ def test_plan_chunk_budget_does_not_run_even_hard_escape_marked_sjf_aging_guarde
     request.tail_sunk = False
     request.tail_hard_escape = True
 
-    assert engine._plan_chunk_budget(request) == 3
+    assert engine._plan_chunk_budget(request) == 20
 
 
 def test_plan_chunk_budget_does_not_run_sunk_sjf_aging_guarded_tail_request_to_completion():

@@ -434,6 +434,9 @@ class OmniDiffusionConfig:
     instance_scheduler_slack_panic_threshold: float = 1.0
     instance_scheduler_slack_swap_overhead_ms: float = 0.0
     instance_scheduler_type_fifo_defer_budget_ratio: float = 0.05
+    instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio: float = 0.02
+    instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier: float = 100.0
+    instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier: float = 100.0
     instance_scheduler_p95_fusion_tail_budget_ratio: float = 0.10
     instance_scheduler_p95_fusion_heavy_threshold_s: float = 20.0
     instance_scheduler_p95_fusion_urgent_slack_ratio: float = 1.0
@@ -668,6 +671,12 @@ class OmniDiffusionConfig:
             raise ValueError("instance_scheduler_slack_swap_overhead_ms must be >= 0")
         if not 0 <= self.instance_scheduler_type_fifo_defer_budget_ratio <= 1:
             raise ValueError("instance_scheduler_type_fifo_defer_budget_ratio must be within [0, 1]")
+        if not 0 <= self.instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio <= 1:
+            raise ValueError("instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio must be within [0, 1]")
+        if self.instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier <= 0:
+            raise ValueError("instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier must be > 0")
+        if self.instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier <= 0:
+            raise ValueError("instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier must be > 0")
         if not 0 < self.instance_scheduler_p95_fusion_tail_budget_ratio <= 1:
             raise ValueError("instance_scheduler_p95_fusion_tail_budget_ratio must be within (0, 1]")
         if self.instance_scheduler_p95_fusion_heavy_threshold_s <= 0:

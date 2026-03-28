@@ -37,6 +37,9 @@ def test_default_stage_config_includes_cache_backend():
         instance_scheduler_p95_first_starvation_boost=1.0,
         instance_scheduler_slack_panic_threshold=1.25,
         instance_scheduler_slack_swap_overhead_ms=120.0,
+        instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio=0.02,
+        instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier=80.0,
+        instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier=60.0,
         instance_scheduler_p95_fusion_tail_budget_ratio=0.2,
         instance_scheduler_p95_fusion_heavy_threshold_s=24.0,
         instance_scheduler_p95_fusion_urgent_slack_ratio=0.75,
@@ -75,6 +78,9 @@ def test_default_stage_config_includes_cache_backend():
     assert engine_args["instance_scheduler_p95_first_starvation_boost"] == 1.0
     assert engine_args["instance_scheduler_slack_panic_threshold"] == 1.25
     assert engine_args["instance_scheduler_slack_swap_overhead_ms"] == 120.0
+    assert engine_args["instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio"] == 0.02
+    assert engine_args["instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier"] == 80.0
+    assert engine_args["instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier"] == 60.0
     assert engine_args["instance_scheduler_p95_fusion_tail_budget_ratio"] == 0.2
     assert engine_args["instance_scheduler_p95_fusion_heavy_threshold_s"] == 24.0
     assert engine_args["instance_scheduler_p95_fusion_urgent_slack_ratio"] == 0.75

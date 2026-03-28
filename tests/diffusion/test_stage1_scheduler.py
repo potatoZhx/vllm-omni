@@ -51,6 +51,9 @@ def _make_stage1_scheduler(
     slo_target_ms: float | None = None,
     aging_factor: float = 0.0,
     type_fifo_defer_budget_ratio: float = 0.05,
+    sjf_aging_guarded_tail_defer_budget_ratio: float = 0.02,
+    sjf_aging_guarded_tail_hard_escape_wait_multiplier: float = 100.0,
+    sjf_aging_guarded_tail_hard_escape_cost_multiplier: float = 100.0,
     profile_path: str | None = None,
     profile_name: str | None = None,
     slack_panic_threshold: float = 1.0,
@@ -88,6 +91,9 @@ def _make_stage1_scheduler(
         instance_scheduler_slack_panic_threshold=slack_panic_threshold,
         instance_scheduler_slack_swap_overhead_ms=slack_swap_overhead_ms,
         instance_scheduler_type_fifo_defer_budget_ratio=type_fifo_defer_budget_ratio,
+        instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio=sjf_aging_guarded_tail_defer_budget_ratio,
+        instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier=sjf_aging_guarded_tail_hard_escape_wait_multiplier,
+        instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier=sjf_aging_guarded_tail_hard_escape_cost_multiplier,
         instance_scheduler_p95_fusion_tail_budget_ratio=p95_fusion_tail_budget_ratio,
         instance_scheduler_p95_fusion_heavy_threshold_s=p95_fusion_heavy_threshold_s,
         instance_scheduler_p95_fusion_urgent_slack_ratio=p95_fusion_urgent_slack_ratio,
@@ -888,7 +894,7 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_requeues_running_sunk_request_b
     assert ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
 
 
-def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sticky_sink_even_after_crossing_legacy_hard_escape_threshold():
+def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sticky_sink_with_large_default_hard_escape_threshold():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
     now = time.monotonic()
     old_mid = _mock_request("tail-hard-release", num_inference_steps=25, extra_args={"estimated_cost_s": 10.0})
@@ -930,7 +936,53 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sticky_sink_even_after_cr
     assert ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
 
 
-def test_stage1_scheduler_sjf_aging_guarded_tail_respects_five_percent_budget():
+def test_stage1_scheduler_sjf_aging_guarded_tail_releases_sunk_request_after_configured_hard_escape():
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="sjf_aging_guarded_tail",
+        sjf_aging_guarded_tail_hard_escape_wait_multiplier=2.0,
+        sjf_aging_guarded_tail_hard_escape_cost_multiplier=8.0,
+    )
+    now = time.monotonic()
+    old_mid = _mock_request("tail-escape-release", num_inference_steps=25, extra_args={"estimated_cost_s": 10.0})
+    short_one = _mock_request("tail-escape-short-1", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    short_two = _mock_request("tail-escape-short-2", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    old_mid.arrival_time = now - 50.0
+    short_one.arrival_time = now - 2.0
+    short_two.arrival_time = now - 1.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_mid)
+        sched._enqueue_request_locked(short_one)
+        sched._enqueue_request_locked(short_two)
+
+        assert sched.pop_next_request() is short_one
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+
+        assert sched.pop_next_request() is short_two
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+
+        dispatched = sched.pop_next_request()
+        assert dispatched is old_mid
+        assert getattr(dispatched, "tail_sunk", False) is True
+
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+        old_mid.arrival_time = time.monotonic() - 95.0
+        late_short = _mock_request("tail-escape-short-3", num_inference_steps=10, extra_args={"estimated_cost_s": 2.5})
+        late_short.arrival_time = time.monotonic() - 0.25
+        sched._requeue_request_locked(dispatched)  # noqa: SLF001
+        sched._enqueue_request_locked(late_short)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-escape-release", "tail-escape-short-3"]
+    assert ordered[0].schedule_metrics["tail_sunk"] == 0
+    assert ordered[0].schedule_metrics["hard_escape"] == 1
+    assert ordered[0].schedule_metrics["dispatch_group"] == "protected_hard_escape"
+
+
+def test_stage1_scheduler_sjf_aging_guarded_tail_respects_small_defer_budget():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
     for idx in range(20):
         sample_request = _mock_request(f"sample-tail-budget-{idx}", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
@@ -955,6 +1007,7 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_respects_five_percent_budget():
 
     assert first_ordered[-1].request.request_ids[0] == "budget-large-1"
     assert first_ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert first_ordered[-1].schedule_metrics["tail_defer_budget_ratio"] == pytest.approx(0.02)
     assert sched._sjf_aging_guarded_tail_budget_status()["global_budget_remaining"] == 0  # noqa: SLF001
 
     second_large = _mock_request("budget-large-2", num_inference_steps=35, extra_args={"estimated_cost_s": 38.0})

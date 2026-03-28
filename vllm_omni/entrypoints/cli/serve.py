@@ -379,6 +379,24 @@ class OmniServeCommand(CLISubcommand):
             help="Strict deferred-request ratio used by 'type_fifo_defer_budget' as both the global unique-request ceiling and the sliding-window local budget ceiling.",
         )
         omni_config_group.add_argument(
+            "--instance-scheduler-sjf-aging-guarded-tail-defer-budget-ratio",
+            type=float,
+            default=0.02,
+            help="Strict deferred-request ratio used by 'sjf_aging_guarded_tail' as both the global unique-request ceiling and the sliding-window local budget ceiling.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-sjf-aging-guarded-tail-hard-escape-wait-multiplier",
+            type=float,
+            default=100.0,
+            help="Multiplier applied to learned_wait_guard_s when deriving 'sjf_aging_guarded_tail' hard-escape threshold. Large defaults keep hard escape effectively inactive unless explicitly tuned down.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-sjf-aging-guarded-tail-hard-escape-cost-multiplier",
+            type=float,
+            default=100.0,
+            help="Multiplier applied to estimated_cost_s when deriving 'sjf_aging_guarded_tail' hard-escape threshold. Large defaults keep hard escape effectively inactive unless explicitly tuned down.",
+        )
+        omni_config_group.add_argument(
             "--instance-scheduler-p95-fusion-tail-budget-ratio",
             type=float,
             default=0.10,
