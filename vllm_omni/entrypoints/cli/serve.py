@@ -375,8 +375,20 @@ class OmniServeCommand(CLISubcommand):
         omni_config_group.add_argument(
             "--instance-scheduler-type-fifo-defer-budget-ratio",
             type=float,
-            default=0.05,
+            default=0.02,
             help="Strict deferred-request ratio used by 'type_fifo_defer_budget' as both the global unique-request ceiling and the sliding-window local budget ceiling.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-type-fifo-defer-hard-escape-wait-multiplier",
+            type=float,
+            default=100.0,
+            help="Multiplier applied to learned queue-wait p95 when deriving the 'type_fifo_defer_budget' hard-escape threshold. Large defaults keep the threshold effectively inactive unless explicitly tuned down.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-type-fifo-defer-hard-escape-cost-multiplier",
+            type=float,
+            default=100.0,
+            help="Multiplier applied to estimated_cost_s when deriving the 'type_fifo_defer_budget' hard-escape threshold. Large defaults keep the threshold effectively inactive unless explicitly tuned down.",
         )
         omni_config_group.add_argument(
             "--instance-scheduler-sjf-aging-guarded-tail-defer-budget-ratio",

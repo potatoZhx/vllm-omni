@@ -52,15 +52,15 @@ _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_COST_MULTIPLIER = 100.0
 _BYPASS_GUARD_MIN_WAIT_S = 45.0
 _BYPASS_GUARD_MAX_WAIT_S = 120.0
 _BYPASS_GUARD_WAIT_COST_RATIO = 2.0
-_TYPE_FIFO_DEFER_DEFAULT_RATIO = 0.05
+_TYPE_FIFO_DEFER_DEFAULT_RATIO = 0.02
 _TYPE_FIFO_DEFER_MIN_BUDGET = 0
 _TYPE_FIFO_DEFER_ADAPTIVE_MIN_QUEUE_DEPTH = 8
 _TYPE_FIFO_DEFER_WINDOW_MAXLEN = _P95_FIRST_HISTORY_MAXLEN
 _TYPE_FIFO_DEFER_BASE_MIN_WAIT_S = 15.0
 _TYPE_FIFO_DEFER_DYNAMIC_FLOOR_COST_RATIO = 0.5
 _TYPE_FIFO_DEFER_WAIT_COST_RATIO = 2.0
-_TYPE_FIFO_DEFER_OVERSTARVED_WAIT_P95_MULTIPLIER = 2.0
-_TYPE_FIFO_DEFER_OVERSTARVED_COST_MULTIPLIER = 3.0
+_TYPE_FIFO_DEFER_HARD_ESCAPE_WAIT_MULTIPLIER = 100.0
+_TYPE_FIFO_DEFER_HARD_ESCAPE_COST_MULTIPLIER = 100.0
 _FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
 _SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
@@ -1331,6 +1331,22 @@ class Stage1Scheduler(Scheduler):
             return _TYPE_FIFO_DEFER_DEFAULT_RATIO
         return min(max(float(ratio), 0.0), 1.0)
 
+    def _type_fifo_defer_hard_escape_wait_multiplier(self) -> float:
+        multiplier = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_type_fifo_defer_hard_escape_wait_multiplier", None)
+        )
+        if multiplier is None:
+            return _TYPE_FIFO_DEFER_HARD_ESCAPE_WAIT_MULTIPLIER
+        return max(float(multiplier), 1e-9)
+
+    def _type_fifo_defer_hard_escape_cost_multiplier(self) -> float:
+        multiplier = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_type_fifo_defer_hard_escape_cost_multiplier", None)
+        )
+        if multiplier is None:
+            return _TYPE_FIFO_DEFER_HARD_ESCAPE_COST_MULTIPLIER
+        return max(float(multiplier), 1e-9)
+
     def _type_fifo_defer_threshold_s(self, estimated_cost_s: float, *, wait_p95_s: float | None = None) -> float:
         estimated_cost_s = max(float(estimated_cost_s), 1e-9)
         effective_wait_p95_s = self._type_fifo_defer_wait_p95_s() if wait_p95_s is None else max(float(wait_p95_s), 0.0)
@@ -1340,8 +1356,8 @@ class Stage1Scheduler(Scheduler):
         estimated_cost_s = max(float(estimated_cost_s), 1e-9)
         effective_wait_p95_s = self._type_fifo_defer_wait_p95_s() if wait_p95_s is None else max(float(wait_p95_s), 0.0)
         return max(
-            _TYPE_FIFO_DEFER_OVERSTARVED_WAIT_P95_MULTIPLIER * effective_wait_p95_s,
-            _TYPE_FIFO_DEFER_OVERSTARVED_COST_MULTIPLIER * estimated_cost_s,
+            self._type_fifo_defer_hard_escape_wait_multiplier() * effective_wait_p95_s,
+            self._type_fifo_defer_hard_escape_cost_multiplier() * estimated_cost_s,
         )
 
     def _type_fifo_defer_request_key(self, request: OmniDiffusionRequest) -> str:
@@ -1518,6 +1534,8 @@ class Stage1Scheduler(Scheduler):
                 "deferred": 0,
                 "defer_candidate": 0,
                 "dispatch_group": "normal",
+                "hard_escape_threshold_s": 0.0,
+                "hard_escape": 0,
             }
 
         for type_key, grouped in grouped_requests.items():
@@ -1628,6 +1646,8 @@ class Stage1Scheduler(Scheduler):
                 request_metrics["defer_relief_score"] = defer_relief_score
                 request_metrics["defer_harm_score"] = defer_harm_score
                 request_metrics["over_starved"] = over_starved
+                request_metrics["hard_escape_threshold_s"] = over_starved_threshold_s
+                request_metrics["hard_escape"] = over_starved
                 if (
                     age_s >= defer_threshold_s
                     and not over_starved
@@ -2610,7 +2630,7 @@ class Stage1Scheduler(Scheduler):
                     queued_request.schedule_metrics.update(metrics)
             request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
             logger.info(
-                "QUEUE_REORDER request_id=%s policy=%s type_key=%s aged_cost_s=%.4f age_s=%.4f deferred=%s over_starved=%s defer_threshold_s=%.4f over_starved_threshold_s=%.4f defer_budget_limit=%s global_budget_remaining=%s window_budget_remaining=%s queue_rank=%s",
+                "QUEUE_REORDER request_id=%s policy=%s type_key=%s aged_cost_s=%.4f age_s=%.4f deferred=%s over_starved=%s hard_escape=%s defer_threshold_s=%.4f over_starved_threshold_s=%.4f defer_budget_limit=%s global_budget_remaining=%s window_budget_remaining=%s queue_rank=%s",
                 self._request_label(new_request.request),
                 policy,
                 request_metrics.get("type_key"),
@@ -2618,6 +2638,7 @@ class Stage1Scheduler(Scheduler):
                 float(request_metrics.get("age_s", 0.0) or 0.0),
                 request_metrics.get("deferred"),
                 request_metrics.get("over_starved"),
+                request_metrics.get("hard_escape"),
                 float(request_metrics.get("defer_threshold_s", 0.0) or 0.0),
                 float(request_metrics.get("over_starved_threshold_s", 0.0) or 0.0),
                 request_metrics.get("defer_budget_limit"),

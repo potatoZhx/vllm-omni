@@ -50,7 +50,9 @@ def _make_stage1_scheduler(
     policy: str = "fcfs",
     slo_target_ms: float | None = None,
     aging_factor: float = 0.0,
-    type_fifo_defer_budget_ratio: float = 0.05,
+    type_fifo_defer_budget_ratio: float = 0.02,
+    type_fifo_defer_hard_escape_wait_multiplier: float = 100.0,
+    type_fifo_defer_hard_escape_cost_multiplier: float = 100.0,
     sjf_aging_guarded_tail_defer_budget_ratio: float = 0.02,
     sjf_aging_guarded_tail_hard_escape_wait_multiplier: float = 100.0,
     sjf_aging_guarded_tail_hard_escape_cost_multiplier: float = 100.0,
@@ -91,6 +93,8 @@ def _make_stage1_scheduler(
         instance_scheduler_slack_panic_threshold=slack_panic_threshold,
         instance_scheduler_slack_swap_overhead_ms=slack_swap_overhead_ms,
         instance_scheduler_type_fifo_defer_budget_ratio=type_fifo_defer_budget_ratio,
+        instance_scheduler_type_fifo_defer_hard_escape_wait_multiplier=type_fifo_defer_hard_escape_wait_multiplier,
+        instance_scheduler_type_fifo_defer_hard_escape_cost_multiplier=type_fifo_defer_hard_escape_cost_multiplier,
         instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio=sjf_aging_guarded_tail_defer_budget_ratio,
         instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier=sjf_aging_guarded_tail_hard_escape_wait_multiplier,
         instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier=sjf_aging_guarded_tail_hard_escape_cost_multiplier,
@@ -1080,7 +1084,10 @@ def test_stage1_scheduler_type_fifo_defer_budget_preserves_fifo_within_same_type
 
 
 def test_stage1_scheduler_type_fifo_defer_budget_caps_deferred_requests():
-    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="type_fifo_defer_budget",
+        type_fifo_defer_budget_ratio=0.05,
+    )
     now = time.monotonic()
 
     with sched._queue_cv:
@@ -1125,7 +1132,10 @@ def test_stage1_scheduler_type_fifo_defer_budget_caps_deferred_requests():
 
 
 def test_stage1_scheduler_type_fifo_defer_budget_uses_learned_wait_threshold():
-    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="type_fifo_defer_budget",
+        type_fifo_defer_budget_ratio=0.05,
+    )
     for idx in range(20):
         sample_request = _mock_request(
             f"sample-type-defer-{idx}",
@@ -1177,7 +1187,12 @@ def test_stage1_scheduler_type_fifo_defer_budget_uses_learned_wait_threshold():
 
 
 def test_stage1_scheduler_type_fifo_defer_budget_does_not_cap_wait_p95_at_120s():
-    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="type_fifo_defer_budget",
+        type_fifo_defer_budget_ratio=0.05,
+        type_fifo_defer_hard_escape_wait_multiplier=2.0,
+        type_fifo_defer_hard_escape_cost_multiplier=3.0,
+    )
     for idx in range(20):
         sample_request = _mock_request(
             f"sample-type-long-wait-{idx}",
@@ -1220,7 +1235,10 @@ def test_stage1_scheduler_type_fifo_defer_budget_does_not_cap_wait_p95_at_120s()
 
 
 def test_stage1_scheduler_type_fifo_defer_budget_respects_strict_global_budget():
-    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="type_fifo_defer_budget",
+        type_fifo_defer_budget_ratio=0.05,
+    )
     now = time.monotonic()
 
     with sched._queue_cv:
@@ -1264,7 +1282,10 @@ def test_stage1_scheduler_type_fifo_defer_budget_respects_strict_global_budget()
 
 def test_stage1_scheduler_type_fifo_defer_budget_respects_sliding_window_budget(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(stage1_scheduler_module, "_TYPE_FIFO_DEFER_WINDOW_MAXLEN", 20)
-    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="type_fifo_defer_budget",
+        type_fifo_defer_budget_ratio=0.05,
+    )
     now = time.monotonic()
 
     with sched._queue_cv:
@@ -1303,7 +1324,12 @@ def test_stage1_scheduler_type_fifo_defer_budget_respects_sliding_window_budget(
 
 
 def test_stage1_scheduler_type_fifo_defer_budget_stops_deferring_overstarved_heavy_head():
-    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="type_fifo_defer_budget",
+        type_fifo_defer_budget_ratio=0.05,
+        type_fifo_defer_hard_escape_wait_multiplier=2.0,
+        type_fifo_defer_hard_escape_cost_multiplier=3.0,
+    )
     for idx in range(20):
         sample_request = _mock_request(
             f"sample-type-overstarved-{idx}",
