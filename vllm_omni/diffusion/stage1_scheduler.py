@@ -2928,8 +2928,6 @@ class Stage1Scheduler(Scheduler):
         if getattr(request, "first_enqueue_time", None) is None:
             setattr(request, "first_enqueue_time", enqueue_time)
         self._reset_scheduler_chunk_annotations(request)
-        if self._policy_name() == _SJF_AGING_GUARDED_TAIL_POLICY:
-            self._clear_sjf_aging_guarded_tail_sunk_state(request)
         self._set_request_state(request, "waiting")
         for request_id in self._request_ids(request):
             self._aborted_request_ids.discard(request_id)
@@ -2982,8 +2980,6 @@ class Stage1Scheduler(Scheduler):
             if self._active_request is not None or not self._waiting_queue:
                 return None
             queued_request = self._waiting_queue.popleft()
-            if self._policy_name() == _SJF_AGING_GUARDED_TAIL_POLICY:
-                self._clear_sjf_aging_guarded_tail_sunk_state(queued_request.request)
             self._active_request = queued_request
             self._active_started_at = time.monotonic()
             self._set_request_state(queued_request.request, "running")
@@ -3091,8 +3087,6 @@ class Stage1Scheduler(Scheduler):
                     )
                 if self._active_request is None and self._waiting_queue and self._waiting_queue[0] is queued_request:
                     self._waiting_queue.popleft()
-                    if self._policy_name() == _SJF_AGING_GUARDED_TAIL_POLICY:
-                        self._clear_sjf_aging_guarded_tail_sunk_state(request)
                     self._active_request = queued_request
                     self._active_started_at = time.monotonic()
                     self._set_request_state(request, "running")

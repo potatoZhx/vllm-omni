@@ -843,6 +843,93 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sunk_request_at_tail_acro
     assert second_ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
 
 
+def test_stage1_scheduler_sjf_aging_guarded_tail_requeues_running_sunk_request_back_to_tail():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
+    now = time.monotonic()
+    old_large = _mock_request("tail-sticky-large", num_inference_steps=35, extra_args={"estimated_cost_s": 40.0})
+    short_one = _mock_request("tail-sticky-short-1", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    short_two = _mock_request("tail-sticky-short-2", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    old_large.arrival_time = now - 130.0
+    short_one.arrival_time = now - 2.0
+    short_two.arrival_time = now - 1.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_large)
+        sched._enqueue_request_locked(short_one)
+        sched._enqueue_request_locked(short_two)
+
+        assert sched.pop_next_request() is short_one
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+
+        assert sched.pop_next_request() is short_two
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+
+        dispatched = sched.pop_next_request()
+        assert dispatched is old_large
+        assert getattr(dispatched, "tail_sunk", False) is True
+
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+        sched._requeue_request_locked(dispatched)  # noqa: SLF001
+
+        waiting_only_sunk = list(sched._waiting_queue)
+        assert [queued.request.request_ids[0] for queued in waiting_only_sunk] == ["tail-sticky-large"]
+        assert waiting_only_sunk[0].schedule_metrics["tail_sunk"] == 1
+
+        late_short = _mock_request("tail-sticky-short-3", num_inference_steps=10, extra_args={"estimated_cost_s": 2.5})
+        late_short.arrival_time = now - 0.25
+        sched._enqueue_request_locked(late_short)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-sticky-short-3", "tail-sticky-large"]
+    assert ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
+
+
+def test_stage1_scheduler_sjf_aging_guarded_tail_releases_sticky_sink_after_hard_escape():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
+    now = time.monotonic()
+    old_mid = _mock_request("tail-hard-release", num_inference_steps=25, extra_args={"estimated_cost_s": 10.0})
+    short_one = _mock_request("tail-hard-release-short-1", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    short_two = _mock_request("tail-hard-release-short-2", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    old_mid.arrival_time = now - 50.0
+    short_one.arrival_time = now - 2.0
+    short_two.arrival_time = now - 1.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_mid)
+        sched._enqueue_request_locked(short_one)
+        sched._enqueue_request_locked(short_two)
+
+        assert sched.pop_next_request() is short_one
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+
+        assert sched.pop_next_request() is short_two
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+
+        dispatched = sched.pop_next_request()
+        assert dispatched is old_mid
+        assert getattr(dispatched, "tail_sunk", False) is True
+
+        sched._active_request = None  # noqa: SLF001
+        sched._active_started_at = None  # noqa: SLF001
+        old_mid.arrival_time = time.monotonic() - 95.0
+        late_short = _mock_request("tail-hard-release-short-3", num_inference_steps=10, extra_args={"estimated_cost_s": 2.5})
+        late_short.arrival_time = time.monotonic() - 0.25
+        sched._requeue_request_locked(dispatched)  # noqa: SLF001
+        sched._enqueue_request_locked(late_short)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-hard-release", "tail-hard-release-short-3"]
+    assert ordered[0].schedule_metrics["tail_sunk"] == 0
+    assert ordered[0].schedule_metrics["hard_escape"] == 1
+    assert ordered[0].schedule_metrics["dispatch_group"] == "protected_hard_escape"
+
+
 def test_stage1_scheduler_sjf_aging_guarded_tail_respects_five_percent_budget():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
     for idx in range(20):
