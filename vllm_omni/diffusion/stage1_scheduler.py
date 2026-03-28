@@ -41,7 +41,7 @@ _SJF_AGING_COST_WEIGHT_MAX = 4.0
 _SJF_AGING_GUARDED_MIN_WAIT_S = 45.0
 _SJF_AGING_GUARDED_MAX_WAIT_S = 120.0
 _SJF_AGING_GUARDED_WAIT_COST_RATIO = 2.0
-_SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO = 0.02
+_SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO = 0.05
 _SJF_AGING_GUARDED_TAIL_BOOTSTRAP_MIN_UNIQUE = 2
 _SJF_AGING_GUARDED_TAIL_WINDOW_MAXLEN = _P95_FIRST_HISTORY_MAXLEN
 _SJF_AGING_GUARDED_TAIL_COST_SCALE = 1.5
@@ -1211,13 +1211,9 @@ class Stage1Scheduler(Scheduler):
         budget_ratio = self._sjf_aging_guarded_tail_defer_budget_ratio()
         global_arrived_unique = len(self._sjf_aging_guarded_tail_arrived_request_ids)
         global_limit = int(global_arrived_unique * budget_ratio)
-        if global_arrived_unique >= _SJF_AGING_GUARDED_TAIL_BOOTSTRAP_MIN_UNIQUE:
-            global_limit = max(global_limit, 1)
         global_used = len(self._sjf_aging_guarded_tail_deferred_request_ids)
         window_arrived_unique = len(self._sjf_aging_guarded_tail_arrival_window_id_set)
         window_limit = int(window_arrived_unique * budget_ratio)
-        if window_arrived_unique >= _SJF_AGING_GUARDED_TAIL_BOOTSTRAP_MIN_UNIQUE:
-            window_limit = max(window_limit, 1)
         window_used = len(self._sjf_aging_guarded_tail_window_deferred_request_ids)
         return {
             "global_arrived_unique": global_arrived_unique,
@@ -2017,8 +2013,10 @@ class Stage1Scheduler(Scheduler):
         queue_p75_cost_s = queue_costs[max(int(len(queue_costs) * 0.75) - 1, 0)]
         queue_p90_cost_s = queue_costs[max(ceil(len(queue_costs) * 0.9) - 1, 0)]
         metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        p95_relief_min_count = max(ceil(len(waiting_requests) * 0.05), 1)
 
         for queued_request in waiting_requests:
+            self._reset_scheduler_chunk_annotations(queued_request.request)
             estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
             age_s = self._request_age_seconds(queued_request, now)
             cost_weight = self._sjf_aging_cost_weight(estimated_cost_s)
@@ -2052,7 +2050,7 @@ class Stage1Scheduler(Scheduler):
             elif tail_sunk:
                 dispatch_group = "sunk_tail"
             elif tail_protected:
-                dispatch_group = "protected_soft"
+                dispatch_group = "protected"
             metrics_by_sequence[queued_request.sequence_id] = {
                 "scheduler_policy": _SJF_AGING_GUARDED_TAIL_POLICY,
                 "queue_reorder_count": 1,
@@ -2077,6 +2075,7 @@ class Stage1Scheduler(Scheduler):
                 "defer_harm_score": 0.0,
                 "lighter_request_count": 0,
                 "lighter_mean_cost_s": estimated_cost_s,
+                "p95_relief_min_count": p95_relief_min_count,
                 "dispatch_group": dispatch_group,
             }
 
@@ -2122,6 +2121,8 @@ class Stage1Scheduler(Scheduler):
                 lighter_request_count = len(lighter_costs)
                 if lighter_request_count == 0 or len(waiting_requests) < 3:
                     continue
+                if lighter_request_count < p95_relief_min_count:
+                    continue
                 lighter_mean_cost_s = sum(lighter_costs) / float(lighter_request_count)
                 defer_relief_score = float(lighter_request_count) * max(estimated_cost_s - lighter_mean_cost_s, 0.0)
                 defer_harm_score = estimated_cost_s * max(age_s / max(hard_escape_threshold_s, 1e-9), 1.0)
@@ -2129,7 +2130,7 @@ class Stage1Scheduler(Scheduler):
                 request_metrics["lighter_mean_cost_s"] = lighter_mean_cost_s
                 request_metrics["defer_relief_score"] = defer_relief_score
                 request_metrics["defer_harm_score"] = defer_harm_score
-                if age_s >= sink_threshold_s:
+                if age_s >= sink_threshold_s and defer_relief_score > defer_harm_score:
                     eligible_candidates.append(
                         (
                             -defer_relief_score,
@@ -2155,6 +2156,21 @@ class Stage1Scheduler(Scheduler):
             sunk_metrics["dispatch_group"] = "sunk_tail"
             self._mark_sjf_aging_guarded_tail_deferred(sunk_request.request)
 
+        has_foreground_waiters = any(
+            not metrics_by_sequence[queued_request.sequence_id]["tail_sunk"] for queued_request in waiting_requests
+        )
+        if not has_foreground_waiters:
+            for queued_request in waiting_requests:
+                if metrics_by_sequence[queued_request.sequence_id]["tail_sunk"]:
+                    idle_chunk_budget_steps = self._scheduler_chunk_budget_steps_for_request(queued_request.request) * 3
+                    setattr(queued_request.request, "scheduler_chunk_budget_steps", idle_chunk_budget_steps)
+                    metrics_by_sequence[queued_request.sequence_id]["scheduler_chunk_budget_steps"] = idle_chunk_budget_steps
+                    metrics_by_sequence[queued_request.sequence_id]["scheduler_force_run_to_completion"] = 0
+                    metrics_by_sequence[queued_request.sequence_id]["dispatch_group"] = "sunk_tail_idle"
+        else:
+            for queued_request in waiting_requests:
+                metrics_by_sequence[queued_request.sequence_id]["scheduler_force_run_to_completion"] = 0
+
         ordered_queue = sorted(
             waiting_requests,
             key=lambda queued: (
@@ -2163,9 +2179,9 @@ class Stage1Scheduler(Scheduler):
                     if metrics_by_sequence[queued.sequence_id]["tail_sunk"]
                     else 0
                     if metrics_by_sequence[queued.sequence_id]["hard_escape"]
-                    else 2
-                    if metrics_by_sequence[queued.sequence_id]["tail_protected"]
                     else 1
+                    if metrics_by_sequence[queued.sequence_id]["tail_protected"]
+                    else 2
                 ),
                 float(getattr(queued.request, "arrival_time", queued.enqueue_time))
                 if metrics_by_sequence[queued.sequence_id]["hard_escape"]
@@ -2318,6 +2334,18 @@ class Stage1Scheduler(Scheduler):
     def _reset_scheduler_chunk_annotations(request: OmniDiffusionRequest) -> None:
         setattr(request, "scheduler_force_run_to_completion", False)
         setattr(request, "scheduler_chunk_budget_steps", None)
+
+    def _scheduler_chunk_budget_steps_for_request(self, request: OmniDiffusionRequest) -> int:
+        sampling_params = request.sampling_params
+        num_frames = max(self._safe_int(getattr(sampling_params, "num_frames", 1), 1), 1)
+        if num_frames > 1:
+            budget_steps = getattr(self.od_config, "diffusion_video_chunk_budget_steps", None)
+        else:
+            budget_steps = getattr(self.od_config, "diffusion_image_chunk_budget_steps", None)
+
+        if budget_steps is None:
+            budget_steps = getattr(self.od_config, "diffusion_chunk_budget_steps", 4)
+        return max(self._safe_int(budget_steps, 4), 1)
 
     def _build_p95_fusion_queue(
         self,
