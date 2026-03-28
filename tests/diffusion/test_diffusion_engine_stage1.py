@@ -282,6 +282,76 @@ def test_plan_chunk_budget_runs_protected_sjf_aging_guarded_request_to_completio
     assert engine._plan_chunk_budget(request) == 20
 
 
+def test_plan_chunk_budget_does_not_run_non_escape_sjf_aging_guarded_tail_request_to_completion():
+    engine = object.__new__(DiffusionEngine)
+    engine.od_config = SimpleNamespace(
+        instance_scheduler_policy="sjf_aging_guarded_tail",
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=4,
+        diffusion_image_chunk_budget_steps=3,
+        diffusion_video_chunk_budget_steps=1,
+        diffusion_small_request_latency_threshold_ms=1000.0,
+    )
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="image",
+                width=1024,
+                height=1024,
+                num_frames=1,
+                steps=25,
+                latency_s=25.0,
+            )
+        ]
+    )
+    request = _make_request()
+    request.sampling_params.width = 1024
+    request.sampling_params.height = 1024
+    request.sampling_params.num_inference_steps = 25
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 5
+    request.tail_protected = True
+    request.tail_sunk = False
+    request.tail_hard_escape = False
+
+    assert engine._plan_chunk_budget(request) == 3
+
+
+def test_plan_chunk_budget_runs_hard_escape_sjf_aging_guarded_tail_request_to_completion():
+    engine = object.__new__(DiffusionEngine)
+    engine.od_config = SimpleNamespace(
+        instance_scheduler_policy="sjf_aging_guarded_tail",
+        diffusion_enable_chunk_preemption=True,
+        diffusion_chunk_budget_steps=4,
+        diffusion_image_chunk_budget_steps=3,
+        diffusion_video_chunk_budget_steps=1,
+        diffusion_small_request_latency_threshold_ms=1000.0,
+    )
+    engine.runtime_estimator = RuntimeProfileEstimator(
+        [
+            RuntimeProfileRecord(
+                task_type="image",
+                width=1024,
+                height=1024,
+                num_frames=1,
+                steps=25,
+                latency_s=25.0,
+            )
+        ]
+    )
+    request = _make_request()
+    request.sampling_params.width = 1024
+    request.sampling_params.height = 1024
+    request.sampling_params.num_inference_steps = 25
+    request.sampling_params.num_frames = 1
+    request.executed_steps = 5
+    request.tail_protected = True
+    request.tail_sunk = False
+    request.tail_hard_escape = True
+
+    assert engine._plan_chunk_budget(request) == 20
+
+
 def test_plan_chunk_budget_does_not_run_sunk_sjf_aging_guarded_tail_request_to_completion():
     engine = object.__new__(DiffusionEngine)
     engine.od_config = SimpleNamespace(
@@ -312,6 +382,7 @@ def test_plan_chunk_budget_does_not_run_sunk_sjf_aging_guarded_tail_request_to_c
     request.executed_steps = 5
     request.tail_protected = True
     request.tail_sunk = True
+    request.tail_hard_escape = True
 
     assert engine._plan_chunk_budget(request) == 3
 

@@ -44,9 +44,9 @@ _SJF_AGING_GUARDED_WAIT_COST_RATIO = 2.0
 _SJF_AGING_GUARDED_TAIL_DEFER_BUDGET_RATIO = 0.05
 _SJF_AGING_GUARDED_TAIL_BOOTSTRAP_MIN_UNIQUE = 2
 _SJF_AGING_GUARDED_TAIL_WINDOW_MAXLEN = _P95_FIRST_HISTORY_MAXLEN
-_SJF_AGING_GUARDED_TAIL_COST_SCALE = 2.0
-_SJF_AGING_GUARDED_TAIL_DEFER_WAIT_MULTIPLIER = 1.5
-_SJF_AGING_GUARDED_TAIL_DEFER_COST_MULTIPLIER = 3.0
+_SJF_AGING_GUARDED_TAIL_COST_SCALE = 1.5
+_SJF_AGING_GUARDED_TAIL_DEFER_WAIT_MULTIPLIER = 1.0
+_SJF_AGING_GUARDED_TAIL_DEFER_COST_MULTIPLIER = 1.5
 _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_WAIT_MULTIPLIER = 2.0
 _SJF_AGING_GUARDED_TAIL_HARD_ESCAPE_COST_MULTIPLIER = 4.0
 _BYPASS_GUARD_MIN_WAIT_S = 45.0
@@ -1962,6 +1962,7 @@ class Stage1Scheduler(Scheduler):
             queue_median_cost_s = queue_costs[mid]
         else:
             queue_median_cost_s = (queue_costs[mid - 1] + queue_costs[mid]) / 2.0
+        queue_p75_cost_s = queue_costs[max(int(len(queue_costs) * 0.75) - 1, 0)]
         queue_p90_cost_s = queue_costs[max(ceil(len(queue_costs) * 0.9) - 1, 0)]
         metrics_by_sequence: dict[int, dict[str, Any]] = {}
 
@@ -1974,10 +1975,10 @@ class Stage1Scheduler(Scheduler):
             tail_protected = age_s >= protection_threshold_s
             large_request_threshold_s = max(
                 _SJF_AGING_GUARDED_TAIL_COST_SCALE * queue_median_cost_s,
-                queue_p90_cost_s,
+                queue_p75_cost_s,
             )
             sink_threshold_s = max(
-                _SJF_AGING_GUARDED_TAIL_DEFER_WAIT_MULTIPLIER * learned_wait_guard_s,
+                _SJF_AGING_GUARDED_TAIL_DEFER_WAIT_MULTIPLIER * protection_threshold_s,
                 _SJF_AGING_GUARDED_TAIL_DEFER_COST_MULTIPLIER * estimated_cost_s,
             )
             hard_escape_threshold_s = max(
@@ -1986,11 +1987,13 @@ class Stage1Scheduler(Scheduler):
             )
             request_key = self._sjf_aging_guarded_tail_request_key(queued_request.request)
             tail_sunk = request_key in self._sjf_aging_guarded_tail_active_sunk_request_ids
+            hard_escape = age_s >= hard_escape_threshold_s
             if tail_sunk and age_s >= hard_escape_threshold_s:
                 self._sjf_aging_guarded_tail_active_sunk_request_ids.discard(request_key)
                 tail_sunk = False
             setattr(queued_request.request, "tail_protected", tail_protected)
             setattr(queued_request.request, "tail_sunk", tail_sunk)
+            setattr(queued_request.request, "tail_hard_escape", hard_escape)
             metrics_by_sequence[queued_request.sequence_id] = {
                 "scheduler_policy": _SJF_AGING_GUARDED_TAIL_POLICY,
                 "queue_reorder_count": 1,
@@ -2005,10 +2008,11 @@ class Stage1Scheduler(Scheduler):
                 "protection_threshold_s": protection_threshold_s,
                 "sink_threshold_s": sink_threshold_s,
                 "hard_escape_threshold_s": hard_escape_threshold_s,
-                "hard_escape": 0,
+                "hard_escape": int(hard_escape),
                 "wait_ratio": age_s / estimated_cost_s,
                 "learned_wait_guard_s": learned_wait_guard_s,
                 "queue_median_cost_s": queue_median_cost_s,
+                "queue_p75_cost_s": queue_p75_cost_s,
                 "queue_p90_cost_s": queue_p90_cost_s,
                 "defer_relief_score": 0.0,
                 "defer_harm_score": 0.0,
@@ -2056,21 +2060,22 @@ class Stage1Scheduler(Scheduler):
                     if sequence_id != queued_request.sequence_id and float(metrics["estimated_cost_s"]) < estimated_cost_s
                 ]
                 lighter_request_count = len(lighter_costs)
-                if lighter_request_count == 0:
+                if lighter_request_count == 0 or len(waiting_requests) < 3:
                     continue
                 lighter_mean_cost_s = sum(lighter_costs) / float(lighter_request_count)
                 defer_relief_score = float(lighter_request_count) * max(estimated_cost_s - lighter_mean_cost_s, 0.0)
-                defer_harm_score = estimated_cost_s * max(age_s / max(sink_threshold_s, 1e-9), 1.0)
+                defer_harm_score = estimated_cost_s * max(age_s / max(hard_escape_threshold_s, 1e-9), 1.0)
                 hard_escape = age_s >= hard_escape_threshold_s
                 request_metrics["lighter_request_count"] = lighter_request_count
                 request_metrics["lighter_mean_cost_s"] = lighter_mean_cost_s
                 request_metrics["defer_relief_score"] = defer_relief_score
                 request_metrics["defer_harm_score"] = defer_harm_score
                 request_metrics["hard_escape"] = int(hard_escape)
-                if age_s >= sink_threshold_s and not hard_escape and defer_relief_score > defer_harm_score:
+                if age_s >= sink_threshold_s and not hard_escape:
                     eligible_candidates.append(
                         (
                             -defer_relief_score,
+                            -float(lighter_request_count),
                             -age_s,
                             queued_request.enqueue_time,
                             queued_request.sequence_id,
@@ -2082,7 +2087,7 @@ class Stage1Scheduler(Scheduler):
         for _ in range(sink_budget_limit):
             if not eligible_candidates:
                 break
-            _neg_relief_score, _neg_age_s, _enqueue_time, _sequence_id, sunk_request = min(eligible_candidates)
+            _neg_relief_score, _neg_lighter_count, _neg_age_s, _enqueue_time, _sequence_id, sunk_request = min(eligible_candidates)
             if sunk_request.sequence_id in sunk_request_ids:
                 continue
             sunk_request_ids.add(sunk_request.sequence_id)

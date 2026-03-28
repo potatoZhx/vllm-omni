@@ -751,6 +751,29 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_sinks_old_super_heavy_request()
     assert getattr(ordered[-1].request, "tail_sunk", False) is True
 
 
+def test_stage1_scheduler_sjf_aging_guarded_tail_sinks_protected_mid_heavy_request_without_extra_wait_margin():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
+    now = time.monotonic()
+    old_mid = _mock_request("tail-old-mid", num_inference_steps=25, extra_args={"estimated_cost_s": 10.0})
+    short_one = _mock_request("tail-mid-short-1", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    short_two = _mock_request("tail-mid-short-2", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    old_mid.arrival_time = now - 50.0
+    short_one.arrival_time = now - 2.0
+    short_two.arrival_time = now - 1.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_mid)
+        sched._enqueue_request_locked(short_one)
+        sched._enqueue_request_locked(short_two)
+        ordered = list(sched._waiting_queue)
+
+    assert ordered[-1].request.request_ids[0] == "tail-old-mid"
+    assert ordered[-1].schedule_metrics["tail_protected"] == 1
+    assert ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert ordered[-1].schedule_metrics["sink_threshold_s"] == pytest.approx(45.0)
+    assert ordered[-1].schedule_metrics["hard_escape"] == 0
+
+
 def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sunk_request_at_tail_across_reorders():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
     now = time.monotonic()

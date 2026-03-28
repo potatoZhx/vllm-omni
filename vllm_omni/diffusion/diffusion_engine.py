@@ -273,7 +273,11 @@ class DiffusionEngine:
         if policy == "sjf_aging_guarded":
             return bool(getattr(request, "tail_protected", False))
         if policy == "sjf_aging_guarded_tail":
-            return bool(getattr(request, "tail_protected", False)) and not bool(getattr(request, "tail_sunk", False))
+            return (
+                bool(getattr(request, "tail_protected", False))
+                and not bool(getattr(request, "tail_sunk", False))
+                and bool(getattr(request, "tail_hard_escape", False))
+            )
         if policy == "bypass_guard_sjf":
             return int(getattr(request, "can_bypass", 1) or 0) == 0
         return False
