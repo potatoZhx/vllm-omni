@@ -60,7 +60,7 @@ CLI 入口：
 - `sjf_aging_guarded_tail`
   - 保留 `sjf_aging_guarded` 的 learned wait guard 与 protected 语义，但允许把极少数“非常老、非常重、且延后它能明显放行更多轻请求”的请求沉到队尾
   - 被沉降的请求数量以 `5%` 双层预算为目标，同时受全局 unique-request 预算和 arrival-window 预算共同约束；小样本阶段允许先借出 `1` 个 bootstrap sink slot
-  - 未被沉降的 protected 请求仍保持 arrival-order 优先，并继续使用 guarded run-to-completion 语义
+  - 未被沉降的 protected 请求会再拆成 `hard_escape protected` 与 `soft protected` 两层：前者继续绝对优先，后者退到 normal 请求之后，避免把小中请求长期压在队尾
 - `bypass_guard_sjf`
   - 默认仍按 cost-aware `sjf_aging` 排序，但每个请求会维护一个 `can_bypass ∈ {0,1}` 状态
   - 系统会从最近滑动窗口里学习 `learned_wait_guard_s`；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时，请求会锁定为 `can_bypass=0`
@@ -621,16 +621,18 @@ tail_defer_budget_limit = min(1, global_budget_remaining, window_budget_remainin
 
 #### 1.4.5 最终队列顺序
 
-最终排序保持三层语义：
+最终排序保持四层语义：
 
-1. `protected but not sunk`
+1. `protected_hard_escape`
 2. `normal`
-3. `sunk_tail`
+3. `protected_soft`
+4. `sunk_tail`
 
 其中：
 
-- 普通 protected 请求仍按到达顺序优先
+- `hard_escape protected` 仍按到达顺序优先，保留真正 over-starved 请求的强保护
 - normal 请求继续按 `aged_cost_s` 排序
+- `soft protected` 不再绝对压过 normal，而是退到 normal 之后，内部继续按 arrival/FIFO
 - sunk 请求统一沉到底部，内部保持 arrival/FIFO 顺序
 - 已经 sunk 的请求会在后续 reorder 中保持 sunk，直到它离开 waiting queue，或年龄继续增长到触发 hard escape 为止
 - 未 sunk 的 protected 请求只有在触发 hard escape 后才会切到 run-to-completion；否则仍按 chunk 继续参与调度
@@ -766,7 +768,7 @@ is_urgent and overdue_s >= estimated_service_s
 | `sjf` | 按 `estimated_cost_s` 从小到大排序 | 无 | 无 |
 | `sjf_aging` | 按 `estimated_cost_s / (1 + aging_factor * cost_weight * age_s)` 排序，其中 `cost_weight = clip(sqrt(estimated_cost_s / 12.0), 1.0, 4.0)` | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
 | `sjf_aging_guarded` | 在 cost-aware `sjf_aging` 上增加 protected 队列；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时转入 protected，并按 `arrival_time` 优先；protected 请求开始执行后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
-| `sjf_aging_guarded_tail` | 保留 `sjf_aging_guarded` 的 protected 队列，但允许把极少数 very old super-heavy 请求按 bounded rule 沉到 tail；单轮最多沉 1 个，并受全局 + arrival-window 的双层预算约束 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习；沉降预算目标为 `5%`，但在全局/窗口 unique arrivals 至少为 `2` 时允许先借出 `1` 个 bootstrap sink slot；queue-local super-heavy 阈值为 `max(1.5 * queue_median_cost_s, queue_p75_cost_s)`；sink threshold 为 `max(protection_threshold_s, 1.5 * estimated_cost_s)`；hard escape threshold 为 `max(2.0 * learned_wait_guard_s, 4.0 * estimated_cost_s)`；未 sunk 的 protected 请求只有在 hard escape 后才会 run-to-completion |
+| `sjf_aging_guarded_tail` | 保留 `sjf_aging_guarded` 的 protected 队列，但允许把极少数 very old super-heavy 请求按 bounded rule 沉到 tail；未 sunk 的 protected 会继续拆成 `hard_escape protected` 与 `soft protected`，前者绝对优先，后者退到 normal 之后 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习；沉降预算目标为 `5%`，但在全局/窗口 unique arrivals 至少为 `2` 时允许先借出 `1` 个 bootstrap sink slot；queue-local super-heavy 阈值为 `max(1.5 * queue_median_cost_s, queue_p75_cost_s)`；sink threshold 为 `max(protection_threshold_s, 1.5 * estimated_cost_s)`；hard escape threshold 为 `max(2.0 * learned_wait_guard_s, 4.0 * estimated_cost_s)`；未 sunk 的 protected 请求只有在 hard escape 后才会 run-to-completion |
 | `bypass_guard_sjf` | 默认按 cost-aware `sjf_aging` 排序；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时将 `can_bypass` 置为 `0`，锁定请求不再允许被后到请求插队，并在 dispatch 后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
 | `size_bucket_sjf_aging` | 先按固定分辨率 bucket 排序，再在 bucket 内按 `estimated_cost_s / (1 + aging_factor * age_s)` 排序；等待过久时允许跨 bucket 晋升 | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
 | `type_fifo_defer_budget` | 先按 request type 分 FIFO 子队列；type 间只比较队头 `aged_cost_s`；对最重 type 的老队头做 bounded defer，但只有在 `defer_relief_score > defer_harm_score` 且未进入 over-starved 区间时才允许延后 | `instance_scheduler_aging_factor`<br>`instance_scheduler_type_fifo_defer_budget_ratio` | `0.0`<br>`0.05`<br>`queue_wait_p95_s` 直接学习原始 queue-wait p95，不再固定 cap=120s；当前只使用动态 floor `max(15s, 0.5 * current_queue_median_estimated_cost_s)`；defer threshold 为 `max(queue_wait_p95_s, 2.0 * estimated_cost_s)`；over-starved threshold 为 `max(2.0 * queue_wait_p95_s, 3.0 * estimated_cost_s)`；`ratio` 同时充当全局 unique-request 牺牲上限和 arrival-based 滑动窗口上限，单次重排只会在这两层剩余预算内再取 queue-local budget |

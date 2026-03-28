@@ -1994,6 +1994,13 @@ class Stage1Scheduler(Scheduler):
             setattr(queued_request.request, "tail_protected", tail_protected)
             setattr(queued_request.request, "tail_sunk", tail_sunk)
             setattr(queued_request.request, "tail_hard_escape", hard_escape)
+            dispatch_group = "normal"
+            if tail_sunk:
+                dispatch_group = "sunk_tail"
+            elif tail_protected and hard_escape:
+                dispatch_group = "protected_hard_escape"
+            elif tail_protected:
+                dispatch_group = "protected_soft"
             metrics_by_sequence[queued_request.sequence_id] = {
                 "scheduler_policy": _SJF_AGING_GUARDED_TAIL_POLICY,
                 "queue_reorder_count": 1,
@@ -2018,7 +2025,7 @@ class Stage1Scheduler(Scheduler):
                 "defer_harm_score": 0.0,
                 "lighter_request_count": 0,
                 "lighter_mean_cost_s": estimated_cost_s,
-                "dispatch_group": "sunk_tail" if tail_sunk else "protected" if tail_protected else "normal",
+                "dispatch_group": dispatch_group,
             }
 
         budget_status = self._sjf_aging_guarded_tail_budget_status()
@@ -2100,9 +2107,12 @@ class Stage1Scheduler(Scheduler):
         ordered_queue = sorted(
             waiting_requests,
             key=lambda queued: (
-                2
+                3
                 if metrics_by_sequence[queued.sequence_id]["tail_sunk"]
                 else 0
+                if metrics_by_sequence[queued.sequence_id]["tail_protected"]
+                and metrics_by_sequence[queued.sequence_id]["hard_escape"]
+                else 2
                 if metrics_by_sequence[queued.sequence_id]["tail_protected"]
                 else 1,
                 float(getattr(queued.request, "arrival_time", queued.enqueue_time))
@@ -2521,7 +2531,7 @@ class Stage1Scheduler(Scheduler):
                     queued_request.schedule_metrics.update(metrics)
             request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
             logger.info(
-                "QUEUE_REORDER request_id=%s policy=%s estimated_cost_s=%.4f aged_cost_s=%.4f age_s=%.4f tail_protected=%s tail_sunk=%s protection_threshold_s=%.4f sink_threshold_s=%.4f queue_rank=%s",
+                "QUEUE_REORDER request_id=%s policy=%s estimated_cost_s=%.4f aged_cost_s=%.4f age_s=%.4f tail_protected=%s tail_sunk=%s hard_escape=%s protection_threshold_s=%.4f sink_threshold_s=%.4f queue_rank=%s",
                 self._request_label(new_request.request),
                 policy,
                 float(request_metrics.get("estimated_cost_s", 0.0) or 0.0),
@@ -2529,6 +2539,7 @@ class Stage1Scheduler(Scheduler):
                 float(request_metrics.get("age_s", 0.0) or 0.0),
                 request_metrics.get("tail_protected"),
                 request_metrics.get("tail_sunk"),
+                request_metrics.get("hard_escape"),
                 float(request_metrics.get("protection_threshold_s", 0.0) or 0.0),
                 float(request_metrics.get("sink_threshold_s", 0.0) or 0.0),
                 request_metrics.get("queue_rank"),
