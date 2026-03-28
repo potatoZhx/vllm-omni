@@ -258,7 +258,7 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid"],
+            choices=["fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid", "p95-fusion"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'sjf_aging' adds wait-time aging "
             "on top of SJF to prevent starvation and works with chunk requeue, 'sjf_aging_guarded' adds a protected queue once requests age past a learned wait guard, 'bypass_guard_sjf' learns when a request should stop being bypassable and then runs it to completion, 'size_bucket_sjf_aging' "
@@ -266,8 +266,8 @@ class OmniServeCommand(CLISubcommand):
             "'slo_first' keeps "
             "the current deadline-aware on-time/tail ordering, 'p95-first' uses normalized "
             "tail-pressure ranking learned from observed runtime and request slowdown, 'p95-first-deadline' uses the same normalized learning path to derive synthetic deadlines and then orders by slack/deadline pressure, 'p95-bucket-sjf' derives a local target p95 from request cost and history, then orders by deadline buckets with intra-bucket SJF, while 'p95-bucket-sjf-normalized' keeps the same bucketed SJF structure but replaces that target with the normalized p95-first estimator, 'slack_age' prioritizes tight/old requests, 'slack_cost_age' adds "
-            "a bounded remaining-cost penalty on top of slack+aging, and 'slack_hybrid' switches "
-            "between panic EDF and throughput SRPT+aging based on the slack ratio threshold.",
+            "a bounded remaining-cost penalty on top of slack+aging, 'slack_hybrid' switches "
+            "between panic EDF and throughput SRPT+aging based on the slack ratio threshold, and 'p95-fusion' adds a logical heavy-request tail lane plus bounded heavy/non-heavy rotation on top of the normalized p95 estimation path.",
         )
         omni_config_group.add_argument(
             "--instance-scheduler-slo-target-ms",
@@ -377,6 +377,60 @@ class OmniServeCommand(CLISubcommand):
             type=float,
             default=0.05,
             help="Strict deferred-request ratio used by 'type_fifo_defer_budget' as both the global unique-request ceiling and the sliding-window local budget ceiling.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-tail-budget-ratio",
+            type=float,
+            default=0.10,
+            help="Logical tail-lane ratio used by 'p95-fusion' when selecting heavy requests to protect.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-heavy-threshold-s",
+            type=float,
+            default=20.0,
+            help="Estimated remaining service threshold in seconds above which 'p95-fusion' treats a request as heavy.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-urgent-slack-ratio",
+            type=float,
+            default=1.0,
+            help="Slack-ratio threshold below which 'p95-fusion' marks a request urgent.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-promote-wait-s",
+            type=float,
+            default=60.0,
+            help="Wait-time threshold in seconds after which an aged heavy request is promoted into the urgent set in 'p95-fusion'.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-nonheavy-streak-limit",
+            type=int,
+            default=4,
+            help="Maximum consecutive non-heavy dispatches before 'p95-fusion' forces one protected heavy turn when available.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-growth-every",
+            type=int,
+            default=20,
+            help="Arrival interval used by 'p95-fusion' to grow borrowed tail-lane capacity.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-borrowed-cap-max",
+            type=int,
+            default=4,
+            help="Maximum borrowed tail-lane capacity allowed by 'p95-fusion'.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-min-chunk-steps",
+            type=int,
+            default=1,
+            help="Minimum chunk size used by 'p95-fusion' when it overrides per-request chunk budgets.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-p95-fusion-max-chunk-steps",
+            type=int,
+            default=8,
+            help="Maximum chunk size used by 'p95-fusion' when it overrides per-request chunk budgets for heavy requests.",
         )
         omni_config_group.add_argument(
             "--instance-runtime-profile-path",

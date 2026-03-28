@@ -40,6 +40,8 @@ class OmniDiffusionRequest:
     dispatch_epoch: int = 0
     estimated_cost_s: float | None = None
     deadline_ts: float | None = None
+    scheduler_force_run_to_completion: bool = False
+    scheduler_chunk_budget_steps: int | None = None
 
     @property
     def primary_request_id(self) -> str:

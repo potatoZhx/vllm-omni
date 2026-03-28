@@ -55,6 +55,15 @@ def _make_stage1_scheduler(
     profile_name: str | None = None,
     slack_panic_threshold: float = 1.0,
     slack_swap_overhead_ms: float = 0.0,
+    p95_fusion_tail_budget_ratio: float = 0.10,
+    p95_fusion_heavy_threshold_s: float = 20.0,
+    p95_fusion_urgent_slack_ratio: float = 1.0,
+    p95_fusion_promote_wait_s: float = 60.0,
+    p95_fusion_nonheavy_streak_limit: int = 4,
+    p95_fusion_growth_every: int = 20,
+    p95_fusion_borrowed_cap_max: int = 4,
+    p95_fusion_min_chunk_steps: int = 1,
+    p95_fusion_max_chunk_steps: int = 8,
 ):
     sched = Stage1Scheduler()
     sched.num_workers = 1
@@ -79,6 +88,15 @@ def _make_stage1_scheduler(
         instance_scheduler_slack_panic_threshold=slack_panic_threshold,
         instance_scheduler_slack_swap_overhead_ms=slack_swap_overhead_ms,
         instance_scheduler_type_fifo_defer_budget_ratio=type_fifo_defer_budget_ratio,
+        instance_scheduler_p95_fusion_tail_budget_ratio=p95_fusion_tail_budget_ratio,
+        instance_scheduler_p95_fusion_heavy_threshold_s=p95_fusion_heavy_threshold_s,
+        instance_scheduler_p95_fusion_urgent_slack_ratio=p95_fusion_urgent_slack_ratio,
+        instance_scheduler_p95_fusion_promote_wait_s=p95_fusion_promote_wait_s,
+        instance_scheduler_p95_fusion_nonheavy_streak_limit=p95_fusion_nonheavy_streak_limit,
+        instance_scheduler_p95_fusion_growth_every=p95_fusion_growth_every,
+        instance_scheduler_p95_fusion_borrowed_cap_max=p95_fusion_borrowed_cap_max,
+        instance_scheduler_p95_fusion_min_chunk_steps=p95_fusion_min_chunk_steps,
+        instance_scheduler_p95_fusion_max_chunk_steps=p95_fusion_max_chunk_steps,
         instance_runtime_profile_path=profile_path,
         instance_runtime_profile_name=profile_name,
     )
@@ -1995,3 +2013,131 @@ def test_stage1_scheduler_p95_bucket_sjf_starvation_promotion_moves_request_forw
     assert metrics["starvation_promoted"] == 1
     assert metrics["effective_bucket_id"] == 0
     assert metrics["raw_bucket_id"] > metrics["effective_bucket_id"]
+
+
+def test_stage1_scheduler_p95_fusion_grows_borrowed_cap_on_arrival():
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="p95-fusion",
+        p95_fusion_growth_every=2,
+        p95_fusion_borrowed_cap_max=3,
+    )
+
+    with sched._queue_cv:
+        for idx in range(4):
+            req = _mock_request(f"req-{idx}", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+            sched._enqueue_request_locked(req)
+
+    assert sched._p95_fusion_arrival_count == 4
+    assert sched._p95_fusion_borrowed_cap == 2
+
+
+def test_stage1_scheduler_p95_fusion_rotates_heavy_request_into_order():
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="p95-fusion",
+        p95_fusion_tail_budget_ratio=0.5,
+        p95_fusion_heavy_threshold_s=10.0,
+        p95_fusion_promote_wait_s=100.0,
+        p95_fusion_nonheavy_streak_limit=2,
+        p95_fusion_min_chunk_steps=2,
+        p95_fusion_max_chunk_steps=6,
+    )
+    sched._p95_fusion_nonheavy_streak = 0
+    sched._p95_first_latency_history_ms.extend([100000.0])
+    now = time.monotonic()
+
+    short_one = _mock_request("short-1", num_inference_steps=1, extra_args={"estimated_cost_s": 2.0})
+    short_one.arrival_time = now - 1.0
+    short_two = _mock_request("short-2", num_inference_steps=1, extra_args={"estimated_cost_s": 3.0})
+    short_two.arrival_time = now - 2.0
+    heavy = _mock_request("heavy", num_inference_steps=24, extra_args={"estimated_cost_s": 25.0})
+    heavy.arrival_time = now - 5.0
+
+    with sched._queue_cv:
+        q1 = sched._enqueue_request_locked(short_one)
+        q2 = sched._enqueue_request_locked(short_two)
+        q3 = sched._enqueue_request_locked(heavy)
+        ordered, metrics_by_sequence = sched._build_p95_fusion_queue([q1, q2, q3], now=now)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["short-1", "short-2", "heavy"]
+    heavy_metrics = metrics_by_sequence[q3.sequence_id]
+    assert heavy_metrics["tail_lane_selected"] == 1
+    assert heavy_metrics["is_heavy"] == 1
+    assert heavy_metrics["scheduler_force_run_to_completion"] == 0
+    assert heavy_metrics["scheduler_chunk_budget_steps"] == 6
+    assert heavy.scheduler_chunk_budget_steps == 6
+
+
+def test_stage1_scheduler_p95_fusion_marks_overdue_heavy_for_run_to_completion():
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="p95-fusion",
+        p95_fusion_tail_budget_ratio=0.5,
+        p95_fusion_heavy_threshold_s=10.0,
+        p95_fusion_promote_wait_s=30.0,
+        p95_fusion_min_chunk_steps=2,
+        p95_fusion_max_chunk_steps=6,
+    )
+    now = time.monotonic()
+
+    overdue_heavy = _mock_request("overdue-heavy", num_inference_steps=24, extra_args={"estimated_cost_s": 25.0})
+    overdue_heavy.arrival_time = now - 70.0
+
+    with sched._queue_cv:
+        queued = sched._enqueue_request_locked(overdue_heavy)
+        ordered, metrics_by_sequence = sched._build_p95_fusion_queue([queued], now=now)  # noqa: SLF001
+
+    assert [item.request.request_ids[0] for item in ordered] == ["overdue-heavy"]
+    metrics = metrics_by_sequence[queued.sequence_id]
+    assert metrics["is_urgent"] == 1
+    assert metrics["tail_lane_selected"] == 1
+    assert metrics["scheduler_force_run_to_completion"] == 1
+    assert overdue_heavy.scheduler_force_run_to_completion is True
+
+
+def test_stage1_scheduler_p95_fusion_applies_chunk_override_to_heavy_requests_outside_tail_lane():
+    sched, _req_q, _res_q = _make_stage1_scheduler(
+        policy="p95-fusion",
+        p95_fusion_tail_budget_ratio=0.1,
+        p95_fusion_heavy_threshold_s=10.0,
+        p95_fusion_promote_wait_s=100.0,
+        p95_fusion_min_chunk_steps=2,
+        p95_fusion_max_chunk_steps=6,
+    )
+    sched._p95_first_latency_history_ms.extend([100000.0])
+    now = time.monotonic()
+
+    heavy_a = _mock_request("heavy-a", num_inference_steps=24, extra_args={"estimated_cost_s": 25.0})
+    heavy_a.arrival_time = now - 4.0
+    heavy_b = _mock_request("heavy-b", num_inference_steps=20, extra_args={"estimated_cost_s": 18.0})
+    heavy_b.arrival_time = now - 1.0
+
+    with sched._queue_cv:
+        q1 = sched._enqueue_request_locked(heavy_a)
+        q2 = sched._enqueue_request_locked(heavy_b)
+        _ordered, metrics_by_sequence = sched._build_p95_fusion_queue([q1, q2], now=now)  # noqa: SLF001
+
+    selected_count = sum(metrics["tail_lane_selected"] for metrics in metrics_by_sequence.values())
+    assert selected_count == 1
+    assert metrics_by_sequence[q1.sequence_id]["scheduler_chunk_budget_steps"] == 6
+    assert metrics_by_sequence[q2.sequence_id]["scheduler_chunk_budget_steps"] == 6
+    assert heavy_a.scheduler_chunk_budget_steps == 6
+    assert heavy_b.scheduler_chunk_budget_steps == 6
+
+
+def test_stage1_scheduler_p95_fusion_resets_nonheavy_streak_when_scheduler_goes_idle():
+    sched, req_q, res_q = _make_stage1_scheduler(policy="p95-fusion")
+    req = _mock_request("req-idle-reset", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+    sched._p95_first_latency_history_ms.extend([100000.0])
+    sched._p95_fusion_nonheavy_streak = 3
+
+    def _worker():
+        req_q.get(timeout=5)
+        res_q.put(DiffusionOutput(output=torch.tensor([1]), request_id="req-idle-reset"))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    output = sched.add_req(req)
+    worker.join(5)
+
+    assert output.error is None
+    assert sched._p95_fusion_nonheavy_streak == 0

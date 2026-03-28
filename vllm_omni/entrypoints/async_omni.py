@@ -209,6 +209,33 @@ class AsyncOmni(OmniBase):
                     "instance_scheduler_slack_swap_overhead_ms": kwargs.get(
                         "instance_scheduler_slack_swap_overhead_ms", 0.0
                     ),
+                    "instance_scheduler_p95_fusion_tail_budget_ratio": kwargs.get(
+                        "instance_scheduler_p95_fusion_tail_budget_ratio", 0.10
+                    ),
+                    "instance_scheduler_p95_fusion_heavy_threshold_s": kwargs.get(
+                        "instance_scheduler_p95_fusion_heavy_threshold_s", 20.0
+                    ),
+                    "instance_scheduler_p95_fusion_urgent_slack_ratio": kwargs.get(
+                        "instance_scheduler_p95_fusion_urgent_slack_ratio", 1.0
+                    ),
+                    "instance_scheduler_p95_fusion_promote_wait_s": kwargs.get(
+                        "instance_scheduler_p95_fusion_promote_wait_s", 60.0
+                    ),
+                    "instance_scheduler_p95_fusion_nonheavy_streak_limit": kwargs.get(
+                        "instance_scheduler_p95_fusion_nonheavy_streak_limit", 4
+                    ),
+                    "instance_scheduler_p95_fusion_growth_every": kwargs.get(
+                        "instance_scheduler_p95_fusion_growth_every", 20
+                    ),
+                    "instance_scheduler_p95_fusion_borrowed_cap_max": kwargs.get(
+                        "instance_scheduler_p95_fusion_borrowed_cap_max", 4
+                    ),
+                    "instance_scheduler_p95_fusion_min_chunk_steps": kwargs.get(
+                        "instance_scheduler_p95_fusion_min_chunk_steps", 1
+                    ),
+                    "instance_scheduler_p95_fusion_max_chunk_steps": kwargs.get(
+                        "instance_scheduler_p95_fusion_max_chunk_steps", 8
+                    ),
                     "instance_runtime_profile_path": kwargs.get("instance_runtime_profile_path", None),
                     "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
                     "diffusion_engine_max_concurrency": kwargs.get("diffusion_engine_max_concurrency", 32),

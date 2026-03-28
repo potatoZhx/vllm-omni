@@ -138,6 +138,8 @@ class DiffusionEngine:
         assert output is not None
         scheduler_metrics = dict(getattr(output, "metrics", {}) or {})
         request.max_steps_this_turn = None
+        request.scheduler_force_run_to_completion = False
+        request.scheduler_chunk_budget_steps = None
 
         if output.output is None:
             logger.warning("Output is None, returning empty OmniRequestOutput")
@@ -246,6 +248,14 @@ class DiffusionEngine:
         remaining_steps = max(total_steps - executed_steps, 0)
         if remaining_steps == 0:
             return 1
+
+        if bool(getattr(request, "scheduler_force_run_to_completion", False)):
+            return remaining_steps
+
+        scheduler_chunk_budget_steps = getattr(request, "scheduler_chunk_budget_steps", None)
+        if scheduler_chunk_budget_steps is not None:
+            requested_budget = max(int(scheduler_chunk_budget_steps), 1)
+            return min(remaining_steps, requested_budget)
 
         if self._is_small_request_by_runtime(request):
             return remaining_steps

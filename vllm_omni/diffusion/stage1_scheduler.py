@@ -29,6 +29,7 @@ _BYPASS_GUARD_SJF_POLICY = "bypass_guard_sjf"
 _SIZE_BUCKET_SJF_AGING_POLICY = "size_bucket_sjf_aging"
 _TYPE_FIFO_DEFER_BUDGET_POLICY = "type_fifo_defer_budget"
 _SLACK_HYBRID_POLICY = "slack_hybrid"
+_P95_FUSION_POLICY = "p95-fusion"
 _P95_FIRST_HISTORY_MAXLEN = 128
 _P95_FIRST_MIN_HISTORY_FOR_QUANTILE = 20
 _P95_FIRST_SERVICE_RATE_EMA_ALPHA = 0.1
@@ -54,7 +55,13 @@ _TYPE_FIFO_DEFER_OVERSTARVED_COST_MULTIPLIER = 3.0
 _FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
 _SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
-_NORMALIZED_P95_POLICIES = {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY}
+_P95_FUSION_MAX_LANE_RATIO = 0.35
+_NORMALIZED_P95_POLICIES = {
+    _P95_FIRST_POLICY,
+    _P95_FIRST_DEADLINE_POLICY,
+    _P95_BUCKET_SJF_NORMALIZED_POLICY,
+    _P95_FUSION_POLICY,
+}
 _LEARNED_P95_DEADLINE_POLICIES = _DEADLINE_AWARE_POLICIES | {_P95_FIRST_POLICY, _SLACK_HYBRID_POLICY}
 
 
@@ -108,6 +115,9 @@ class Stage1Scheduler(Scheduler):
         self._type_fifo_defer_window_deferred_request_ids: set[str] = set()
         self._p95_first_observed_service_ms_per_work_unit: float | None = None
         self._p95_first_cold_start_max_ms = 0.0
+        self._p95_fusion_nonheavy_streak = 0
+        self._p95_fusion_arrival_count = 0
+        self._p95_fusion_borrowed_cap = 0
 
     @staticmethod
     def _request_label(request: OmniDiffusionRequest) -> str:
@@ -1925,6 +1935,297 @@ class Stage1Scheduler(Scheduler):
 
         return ordered_queue, metrics_by_sequence
 
+    def _p95_fusion_tail_budget_ratio(self) -> float:
+        value = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_p95_fusion_tail_budget_ratio", None)
+        )
+        if value is None:
+            return 0.10
+        return min(max(value, 1e-9), 1.0)
+
+    def _p95_fusion_heavy_threshold_s(self) -> float:
+        value = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_p95_fusion_heavy_threshold_s", None)
+        )
+        if value is None:
+            return 20.0
+        return max(value, 1e-9)
+
+    def _p95_fusion_urgent_slack_ratio(self) -> float:
+        value = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_p95_fusion_urgent_slack_ratio", None)
+        )
+        if value is None:
+            return 1.0
+        return max(value, 0.0)
+
+    def _p95_fusion_promote_wait_s(self) -> float:
+        value = self._safe_optional_float(
+            getattr(self.od_config, "instance_scheduler_p95_fusion_promote_wait_s", None)
+        )
+        if value is None:
+            return 60.0
+        return max(value, 1e-9)
+
+    def _p95_fusion_nonheavy_streak_limit(self) -> int:
+        return max(
+            self._safe_int(
+                getattr(self.od_config, "instance_scheduler_p95_fusion_nonheavy_streak_limit", 4),
+                4,
+            ),
+            1,
+        )
+
+    def _p95_fusion_growth_every(self) -> int:
+        return max(
+            self._safe_int(getattr(self.od_config, "instance_scheduler_p95_fusion_growth_every", 20), 20),
+            1,
+        )
+
+    def _p95_fusion_borrowed_cap_max(self) -> int:
+        return max(
+            self._safe_int(
+                getattr(self.od_config, "instance_scheduler_p95_fusion_borrowed_cap_max", 4),
+                4,
+            ),
+            0,
+        )
+
+    def _p95_fusion_min_chunk_steps(self) -> int:
+        return max(
+            self._safe_int(
+                getattr(self.od_config, "instance_scheduler_p95_fusion_min_chunk_steps", 1),
+                1,
+            ),
+            1,
+        )
+
+    def _p95_fusion_max_chunk_steps(self) -> int:
+        return max(
+            self._safe_int(
+                getattr(self.od_config, "instance_scheduler_p95_fusion_max_chunk_steps", 8),
+                8,
+            ),
+            self._p95_fusion_min_chunk_steps(),
+        )
+
+    @staticmethod
+    def _reset_scheduler_chunk_annotations(request: OmniDiffusionRequest) -> None:
+        setattr(request, "scheduler_force_run_to_completion", False)
+        setattr(request, "scheduler_chunk_budget_steps", None)
+
+    def _build_p95_fusion_queue(
+        self,
+        waiting_requests: list[_QueuedRequest],
+        now: float,
+    ) -> tuple[list[_QueuedRequest], dict[int, dict[str, Any]]]:
+        if not waiting_requests:
+            return [], {}
+
+        dynamic_p95_ms, backlog_s, learned_p95_ms, backlog_adjusted_p95_ms = self._compute_dynamic_p95_ms(
+            waiting_requests,
+            now,
+        )
+        learned_slowdown_p95 = self._learned_p95_first_slowdown()
+        active_chunk_blocking_ms = self._p95_first_active_chunk_blocking_ms(now)
+        heavy_threshold_s = self._p95_fusion_heavy_threshold_s()
+        urgent_slack_ratio = self._p95_fusion_urgent_slack_ratio()
+        promote_wait_s = self._p95_fusion_promote_wait_s()
+        min_chunk_steps = self._p95_fusion_min_chunk_steps()
+        max_chunk_steps = self._p95_fusion_max_chunk_steps()
+
+        metrics_by_sequence: dict[int, dict[str, Any]] = {}
+        tail_candidates: list[_QueuedRequest] = []
+
+        for queued_request in waiting_requests:
+            request = queued_request.request
+            self._reset_scheduler_chunk_annotations(request)
+            estimated_cost_s = max(self._queued_cost_seconds(queued_request), 1e-9)
+            estimated_service_ms = max(self._p95_first_estimated_service_ms(queued_request), 1e-9)
+            estimated_service_s = estimated_service_ms / 1000.0
+            age_s = self._request_age_seconds(queued_request, now)
+            target_latency_ms = max(dynamic_p95_ms, learned_slowdown_p95 * estimated_service_ms, 1e-9)
+            predicted_finish_latency_ms = max((age_s * 1000.0) + active_chunk_blocking_ms + estimated_service_ms, 0.0)
+            pressure_ratio = predicted_finish_latency_ms / max(target_latency_ms, 1e-9)
+            slack_s = (target_latency_ms / 1000.0) - age_s - estimated_service_s
+            slack_ratio = slack_s / max(estimated_service_s, 1e-9)
+            is_heavy = estimated_service_s >= heavy_threshold_s
+            is_urgent = slack_s <= 0.0 or slack_ratio <= urgent_slack_ratio or (is_heavy and age_s >= promote_wait_s)
+            tail_candidate = is_heavy
+
+            total_steps = max(self._safe_int(getattr(request.sampling_params, "num_inference_steps", 1), 1), 1)
+            executed_steps = max(self._safe_int(getattr(request, "executed_steps", 0), 0), 0)
+            remaining_steps = max(total_steps - executed_steps, 0)
+            chunk_budget_override_steps: int | None = None
+            force_run_to_completion = False
+            if is_heavy and remaining_steps > 0:
+                overdue_s = max(-slack_s, 0.0)
+                if is_urgent and overdue_s >= estimated_service_s:
+                    force_run_to_completion = True
+                else:
+                    chunk_budget_override_steps = min(max_chunk_steps, remaining_steps)
+                    chunk_budget_override_steps = max(min(chunk_budget_override_steps, remaining_steps), min_chunk_steps)
+
+            metrics_by_sequence[queued_request.sequence_id] = {
+                "scheduler_policy": _P95_FUSION_POLICY,
+                "queue_reorder_count": 1,
+                "estimated_cost_s": estimated_cost_s,
+                "estimated_service_ms": estimated_service_ms,
+                "estimated_service_s": estimated_service_s,
+                "dynamic_p95_ms": dynamic_p95_ms,
+                "learned_p95_ms": learned_p95_ms,
+                "backlog_adjusted_p95_ms": backlog_adjusted_p95_ms,
+                "learned_slowdown_p95": learned_slowdown_p95,
+                "backlog_s_at_schedule": backlog_s,
+                "instance_backlog_total_s": backlog_s,
+                "active_chunk_blocking_ms": active_chunk_blocking_ms,
+                "active_chunk_blocking_s": active_chunk_blocking_ms / 1000.0,
+                "target_latency_ms": target_latency_ms,
+                "predicted_finish_latency_ms": predicted_finish_latency_ms,
+                "pressure_ratio": pressure_ratio,
+                "slack_s": slack_s,
+                "slack_ratio": slack_ratio,
+                "age_s": age_s,
+                "is_heavy": int(is_heavy),
+                "is_urgent": int(is_urgent),
+                "tail_candidate": int(tail_candidate),
+                "tail_lane_selected": 0,
+                "tail_lane_rank": 0,
+                "scheduler_force_run_to_completion": int(force_run_to_completion),
+                "scheduler_chunk_budget_steps": chunk_budget_override_steps,
+                "remaining_steps": remaining_steps,
+                "dispatch_group": "rest",
+                "nonheavy_streak_seed": self._p95_fusion_nonheavy_streak,
+            }
+            if tail_candidate:
+                tail_candidates.append(queued_request)
+
+        ratio_cap = ceil(len(waiting_requests) * self._p95_fusion_tail_budget_ratio())
+        borrowed_cap = min(self._p95_fusion_borrowed_cap, self._p95_fusion_borrowed_cap_max())
+        lane_cap = min(max(ratio_cap, borrowed_cap), ceil(len(waiting_requests) * _P95_FUSION_MAX_LANE_RATIO))
+        tail_lane_sorted = sorted(
+            tail_candidates,
+            key=lambda queued: (
+                0 if metrics_by_sequence[queued.sequence_id]["is_urgent"] else 1,
+                float(metrics_by_sequence[queued.sequence_id]["slack_s"]),
+                -float(metrics_by_sequence[queued.sequence_id]["age_s"]),
+                queued.enqueue_time,
+                queued.sequence_id,
+            ),
+        )
+        if tail_lane_sorted:
+            lane_cap = min(max(lane_cap, 1), len(tail_lane_sorted))
+        tail_lane = tail_lane_sorted[:lane_cap]
+        for queued_request in waiting_requests:
+            request = queued_request.request
+            metrics = metrics_by_sequence[queued_request.sequence_id]
+            if bool(metrics["scheduler_force_run_to_completion"]):
+                setattr(request, "scheduler_force_run_to_completion", True)
+                setattr(request, "scheduler_chunk_budget_steps", None)
+            elif metrics["scheduler_chunk_budget_steps"] is not None:
+                setattr(request, "scheduler_chunk_budget_steps", int(metrics["scheduler_chunk_budget_steps"]))
+
+        for tail_lane_rank, queued_request in enumerate(tail_lane, start=1):
+            metrics = metrics_by_sequence[queued_request.sequence_id]
+            metrics["tail_lane_selected"] = 1
+            metrics["tail_lane_rank"] = tail_lane_rank
+            metrics["dispatch_group"] = "tail_lane"
+
+        urgent_all = sorted(
+            [
+                queued
+                for queued in waiting_requests
+                if metrics_by_sequence[queued.sequence_id]["is_urgent"]
+            ],
+            key=lambda queued: (
+                float(metrics_by_sequence[queued.sequence_id]["slack_s"]),
+                float(metrics_by_sequence[queued.sequence_id]["estimated_service_ms"]),
+                queued.enqueue_time,
+                queued.sequence_id,
+            ),
+        )
+        short_normal = sorted(
+            [
+                queued
+                for queued in waiting_requests
+                if not metrics_by_sequence[queued.sequence_id]["is_urgent"]
+                and not metrics_by_sequence[queued.sequence_id]["is_heavy"]
+            ],
+            key=lambda queued: (
+                float(metrics_by_sequence[queued.sequence_id]["estimated_service_ms"]),
+                -float(metrics_by_sequence[queued.sequence_id]["pressure_ratio"]),
+                queued.enqueue_time,
+                queued.sequence_id,
+            ),
+        )
+        nonurgent_tail_lane = [
+            queued
+            for queued in tail_lane
+            if not metrics_by_sequence[queued.sequence_id]["is_urgent"]
+        ]
+        rest = sorted(
+            [
+                queued
+                for queued in waiting_requests
+                if queued.sequence_id not in {req.sequence_id for req in urgent_all}
+                and queued.sequence_id not in {req.sequence_id for req in short_normal}
+                and queued.sequence_id not in {req.sequence_id for req in nonurgent_tail_lane}
+            ],
+            key=lambda queued: (
+                -float(metrics_by_sequence[queued.sequence_id]["pressure_ratio"]),
+                float(metrics_by_sequence[queued.sequence_id]["estimated_service_ms"]),
+                queued.enqueue_time,
+                queued.sequence_id,
+            ),
+        )
+
+        ordered_queue: list[_QueuedRequest] = []
+        local_nonheavy_streak = self._p95_fusion_nonheavy_streak
+        nonheavy_streak_limit = self._p95_fusion_nonheavy_streak_limit()
+        pending_urgent = deque(urgent_all)
+        pending_short = deque(short_normal)
+        pending_tail = deque(nonurgent_tail_lane)
+        pending_rest = deque(rest)
+
+        while pending_urgent or pending_short or pending_tail or pending_rest:
+            next_request: _QueuedRequest | None = None
+            if pending_urgent:
+                next_request = pending_urgent.popleft()
+            elif local_nonheavy_streak >= nonheavy_streak_limit and pending_tail:
+                next_request = pending_tail.popleft()
+            elif pending_short:
+                next_request = pending_short.popleft()
+            elif pending_tail:
+                next_request = pending_tail.popleft()
+            elif pending_rest:
+                next_request = pending_rest.popleft()
+
+            assert next_request is not None
+            ordered_queue.append(next_request)
+            if metrics_by_sequence[next_request.sequence_id]["is_heavy"]:
+                local_nonheavy_streak = 0
+            else:
+                local_nonheavy_streak += 1
+
+        for queue_rank, queued_request in enumerate(ordered_queue, start=1):
+            metrics = metrics_by_sequence[queued_request.sequence_id]
+            metrics["queue_rank"] = queue_rank
+            metrics["tail_budget_ratio"] = self._p95_fusion_tail_budget_ratio()
+            metrics["ratio_cap"] = ratio_cap
+            metrics["borrowed_cap"] = borrowed_cap
+            metrics["lane_cap"] = lane_cap
+            metrics["nonheavy_streak_limit"] = nonheavy_streak_limit
+            if metrics["is_urgent"]:
+                metrics["dispatch_group"] = "urgent"
+            elif metrics["tail_lane_selected"]:
+                metrics["dispatch_group"] = "tail_lane"
+            elif not metrics["is_heavy"]:
+                metrics["dispatch_group"] = "short_normal"
+            else:
+                metrics["dispatch_group"] = "rest"
+
+        return ordered_queue, metrics_by_sequence
+
     def _maybe_reorder_waiting_queue(self, new_request: _QueuedRequest, now: float) -> None:
         policy = self._policy_name()
         if policy == "fcfs":
@@ -2162,6 +2463,30 @@ class Stage1Scheduler(Scheduler):
             )
             return
 
+        if policy == _P95_FUSION_POLICY:
+            ordered_queue, metrics_by_sequence = self._build_p95_fusion_queue(list(self._waiting_queue), now)
+            self._waiting_queue = deque(ordered_queue)
+            for queued_request in self._waiting_queue:
+                metrics = metrics_by_sequence.get(queued_request.sequence_id)
+                if metrics is not None:
+                    queued_request.schedule_metrics.update(metrics)
+            request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
+            logger.info(
+                "QUEUE_REORDER request_id=%s policy=%s estimated_service_ms=%.2f pressure_ratio=%.4f slack_s=%.4f heavy=%s urgent=%s tail_lane=%s queue_rank=%s chunk_budget_steps=%s force_run=%s",
+                self._request_label(new_request.request),
+                policy,
+                float(request_metrics.get("estimated_service_ms", 0.0) or 0.0),
+                float(request_metrics.get("pressure_ratio", 0.0) or 0.0),
+                float(request_metrics.get("slack_s", 0.0) or 0.0),
+                request_metrics.get("is_heavy"),
+                request_metrics.get("is_urgent"),
+                request_metrics.get("tail_lane_selected"),
+                request_metrics.get("queue_rank"),
+                request_metrics.get("scheduler_chunk_budget_steps"),
+                request_metrics.get("scheduler_force_run_to_completion"),
+            )
+            return
+
         if policy not in _DEADLINE_AWARE_POLICIES:
             return
 
@@ -2327,6 +2652,7 @@ class Stage1Scheduler(Scheduler):
             setattr(request, "arrival_time", enqueue_time)
         if getattr(request, "first_enqueue_time", None) is None:
             setattr(request, "first_enqueue_time", enqueue_time)
+        self._reset_scheduler_chunk_annotations(request)
         self._set_request_state(request, "waiting")
         for request_id in self._request_ids(request):
             self._aborted_request_ids.discard(request_id)
@@ -2338,9 +2664,16 @@ class Stage1Scheduler(Scheduler):
             schedule_metrics={"scheduler_policy": self._policy_name()},
         )
         self._waiting_queue.append(queued_request)
+        if is_new_arrival and self._policy_name() == _P95_FUSION_POLICY:
+            self._p95_fusion_arrival_count += 1
+            if self._p95_fusion_arrival_count % self._p95_fusion_growth_every() == 0:
+                self._p95_fusion_borrowed_cap = min(
+                    self._p95_fusion_borrowed_cap + 1,
+                    self._p95_fusion_borrowed_cap_max(),
+                )
         if is_new_arrival and self._policy_name() == _TYPE_FIFO_DEFER_BUDGET_POLICY:
             self._track_type_fifo_defer_arrival(request)
-        if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
+        if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY, _P95_FUSION_POLICY}:
             self._record_p95_first_cost_observation(queued_request)
         self._maybe_reorder_waiting_queue(queued_request, enqueue_time)
         self._log_request_event(
@@ -2531,6 +2864,11 @@ class Stage1Scheduler(Scheduler):
         chunk_work_units = self._completed_chunk_work_units(request, output, previous_executed_steps)
         self._sync_request_progress_from_output(request, output)
         output = self._annotate_output(output, queued_request, request, queue_wait_ms, execute_latency_ms)
+        if self._policy_name() == _P95_FUSION_POLICY and not output.error:
+            if int(output.metrics.get("is_heavy", 0) or 0):
+                self._p95_fusion_nonheavy_streak = 0
+            else:
+                self._p95_fusion_nonheavy_streak += 1
         if self._policy_name() in _NORMALIZED_P95_POLICIES and not output.error:
             previous_total_execute_ms = self._safe_optional_float(getattr(request, "_p95_first_cumulative_execute_ms", None))
             total_execute_ms = (previous_total_execute_ms or 0.0) + execute_latency_ms
@@ -2607,7 +2945,7 @@ class Stage1Scheduler(Scheduler):
             self.finish_request(request)
             setattr(request, "completion_time", time.monotonic())
             self._refresh_output_metrics(output, request, queue_len=len(self._waiting_queue))
-            if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
+            if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY, _P95_FUSION_POLICY}:
                 self._record_p95_first_latency_ms(
                     self._safe_optional_float(output.metrics.get("scheduler_latency_ms")),
                     request=request,
@@ -2649,6 +2987,8 @@ class Stage1Scheduler(Scheduler):
             )
 
         with self._queue_cv:
+            if self._policy_name() == _P95_FUSION_POLICY and not self._waiting_queue:
+                self._p95_fusion_nonheavy_streak = 0
             self._active_request = None
             self._active_started_at = None
             self._queue_cv.notify_all()
