@@ -794,24 +794,24 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_soft_protected_request_yields_t
     assert ordered[-1].schedule_metrics["dispatch_group"] == "protected_soft"
 
 
-def test_stage1_scheduler_sjf_aging_guarded_tail_hard_escape_request_stays_ahead_of_normal_queue():
+def test_stage1_scheduler_sjf_aging_guarded_tail_very_old_request_still_stays_soft_protected():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
     now = time.monotonic()
-    hard_escape = _mock_request("tail-hard-escape", num_inference_steps=25, extra_args={"estimated_cost_s": 4.0})
+    very_old = _mock_request("tail-hard-escape", num_inference_steps=25, extra_args={"estimated_cost_s": 4.0})
     short_normal = _mock_request("tail-hard-short", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
-    hard_escape.arrival_time = now - 200.0
+    very_old.arrival_time = now - 200.0
     short_normal.arrival_time = now - 1.0
 
     with sched._queue_cv:
-        sched._enqueue_request_locked(hard_escape)
+        sched._enqueue_request_locked(very_old)
         sched._enqueue_request_locked(short_normal)
         ordered = list(sched._waiting_queue)
 
-    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-hard-escape", "tail-hard-short"]
-    assert ordered[0].schedule_metrics["tail_protected"] == 1
-    assert ordered[0].schedule_metrics["tail_sunk"] == 0
-    assert ordered[0].schedule_metrics["hard_escape"] == 1
-    assert ordered[0].schedule_metrics["dispatch_group"] == "protected_hard_escape"
+    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-hard-short", "tail-hard-escape"]
+    assert ordered[-1].schedule_metrics["tail_protected"] == 1
+    assert ordered[-1].schedule_metrics["tail_sunk"] == 0
+    assert ordered[-1].schedule_metrics["hard_escape"] == 0
+    assert ordered[-1].schedule_metrics["dispatch_group"] == "protected_soft"
 
 
 def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sunk_request_at_tail_across_reorders():
@@ -888,7 +888,7 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_requeues_running_sunk_request_b
     assert ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
 
 
-def test_stage1_scheduler_sjf_aging_guarded_tail_releases_sticky_sink_after_hard_escape():
+def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sticky_sink_even_after_crossing_legacy_hard_escape_threshold():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
     now = time.monotonic()
     old_mid = _mock_request("tail-hard-release", num_inference_steps=25, extra_args={"estimated_cost_s": 10.0})
@@ -924,10 +924,10 @@ def test_stage1_scheduler_sjf_aging_guarded_tail_releases_sticky_sink_after_hard
         sched._enqueue_request_locked(late_short)
         ordered = list(sched._waiting_queue)
 
-    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-hard-release", "tail-hard-release-short-3"]
-    assert ordered[0].schedule_metrics["tail_sunk"] == 0
-    assert ordered[0].schedule_metrics["hard_escape"] == 1
-    assert ordered[0].schedule_metrics["dispatch_group"] == "protected_hard_escape"
+    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-hard-release-short-3", "tail-hard-release"]
+    assert ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert ordered[-1].schedule_metrics["hard_escape"] == 0
+    assert ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
 
 
 def test_stage1_scheduler_sjf_aging_guarded_tail_respects_five_percent_budget():

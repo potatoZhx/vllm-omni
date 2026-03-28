@@ -1987,18 +1987,13 @@ class Stage1Scheduler(Scheduler):
             )
             request_key = self._sjf_aging_guarded_tail_request_key(queued_request.request)
             tail_sunk = request_key in self._sjf_aging_guarded_tail_active_sunk_request_ids
-            hard_escape = age_s >= hard_escape_threshold_s
-            if tail_sunk and age_s >= hard_escape_threshold_s:
-                self._sjf_aging_guarded_tail_active_sunk_request_ids.discard(request_key)
-                tail_sunk = False
+            hard_escape = False
             setattr(queued_request.request, "tail_protected", tail_protected)
             setattr(queued_request.request, "tail_sunk", tail_sunk)
             setattr(queued_request.request, "tail_hard_escape", hard_escape)
             dispatch_group = "normal"
             if tail_sunk:
                 dispatch_group = "sunk_tail"
-            elif tail_protected and hard_escape:
-                dispatch_group = "protected_hard_escape"
             elif tail_protected:
                 dispatch_group = "protected_soft"
             metrics_by_sequence[queued_request.sequence_id] = {
@@ -2072,13 +2067,12 @@ class Stage1Scheduler(Scheduler):
                 lighter_mean_cost_s = sum(lighter_costs) / float(lighter_request_count)
                 defer_relief_score = float(lighter_request_count) * max(estimated_cost_s - lighter_mean_cost_s, 0.0)
                 defer_harm_score = estimated_cost_s * max(age_s / max(hard_escape_threshold_s, 1e-9), 1.0)
-                hard_escape = age_s >= hard_escape_threshold_s
                 request_metrics["lighter_request_count"] = lighter_request_count
                 request_metrics["lighter_mean_cost_s"] = lighter_mean_cost_s
                 request_metrics["defer_relief_score"] = defer_relief_score
                 request_metrics["defer_harm_score"] = defer_harm_score
-                request_metrics["hard_escape"] = int(hard_escape)
-                if age_s >= sink_threshold_s and not hard_escape:
+                request_metrics["hard_escape"] = 0
+                if age_s >= sink_threshold_s:
                     eligible_candidates.append(
                         (
                             -defer_relief_score,
@@ -2107,14 +2101,11 @@ class Stage1Scheduler(Scheduler):
         ordered_queue = sorted(
             waiting_requests,
             key=lambda queued: (
-                3
+                2
                 if metrics_by_sequence[queued.sequence_id]["tail_sunk"]
-                else 0
+                else 1
                 if metrics_by_sequence[queued.sequence_id]["tail_protected"]
-                and metrics_by_sequence[queued.sequence_id]["hard_escape"]
-                else 2
-                if metrics_by_sequence[queued.sequence_id]["tail_protected"]
-                else 1,
+                else 0,
                 float(getattr(queued.request, "arrival_time", queued.enqueue_time))
                 if metrics_by_sequence[queued.sequence_id]["tail_protected"]
                 or metrics_by_sequence[queued.sequence_id]["tail_sunk"]
