@@ -16,12 +16,13 @@
 
 ## 1. 当前支持的策略
 
-`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 15 种取值：
+`OmniDiffusionConfig.instance_scheduler_policy` 当前支持以下 17 种取值：
 
 - `fcfs`
 - `sjf`
 - `sjf_aging`
 - `sjf_aging_guarded`
+- `sjf_aging_guarded_tail`
 - `bypass_guard_sjf`
 - `size_bucket_sjf_aging`
 - `type_fifo_defer_budget`
@@ -30,6 +31,7 @@
 - `p95-first-deadline`
 - `p95-bucket-sjf`
 - `p95-bucket-sjf-normalized`
+- `p95-fusion`
 - `slack_age`
 - `slack_cost_age`
 - `slack_hybrid`
@@ -37,7 +39,7 @@
 CLI 入口：
 
 ```bash
---instance-scheduler-policy {fcfs,sjf,sjf_aging,sjf_aging_guarded,bypass_guard_sjf,size_bucket_sjf_aging,type_fifo_defer_budget,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,slack_age,slack_cost_age,slack_hybrid}
+--instance-scheduler-policy {fcfs,sjf,sjf_aging,sjf_aging_guarded,sjf_aging_guarded_tail,bypass_guard_sjf,size_bucket_sjf_aging,type_fifo_defer_budget,slo_first,p95-first,p95-first-deadline,p95-bucket-sjf,p95-bucket-sjf-normalized,p95-fusion,slack_age,slack_cost_age,slack_hybrid}
 ```
 
 其中：
@@ -55,6 +57,10 @@ CLI 入口：
   - 以 `sjf_aging` 的 cost-aware aging 为基础，但保护阈值不再固定；系统会用最近滑动窗口里已完成请求的 queue-wait 高分位学习 `learned_wait_guard_s`，再与 `2.0 * estimated_cost_s` 取更大值
   - protected 队列按到达时间优先，避免老的大请求继续被新来的短请求无限插队
   - protected 请求一旦开始执行，会直接跑完剩余 steps，用均值换取更低的 absolute p95
+- `sjf_aging_guarded_tail`
+  - 保留 `sjf_aging_guarded` 的 learned wait guard 与 protected 语义，但允许把极少数“非常老、非常重、且延后它能明显放行更多轻请求”的请求沉到队尾
+  - 被沉降的请求数量以 `5%` 双层预算为目标，同时受全局 unique-request 预算和 arrival-window 预算共同约束；小样本阶段允许先借出 `1` 个 bootstrap sink slot
+  - 未被沉降的 protected 请求仍保持 arrival-order 优先，并继续使用 guarded run-to-completion 语义
 - `bypass_guard_sjf`
   - 默认仍按 cost-aware `sjf_aging` 排序，但每个请求会维护一个 `can_bypass ∈ {0,1}` 状态
   - 系统会从最近滑动窗口里学习 `learned_wait_guard_s`；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时，请求会锁定为 `can_bypass=0`
@@ -79,6 +85,10 @@ CLI 入口：
   - 复用 `p95-first` 的 normalized 学习链路，但将 `target_latency_ms` 转成 synthetic deadline，再按 slack/deadline 压力排序
 - `p95-bucket-sjf-normalized`
   - 保留 `p95-bucket-sjf` 的 bucket + SJF 结构，但把内部 `target_p95_ms` 替换成 `p95-first` 的 normalized target
+- `p95-fusion`
+  - 复用 `p95-first` 的 normalized 学习链路，但不做单一分数 greedy
+  - 先把 heavy 请求抽成一个逻辑 `tail lane`，再在 `urgent -> short_normal -> tail_lane -> rest` 这几个集合之间做 bounded 轮转
+  - 对 heavy 请求可附带 request 级 `chunk_budget_steps` override；极度 overdue 的 heavy 请求会被标记为本轮直接跑完剩余 steps
 - `slack_age`
   - 直接对整个等待队列按 `slack - aging_factor * age` 做单队列排序
 - `slack_cost_age`
@@ -499,7 +509,247 @@ sort_key = (
 - 可解释性仍然保持在 `p95-bucket-sjf` 这一层，而不是回到连续分数排序。
 - 如果你想保留 bucket 化 tail protection，但又不想继续依赖 absolute p95 history，它就是对应副本。
 
-### 1.4 各策略可调参数与默认值
+### 1.4 `sjf_aging_guarded_tail` 算法完整说明
+
+`sjf_aging_guarded_tail` 可以理解为 `sjf_aging_guarded` 的有界让渡版本：大多数老请求仍然会被放进 protected 队列优先保障，但对于极少数“已经很老、又明显比队列里其他请求更重、而且当前先救它不划算”的请求，调度器允许把它暂时沉到队尾。
+
+这个策略的目标不是否定 guarded 保护，而是引入一个工程上更保守的 tradeoff：
+
+- 默认仍然保护老请求
+- 只有极少数 super-heavy 请求会被让渡
+- 让渡比例必须有硬预算，不允许无限扩大
+- 让渡过头时要能自动逃逸回 protected 语义
+
+#### 1.4.1 第一阶段仍然是 guarded 保护
+
+当前实现第一步与 `sjf_aging_guarded` 相同，先计算：
+
+```text
+aged_cost_s
+learned_wait_guard_s
+protection_threshold_s = max(learned_wait_guard_s, 2.0 * estimated_cost_s)
+tail_protected = age_s >= protection_threshold_s
+```
+
+也就是说，request 只有先成为 `tail_protected`，后面才有资格进入“是否沉降”的第二阶段判定。
+
+#### 1.4.2 第二阶段只筛 very old super-heavy 请求
+
+在 protected 请求里，当前实现再额外判断两件事：
+
+1. 它是不是当前队列里的 `super_heavy`
+2. 它是不是已经老到允许暂时让渡
+
+当前实现里的重请求判定来自 queue-local 成本分布：
+
+```text
+large_request_threshold_s = max(2.0 * queue_median_cost_s, queue_p90_cost_s)
+super_heavy = estimated_cost_s >= large_request_threshold_s
+```
+
+沉降阈值则同时绑定 learned wait guard 和请求自身规模：
+
+```text
+sink_threshold_s = max(1.5 * learned_wait_guard_s, 3.0 * estimated_cost_s)
+hard_escape_threshold_s = max(2.0 * learned_wait_guard_s, 4.0 * estimated_cost_s)
+```
+
+#### 1.4.3 沉降不是只看它有多老，还要看“延后它值不值”
+
+即便请求已经满足 `tail_protected`、`super_heavy` 和 `age_s >= sink_threshold_s`，当前实现也不会直接把它扔到队尾，而是再比较两个量：
+
+```text
+defer_relief_score = lighter_request_count * max(estimated_cost_s - lighter_mean_cost_s, 0)
+defer_harm_score = estimated_cost_s * max(age_s / sink_threshold_s, 1.0)
+```
+
+只有当：
+
+```text
+defer_relief_score > defer_harm_score
+```
+
+时，才认为“现在先放行更多 lighter requests”的收益大于继续伤害这个 heavy 请求本身的代价。
+
+#### 1.4.4 5% 预算与滑动窗口
+
+这是该策略和 `sjf_aging_guarded` 最大的行为差异。当前实现对被沉降的 unique requests 施加了双重硬预算：
+
+- 全局 unique-request 预算
+- arrival-window unique-request 预算
+
+默认形式分别是：
+
+```text
+global_used <= floor(global_arrived_unique * 0.05)
+window_used <= floor(window_arrived_unique * 0.05)
+```
+
+其中 arrival window 使用一个固定长度窗口追踪最近到达的请求，避免只看当前 waiting queue 太小而完全失去比例感知。
+
+为了避免小样本阶段永远得不到任何沉降机会，当前实现还额外加了一个 bootstrap 规则：
+
+```text
+if arrived_unique >= 2:
+    budget_limit = max(floor(arrived_unique * 0.05), 1)
+```
+
+也就是说：
+
+- 当全局或窗口里还没有累计到足够多 unique requests 时，允许先借出 1 个 bootstrap sink slot
+- 一旦这个 slot 用掉，后续仍然继续受全局 + 窗口预算约束，不会无限放大
+
+当前每轮 waiting queue 重排还会额外收紧成：
+
+```text
+tail_defer_budget_limit = min(1, global_budget_remaining, window_budget_remaining)
+```
+
+也就是说：
+
+- 单轮最多只沉 1 个请求
+- 大样本下整体被沉降的 unique request 数量不会超过 5%
+- 小样本下最多只会先借出 1 个 bootstrap slot
+
+#### 1.4.5 最终队列顺序
+
+最终排序保持三层语义：
+
+1. `protected but not sunk`
+2. `normal`
+3. `sunk_tail`
+
+其中：
+
+- 普通 protected 请求仍按到达顺序优先
+- normal 请求继续按 `aged_cost_s` 排序
+- sunk 请求统一沉到底部，内部保持 arrival/FIFO 顺序
+- 已经 sunk 的请求会在后续 reorder 中保持 sunk，直到它离开 waiting queue，或年龄继续增长到触发 hard escape 为止
+
+#### 1.4.6 一句话概括
+
+当前仓库里的 `sjf_aging_guarded_tail` 可以概括为：
+
+> 先沿用 `sjf_aging_guarded` 保护老请求，再把极少数 very old super-heavy 请求在双层预算约束下暂时沉到底部，小样本阶段允许先借出 1 个 bootstrap slot，用少量可控牺牲换更多 lighter 请求的整体 tail 改善。
+
+### 1.5 `p95-fusion` 算法完整说明
+
+`p95-fusion` 可以理解为“在 `p95-first` 的 normalized tail estimation 之上，再额外加一层工程化的 heavy-request 保护”。它不引入第二套绝对 p95 历史，而是继续复用：
+
+- `estimated_service_ms`
+- `learned_slowdown_p95`
+- `dynamic_p95_ms`
+- `active_chunk_blocking_ms`
+
+在此基础上，它做 4 件额外的事：
+
+1. 识别 heavy 请求，构造一个逻辑 `tail lane`
+2. 识别已经接近或超过自身 tail budget 的 urgent 请求
+3. 在短请求和 heavy 请求之间做有限轮转，避免 heavy 长期饥饿
+4. 给 heavy 请求下发 request 级 chunk override，必要时直接切到 run-to-completion
+
+#### 1.5.1 请求分类
+
+对每个 waiting request，当前实现先复用 normalized 链路得到：
+
+```text
+estimated_service_ms
+target_latency_ms
+predicted_finish_latency_ms
+slack_s
+slack_ratio
+pressure_ratio
+```
+
+然后做两层分类：
+
+```text
+is_heavy  = estimated_service_s >= heavy_threshold_s
+is_urgent = (slack_s <= 0)
+         or (slack_ratio <= urgent_slack_ratio)
+         or (is_heavy and age_s >= promote_wait_s)
+```
+
+含义分别是：
+
+- `is_heavy`
+  - 剩余纯执行时间已经超过 heavy 阈值，应该纳入尾部保护候选
+- `is_urgent`
+  - 已经明显撞线，或虽然还没撞线但 slack 非常紧，或者 heavy 请求已经等太久
+
+#### 1.5.2 逻辑 `tail lane`
+
+所有 heavy 请求都会先进入 `tail_candidate` 集合，然后按以下顺序排序：
+
+1. urgent heavy 优先
+2. `slack_s` 更小优先
+3. `age_s` 更大优先
+4. `enqueue_time` 更早优先
+
+随后根据 lane 容量截断成真正的 `tail_lane`：
+
+```text
+ratio_cap = ceil(queue_len * tail_budget_ratio)
+borrowed_cap = min(current_borrowed_cap, borrowed_cap_max)
+lane_cap = min(max(ratio_cap, borrowed_cap), ceil(queue_len * 0.35))
+```
+
+这里的 `borrowed_cap` 会随着 arrival 数增长而逐步放大，使 backlog 变大时能允许更多 heavy 请求进入保护通道；同时又会被 `0.35 * queue_len` 的硬上限约束住，不让 tail lane 吞掉整个队列。
+
+#### 1.5.3 最终队列构造
+
+当前实现不会把队列简化成一个静态打分排序，而是先拆成 4 个集合：
+
+- `urgent_all`
+  - 所有 urgent 请求，按 `slack_s`、`estimated_service_ms`、到达顺序排序
+- `short_normal`
+  - 非 urgent 且非 heavy 的请求，按 `estimated_service_ms` 优先
+- `nonurgent_tail_lane`
+  - 已进入 tail lane 且当前不是 urgent 的 heavy 请求
+- `rest`
+  - 其他未进入以上集合的请求，按 `pressure_ratio` 倒序补位
+
+然后按下面的 bounded 轮转逻辑出队：
+
+1. 如果有 `urgent_all`，总是先取 urgent
+2. 否则若 `nonheavy_streak >= nonheavy_streak_limit` 且 `pending_tail` 非空，强制给一次 heavy turn
+3. 否则优先取 `short_normal`
+4. 再取 `pending_tail`
+5. 最后取 `pending_rest`
+
+这意味着它的目标不是“只救 heavy”，而是：
+
+- 紧急请求永远优先
+- 短请求在正常情况下保持较高吞吐
+- heavy 请求不会因为队列中持续有 short job 而被无限推迟
+
+#### 1.5.4 request 级 chunk override
+
+`p95-fusion` 的一个关键区别是，它不只重排 waiting queue，还会直接给 heavy 请求打 request 级执行提示：
+
+- 如果 heavy 请求已经极度 overdue，满足
+
+```text
+is_urgent and overdue_s >= estimated_service_s
+```
+
+  - 则设置 `scheduler_force_run_to_completion=True`
+- 否则如果它是 heavy 且仍有剩余 steps
+  - 则设置 `scheduler_chunk_budget_steps`
+  - 当前范围由
+    - `instance_scheduler_p95_fusion_min_chunk_steps`
+    - `instance_scheduler_p95_fusion_max_chunk_steps`
+    共同约束
+
+这些 override 会直接回写到 request 对象，再由 `DiffusionEngine` 在本轮 chunk 规划时读取。
+
+#### 1.5.5 一句话概括
+
+当前仓库里的 `p95-fusion` 可以概括为：
+
+> 先沿用 `p95-first` 的 normalized tail estimation 识别 heavy / urgent 请求，再用逻辑 tail lane 和 bounded heavy/non-heavy 轮转保护大请求尾部，同时通过 request 级 chunk override 让 heavy 请求以更细粒度或直接跑完的方式落地。
+
+### 1.6 各策略可调参数与默认值
 
 | 策略 | 主要排序逻辑 | 可调参数 | 默认值 |
 | --- | --- | --- | --- |
@@ -507,6 +757,7 @@ sort_key = (
 | `sjf` | 按 `estimated_cost_s` 从小到大排序 | 无 | 无 |
 | `sjf_aging` | 按 `estimated_cost_s / (1 + aging_factor * cost_weight * age_s)` 排序，其中 `cost_weight = clip(sqrt(estimated_cost_s / 12.0), 1.0, 4.0)` | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
 | `sjf_aging_guarded` | 在 cost-aware `sjf_aging` 上增加 protected 队列；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时转入 protected，并按 `arrival_time` 优先；protected 请求开始执行后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
+| `sjf_aging_guarded_tail` | 保留 `sjf_aging_guarded` 的 protected 队列，但允许把极少数 very old super-heavy 请求按 `defer_relief_score > defer_harm_score` 的条件沉到 bounded tail；单轮最多沉 1 个，并受全局 + arrival-window 的双层预算约束 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习；沉降预算目标为 `5%`，但在全局/窗口 unique arrivals 至少为 `2` 时允许先借出 `1` 个 bootstrap sink slot；queue-local super-heavy 阈值为 `max(2.0 * queue_median_cost_s, queue_p90_cost_s)`；sink threshold 为 `max(1.5 * learned_wait_guard_s, 3.0 * estimated_cost_s)`；hard escape threshold 为 `max(2.0 * learned_wait_guard_s, 4.0 * estimated_cost_s)` |
 | `bypass_guard_sjf` | 默认按 cost-aware `sjf_aging` 排序；当 `age_s >= max(learned_wait_guard_s, 2.0 * estimated_cost_s)` 时将 `can_bypass` 置为 `0`，锁定请求不再允许被后到请求插队，并在 dispatch 后直接跑完 | `instance_scheduler_aging_factor` | `0.0`<br>`learned_wait_guard_s` 由最近滑动窗口自动学习，当前代码内 floor=45s、cap=120s |
 | `size_bucket_sjf_aging` | 先按固定分辨率 bucket 排序，再在 bucket 内按 `estimated_cost_s / (1 + aging_factor * age_s)` 排序；等待过久时允许跨 bucket 晋升 | `instance_scheduler_aging_factor` | `0.0`<br>实现中当 `<= 0` 时实际回退为内建 aging 因子 `1.0` |
 | `type_fifo_defer_budget` | 先按 request type 分 FIFO 子队列；type 间只比较队头 `aged_cost_s`；对最重 type 的老队头做 bounded defer，但只有在 `defer_relief_score > defer_harm_score` 且未进入 over-starved 区间时才允许延后 | `instance_scheduler_aging_factor`<br>`instance_scheduler_type_fifo_defer_budget_ratio` | `0.0`<br>`0.05`<br>`queue_wait_p95_s` 直接学习原始 queue-wait p95，不再固定 cap=120s；当前只使用动态 floor `max(15s, 0.5 * current_queue_median_estimated_cost_s)`；defer threshold 为 `max(queue_wait_p95_s, 2.0 * estimated_cost_s)`；over-starved threshold 为 `max(2.0 * queue_wait_p95_s, 3.0 * estimated_cost_s)`；`ratio` 同时充当全局 unique-request 牺牲上限和 arrival-based 滑动窗口上限，单次重排只会在这两层剩余预算内再取 queue-local budget |
@@ -515,6 +766,7 @@ sort_key = (
 | `p95-first-deadline` | 复用 `learned_slowdown_p95` 与 `estimated_service_ms` 生成 `synthetic_deadline_ts`，再按 `slack_s` / `deadline` / `estimated_service_ms` 排序 | `instance_scheduler_p95_first_base_ms`（兼容保留）<br>`instance_scheduler_p95_first_min_ms`（兼容保留）<br>`instance_scheduler_p95_first_max_ms`（兼容保留）<br>`instance_scheduler_p95_first_backlog_alpha`（兼容保留） | `None`<br>`0.0`<br>`None`<br>`1.0` |
 | `p95-bucket-sjf` | 先按 `urgency_ms` 划 bucket，再在 bucket 内按 `estimated_cost_s` 做 SJF | `instance_scheduler_p95_bucket_count`<br>`instance_scheduler_p95_bucket_min_window_ms`<br>`instance_scheduler_p95_bucket_starvation_threshold_s`<br>`instance_scheduler_p95_bucket_starvation_promote_levels`<br>`instance_scheduler_p95_first_min_ms` | `4`<br>`200.0`<br>`None`<br>`1`<br>`0.0` |
 | `p95-bucket-sjf-normalized` | 先按 normalized `urgency_ms` 划 bucket，再在 bucket 内按 `estimated_service_ms` 做 SJF | `instance_scheduler_p95_bucket_count`<br>`instance_scheduler_p95_bucket_min_window_ms`<br>`instance_scheduler_p95_bucket_starvation_threshold_s`<br>`instance_scheduler_p95_bucket_starvation_promote_levels` | `4`<br>`200.0`<br>`None`<br>`1` |
+| `p95-fusion` | 复用 normalized p95 估计识别 heavy/urgent，请求先拆成 `urgent`、`short_normal`、`tail_lane`、`rest`，再做 bounded heavy/non-heavy 轮转；同时可对 heavy 请求下发 request 级 chunk override | `instance_scheduler_p95_fusion_tail_budget_ratio`<br>`instance_scheduler_p95_fusion_heavy_threshold_s`<br>`instance_scheduler_p95_fusion_urgent_slack_ratio`<br>`instance_scheduler_p95_fusion_promote_wait_s`<br>`instance_scheduler_p95_fusion_nonheavy_streak_limit`<br>`instance_scheduler_p95_fusion_growth_every`<br>`instance_scheduler_p95_fusion_borrowed_cap_max`<br>`instance_scheduler_p95_fusion_min_chunk_steps`<br>`instance_scheduler_p95_fusion_max_chunk_steps` | `0.10`<br>`20.0`<br>`1.0`<br>`60.0`<br>`4`<br>`20`<br>`4`<br>`1`<br>`8` |
 | `slack_age` | 单队列按 `slack - aging_factor * age_s` 排序 | `instance_scheduler_aging_factor` | `0.0` |
 | `slack_cost_age` | 单队列按 `slack + 0.25 * remaining_cost_s - aging_factor * age_s` 排序 | `instance_scheduler_aging_factor` | `0.0`<br>其中 `0.25` 是当前代码内常量，不是配置项 |
 | `slack_hybrid` | 若任一请求 `slack_ratio < panic_threshold`，切到 Panic EDF；否则按 `estimated_cost_s - aging_factor * age_s` 做 Throughput SRPT + Aging 排序 | `instance_scheduler_aging_factor`<br>`instance_scheduler_slack_panic_threshold`<br>`instance_scheduler_slack_swap_overhead_ms` | `0.0`<br>`1.0`<br>`0.0` |
@@ -523,7 +775,7 @@ sort_key = (
 
 - `estimated_cost_s` 不是实例级配置，而是请求运行时输入；若请求未提供，调度器会回退到 runtime profile 或启发式估算。
 - `deadline_ts`、`slo_target_ms`、`slo_ms` 也是请求运行时输入；若 deadline-aware 策略没有显式 deadline，会回退到 learned-p95 synthetic deadline。
-- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid`、`bypass_guard_sjf`、`type_fifo_defer_budget` 在当前实现里会自动启用：
+- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`p95-fusion`、`slack_hybrid`、`sjf_aging_guarded`、`sjf_aging_guarded_tail`、`bypass_guard_sjf`、`type_fifo_defer_budget` 在当前实现里会自动启用：
   - `diffusion_enable_step_chunk=True`
   - `diffusion_enable_chunk_preemption=True`
 
@@ -565,7 +817,7 @@ sort_key = (
 
 不需要额外参数。
 
-### 3.2 `sjf` / `sjf_aging` / `sjf_aging_guarded` / `bypass_guard_sjf` / `size_bucket_sjf_aging` / `type_fifo_defer_budget`
+### 3.2 `sjf` / `sjf_aging` / `sjf_aging_guarded` / `sjf_aging_guarded_tail` / `bypass_guard_sjf` / `size_bucket_sjf_aging` / `type_fifo_defer_budget`
 
 这几种策略都不要求提供 deadline，但强烈建议提供更准确的耗时估计来源。当前耗时估计优先级是：
 
@@ -573,7 +825,7 @@ sort_key = (
 2. runtime profile 估算
 3. 启发式估算
 
-其中 `sjf_aging_guarded` 会维护一个滑动窗口学习得到的 `learned_wait_guard_s`，用于决定请求何时进入不可继续插队的 protected 状态；`bypass_guard_sjf` 也会学习同样语义的等待阈值，但它直接维护 `can_bypass ∈ {0,1}`，一旦降为 `0` 就不再允许新请求继续插队；`type_fifo_defer_budget` 会先按 `(width, height, num_frames, total_steps, num_outputs)` 聚成少量 type，并要求同 type 内严格 FIFO，只允许把最重 type 的极少数老队头延后到 bounded tail；defer 阈值来自该策略自身完成请求的 queue-wait 滑动窗口 p95 学习，形式为 `max(queue_wait_p95_s, 2.0 * estimated_cost_s)`。当前 `queue_wait_p95_s` 不再使用固定 `45s/120s` 截断，只保留一个动态 floor：`max(15s, 0.5 * current_queue_median_estimated_cost_s)`，这样高 backlog 下真实 tail 可以继续上升，不会被内部常量硬截断；同时它还会计算 `defer_relief_score` 与 `defer_harm_score`，只有“延后它能救下更多 lighter 请求”时才 defer；而一旦 `age_s >= max(2.0 * queue_wait_p95_s, 3.0 * estimated_cost_s)`，该请求就被视为 over-starved，不再允许继续 defer。预算上，这条策略同时维护全局 unique-request 预算和 arrival-based 滑动窗口预算，因此被标记为 `deferred` 的 unique requests 总数严格不会超过 `ratio` 对应的总体比例；而 `size_bucket_sjf_aging` 额外会先按固定分辨率 bucket 分组：
+其中 `sjf_aging_guarded` 会维护一个滑动窗口学习得到的 `learned_wait_guard_s`，用于决定请求何时进入不可继续插队的 protected 状态；`sjf_aging_guarded_tail` 先复用完全相同的 protected 判定，再对其中 very old super-heavy 的请求引入一个 bounded tail sink：只有在 `defer_relief_score > defer_harm_score`、且没有触发 hard escape 阈值时，才允许把它暂时沉到队尾，而且单轮最多只沉 1 个 unique request，并同时受全局 unique-request 预算与 arrival-window 预算这两层约束；为了避免小样本下预算始终为 0，这条策略在全局/窗口 unique arrivals 至少为 `2` 时允许先借出 `1` 个 bootstrap sink slot。已经 sunk 的请求会在后续 reorder 中保持 sunk，直到它离开 waiting queue，或年龄继续增长到触发 hard escape 为止；`bypass_guard_sjf` 也会学习同样语义的等待阈值，但它直接维护 `can_bypass ∈ {0,1}`，一旦降为 `0` 就不再允许新请求继续插队；`type_fifo_defer_budget` 会先按 `(width, height, num_frames, total_steps, num_outputs)` 聚成少量 type，并要求同 type 内严格 FIFO，只允许把最重 type 的极少数老队头延后到 bounded tail；defer 阈值来自该策略自身完成请求的 queue-wait 滑动窗口 p95 学习，形式为 `max(queue_wait_p95_s, 2.0 * estimated_cost_s)`。当前 `queue_wait_p95_s` 不再使用固定 `45s/120s` 截断，只保留一个动态 floor：`max(15s, 0.5 * current_queue_median_estimated_cost_s)`，这样高 backlog 下真实 tail 可以继续上升，不会被内部常量硬截断；同时它还会计算 `defer_relief_score` 与 `defer_harm_score`，只有“延后它能救下更多 lighter 请求”时才 defer；而一旦 `age_s >= max(2.0 * queue_wait_p95_s, 3.0 * estimated_cost_s)`，该请求就被视为 over-starved，不再允许继续 defer。预算上，这条策略同时维护全局 unique-request 预算和 arrival-based 滑动窗口预算，在大样本阶段会收敛到 `ratio` 对应的总体比例；而 `size_bucket_sjf_aging` 额外会先按固定分辨率 bucket 分组：
 
 - `max(width, height) <= 512`
 - `512 < max(width, height) <= 768`
@@ -582,7 +834,7 @@ sort_key = (
 
 然后在 bucket 内做 `SJF + Aging`，并按等待时长逐步把大 bucket 请求往前提升。
 
-### 3.3 `p95-first` / `p95-first-deadline` / `p95-bucket-sjf` / `p95-bucket-sjf-normalized`
+### 3.3 `p95-first` / `p95-first-deadline` / `p95-bucket-sjf` / `p95-bucket-sjf-normalized` / `p95-fusion`
 
 这四种策略都只要求请求侧尽量提供更准确的 `estimated_cost_s`，不要求请求显式提供 `slo_ms`、`slo_target_ms` 或 `deadline_ts`。
 
@@ -629,6 +881,21 @@ sort_key = (
     - `--instance-runtime-profile-name`
     - `--diffusion-enable-step-chunk`
     - `--diffusion-enable-chunk-preemption`
+- `p95-fusion`
+  - 复用 `p95-first` 的 normalized 学习链路，不要求请求显式提供 deadline。
+  - 当前实现把请求拆成 `urgent`、`short_normal`、`tail_lane`、`rest` 4 个集合，再在这些集合之间做 bounded 轮转。
+  - heavy 判定使用 `estimated_service_s >= instance_scheduler_p95_fusion_heavy_threshold_s`。
+  - 若 heavy 请求满足 `slack_ratio` 过低、已经 overdue，或等待时间过长，会被标记为 urgent。
+  - 对 heavy 请求，调度器还会下发 request 级 `scheduler_chunk_budget_steps`；极度 overdue 时会切到 `scheduler_force_run_to_completion=True`。
+  - 推荐同时配置：
+    - `--instance-runtime-profile-path`
+    - `--instance-runtime-profile-name`
+    - `--diffusion-enable-step-chunk`
+    - `--diffusion-enable-chunk-preemption`
+    - `--instance-scheduler-p95-fusion-tail-budget-ratio`
+    - `--instance-scheduler-p95-fusion-heavy-threshold-s`
+    - `--instance-scheduler-p95-fusion-min-chunk-steps`
+    - `--instance-scheduler-p95-fusion-max-chunk-steps`
 
 ### 3.4 `slo_first` / `slack_age` / `slack_cost_age` / `slack_hybrid`
 
@@ -941,6 +1208,56 @@ else:
 - `aged_cost_s`
 - `queue_rank`
 
+`sjf_aging_guarded` 额外会输出：
+
+- `queue_reorder_count`
+- `estimated_cost_s`
+- `age_s`
+- `aging_factor`
+- `aging_cost_weight`
+- `aged_cost_s`
+- `tail_protected`
+- `protection_threshold_s`
+- `wait_ratio`
+- `learned_wait_guard_s`
+- `dispatch_group`
+- `queue_rank`
+
+`sjf_aging_guarded_tail` 额外会输出：
+
+- `queue_reorder_count`
+- `estimated_cost_s`
+- `age_s`
+- `aging_factor`
+- `aging_cost_weight`
+- `aged_cost_s`
+- `tail_protected`
+- `tail_sunk`
+- `super_heavy`
+- `protection_threshold_s`
+- `sink_threshold_s`
+- `hard_escape_threshold_s`
+- `wait_ratio`
+- `learned_wait_guard_s`
+- `queue_median_cost_s`
+- `queue_p90_cost_s`
+- `defer_relief_score`
+- `defer_harm_score`
+- `lighter_request_count`
+- `lighter_mean_cost_s`
+- `tail_defer_budget_ratio`
+- `tail_defer_budget_limit`
+- `global_arrived_unique`
+- `global_budget_limit`
+- `global_budget_used`
+- `global_budget_remaining`
+- `window_arrived_unique`
+- `window_budget_limit`
+- `window_budget_used`
+- `window_budget_remaining`
+- `dispatch_group`
+- `queue_rank`
+
 `p95-first` 额外会输出：
 
 - `queue_reorder_count`
@@ -1011,6 +1328,42 @@ else:
 - `bucket_width_ms`
 - `age_s`
 - `starvation_promoted`
+- `queue_rank`
+
+`p95-fusion` 额外会输出：
+
+- `queue_reorder_count`
+- `estimated_cost_s`
+- `estimated_service_ms`
+- `estimated_service_s`
+- `dynamic_p95_ms`
+- `learned_p95_ms`
+- `backlog_adjusted_p95_ms`
+- `learned_slowdown_p95`
+- `backlog_s_at_schedule`
+- `instance_backlog_total_s`
+- `active_chunk_blocking_ms`
+- `active_chunk_blocking_s`
+- `target_latency_ms`
+- `predicted_finish_latency_ms`
+- `pressure_ratio`
+- `slack_s`
+- `slack_ratio`
+- `age_s`
+- `is_heavy`
+- `is_urgent`
+- `tail_candidate`
+- `tail_lane_selected`
+- `tail_lane_rank`
+- `scheduler_force_run_to_completion`
+- `scheduler_chunk_budget_steps`
+- `nonheavy_streak_seed`
+- `tail_budget_ratio`
+- `ratio_cap`
+- `borrowed_cap`
+- `lane_cap`
+- `nonheavy_streak_limit`
+- `dispatch_group`
 - `queue_rank`
 
 `slack_hybrid` 额外会输出：
@@ -1145,7 +1498,55 @@ sampling_params.extra_args["estimated_cost_s"] = 0.9
 --diffusion-enable-chunk-preemption
 ```
 
-### 8.6 推荐的 deadline-aware 配置
+### 8.6 推荐的 `sjf_aging_guarded_tail` 配置
+
+```bash
+--instance-scheduler-policy sjf_aging_guarded_tail \
+--instance-scheduler-aging-factor 0.25 \
+--instance-runtime-profile-path /profile/runtime.json \
+--instance-runtime-profile-name img-a \
+--diffusion-enable-step-chunk \
+--diffusion-enable-chunk-preemption \
+--diffusion-chunk-budget-steps 4
+```
+
+这条策略没有额外 CLI 暴露参数；当前沉降预算目标为 `5%`，小样本阶段允许先借出 `1` 个 bootstrap slot，并通过：
+
+- learned wait guard
+- queue-local `super_heavy` 判定
+- `defer_relief_score > defer_harm_score`
+- hard escape 阈值
+
+共同限制沉降行为。
+
+### 8.7 推荐的 `p95-fusion` 配置
+
+```bash
+--instance-scheduler-policy p95-fusion \
+--instance-runtime-profile-path /profile/runtime.json \
+--instance-runtime-profile-name img-a \
+--instance-scheduler-p95-fusion-tail-budget-ratio 0.10 \
+--instance-scheduler-p95-fusion-heavy-threshold-s 20 \
+--instance-scheduler-p95-fusion-urgent-slack-ratio 1.0 \
+--instance-scheduler-p95-fusion-promote-wait-s 60 \
+--instance-scheduler-p95-fusion-nonheavy-streak-limit 4 \
+--instance-scheduler-p95-fusion-growth-every 20 \
+--instance-scheduler-p95-fusion-borrowed-cap-max 4 \
+--instance-scheduler-p95-fusion-min-chunk-steps 1 \
+--instance-scheduler-p95-fusion-max-chunk-steps 8 \
+--diffusion-enable-step-chunk \
+--diffusion-enable-chunk-preemption
+```
+
+如果你希望更积极地保护 heavy 请求，可以优先调这几项：
+
+```bash
+--instance-scheduler-p95-fusion-tail-budget-ratio 0.15 \
+--instance-scheduler-p95-fusion-promote-wait-s 45 \
+--instance-scheduler-p95-fusion-nonheavy-streak-limit 3
+```
+
+### 8.8 推荐的 deadline-aware 配置
 
 ```bash
 --instance-scheduler-policy slack_age \
@@ -1159,7 +1560,7 @@ sampling_params.extra_args["estimated_cost_s"] = 0.9
 --diffusion-chunk-budget-steps 4
 ```
 
-### 8.7 请求级覆盖示例
+### 8.9 请求级覆盖示例
 
 显式给绝对 deadline：
 
@@ -1189,17 +1590,19 @@ sampling_params.extra_args["slo_ms"] = 2500
   - `sjf`
   - `sjf_aging`
   - `sjf_aging_guarded`
+  - `sjf_aging_guarded_tail`
   - `bypass_guard_sjf`
   - `size_bucket_sjf_aging`
+  - `type_fifo_defer_budget`
   - `slo_first`
   - `p95-first`
   - `p95-first-deadline`
   - `p95-bucket-sjf`
   - `p95-bucket-sjf-normalized`
+  - `p95-fusion`
   - `slack_age`
   - `slack_cost_age`
   - `slack_hybrid`
-  - `type_fifo_defer_budget`
 - `instance_scheduler_slo_target_ms` 如果设置，必须 `> 0`
 - `instance_scheduler_slo_floor_ms >= 0`
 - `instance_scheduler_aging_factor >= 0`
@@ -1218,7 +1621,16 @@ sampling_params.extra_args["slo_ms"] = 2500
 - `instance_scheduler_slack_panic_threshold >= 0`
 - `instance_scheduler_slack_swap_overhead_ms >= 0`
 - `instance_scheduler_type_fifo_defer_budget_ratio` 必须在 `[0, 1]`
-- 当策略为 `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid`、`type_fifo_defer_budget` 时，会自动启用：
+- `instance_scheduler_p95_fusion_tail_budget_ratio` 必须在 `(0, 1]`
+- `instance_scheduler_p95_fusion_heavy_threshold_s > 0`
+- `instance_scheduler_p95_fusion_urgent_slack_ratio >= 0`
+- `instance_scheduler_p95_fusion_promote_wait_s > 0`
+- `instance_scheduler_p95_fusion_nonheavy_streak_limit >= 1`
+- `instance_scheduler_p95_fusion_growth_every >= 1`
+- `instance_scheduler_p95_fusion_borrowed_cap_max >= 0`
+- `instance_scheduler_p95_fusion_min_chunk_steps >= 1`
+- `instance_scheduler_p95_fusion_max_chunk_steps >= instance_scheduler_p95_fusion_min_chunk_steps`
+- 当策略为 `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`p95-fusion`、`slack_hybrid`、`sjf_aging_guarded`、`sjf_aging_guarded_tail`、`type_fifo_defer_budget` 时，会自动启用：
   - `diffusion_enable_step_chunk=True`
   - `diffusion_enable_chunk_preemption=True`
 - `diffusion_enable_chunk_preemption=True` 时，`diffusion_enable_step_chunk` 必须为 `True`
@@ -1232,7 +1644,7 @@ sampling_params.extra_args["slo_ms"] = 2500
 从当前代码和测试可以确认：
 
 - 配置入口已接到 `AsyncOmni` 和 CLI
-- 12 种策略都已接入配置校验
+- 17 种策略都已接入配置校验
 - `sjf` 已覆盖：
   - 队列重排
   - remaining steps 缩放
@@ -1241,6 +1653,20 @@ sampling_params.extra_args["slo_ms"] = 2500
   - `on_time` / `best_effort` 集合划分
   - `slo_first`、`slack_age`、`slack_cost_age` 的排序差异
   - `attain_before`、`self_hit` 等指标输出
-- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`slack_hybrid` 已接入 CLI、配置与调度实现；是否有独立单测，应以当前测试文件为准
+- `sjf_aging_guarded_tail` 已接入 CLI、配置与调度实现
+- `sjf_aging_guarded_tail` 当前已有针对性测试覆盖：
+  - old super-heavy request 会被沉降到队尾
+  - 小样本下也能借助 bootstrap slot 触发沉降
+  - 已经 sunk 的 waiting request 在后续 reorder 中仍保持 sunk
+  - 5% 预算耗尽后，不会继续沉降新的请求
+  - sunk request 不会触发 guarded run-to-completion
+- `p95-first`、`p95-first-deadline`、`p95-bucket-sjf`、`p95-bucket-sjf-normalized`、`p95-fusion`、`slack_hybrid` 已接入 CLI、配置与调度实现
+- `p95-fusion` 当前已有针对性测试覆盖：
+  - CLI / 默认 stage config 参数透传
+  - 自动启用 `step chunk` 与 `chunk preemption`
+  - heavy 请求轮转进入保护顺序
+  - overdue heavy 切换 `run_to_completion`
+  - heavy 请求即使未进入 `tail_lane` 也能拿到 chunk override
+  - scheduler 空闲时重置 `nonheavy_streak`
 
 这份文档只描述当前仓库行为，不再保留“统一采用 `3 x estimated_cost_s` 生成 SLO”这类实验约定。若要使用该规则，应在请求构造侧显式写入 `sampling_params.extra_args["slo_target_ms"]`，而不是假定调度器内部会自动生成。

@@ -258,10 +258,10 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            choices=["fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid", "p95-fusion"],
+            choices=["fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "sjf_aging_guarded_tail", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid", "p95-fusion"],
             help="Instance-local diffusion scheduler policy. 'fcfs' preserves arrival order, "
             "'sjf' orders waiting requests by estimated cost, 'sjf_aging' adds wait-time aging "
-            "on top of SJF to prevent starvation and works with chunk requeue, 'sjf_aging_guarded' adds a protected queue once requests age past a learned wait guard, 'bypass_guard_sjf' learns when a request should stop being bypassable and then runs it to completion, 'size_bucket_sjf_aging' "
+            "on top of SJF to prevent starvation and works with chunk requeue, 'sjf_aging_guarded' adds a protected queue once requests age past a learned wait guard, 'sjf_aging_guarded_tail' keeps that learned wait guard but allows a strict 5% sliding-window tail-sink budget for very old super-heavy requests, 'bypass_guard_sjf' learns when a request should stop being bypassable and then runs it to completion, 'size_bucket_sjf_aging' "
             "groups requests into fixed resolution buckets and applies SJF+aging within each bucket, 'type_fifo_defer_budget' groups same-shape requests into per-type FIFO lanes, ranks lane heads by aged cost, and allows only a bounded tail-defer budget for the heaviest aged heads, "
             "'slo_first' keeps "
             "the current deadline-aware on-time/tail ordering, 'p95-first' uses normalized "

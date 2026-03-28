@@ -726,6 +726,104 @@ def test_stage1_scheduler_sjf_aging_guarded_uses_learned_wait_threshold():
     assert ordered[0].schedule_metrics["learned_wait_guard_s"] == pytest.approx(60.0)
     assert ordered[0].schedule_metrics["protection_threshold_s"] == pytest.approx(60.0)
 
+
+def test_stage1_scheduler_sjf_aging_guarded_tail_sinks_old_super_heavy_request():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
+    now = time.monotonic()
+    old_large = _mock_request("tail-old-large", num_inference_steps=35, extra_args={"estimated_cost_s": 40.0})
+    short_one = _mock_request("tail-short-1", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    short_two = _mock_request("tail-short-2", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    old_large.arrival_time = now - 130.0
+    short_one.arrival_time = now - 2.0
+    short_two.arrival_time = now - 1.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_large)
+        sched._enqueue_request_locked(short_one)
+        sched._enqueue_request_locked(short_two)
+        ordered = list(sched._waiting_queue)
+
+    assert [queued.request.request_ids[0] for queued in ordered] == ["tail-short-1", "tail-short-2", "tail-old-large"]
+    assert ordered[-1].schedule_metrics["scheduler_policy"] == "sjf_aging_guarded_tail"
+    assert ordered[-1].schedule_metrics["tail_protected"] == 1
+    assert ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
+    assert getattr(ordered[-1].request, "tail_sunk", False) is True
+
+
+def test_stage1_scheduler_sjf_aging_guarded_tail_keeps_sunk_request_at_tail_across_reorders():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
+    now = time.monotonic()
+    old_large = _mock_request("tail-persist-large", num_inference_steps=35, extra_args={"estimated_cost_s": 40.0})
+    short_one = _mock_request("tail-persist-short-1", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    short_two = _mock_request("tail-persist-short-2", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    old_large.arrival_time = now - 130.0
+    short_one.arrival_time = now - 2.0
+    short_two.arrival_time = now - 1.0
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(old_large)
+        sched._enqueue_request_locked(short_one)
+        sched._enqueue_request_locked(short_two)
+        first_ordered = list(sched._waiting_queue)
+
+        late_short = _mock_request("tail-persist-short-3", num_inference_steps=10, extra_args={"estimated_cost_s": 2.5})
+        late_short.arrival_time = now - 0.25
+        sched._enqueue_request_locked(late_short)
+        second_ordered = list(sched._waiting_queue)
+
+    assert first_ordered[-1].request.request_ids[0] == "tail-persist-large"
+    assert first_ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert sched._sjf_aging_guarded_tail_budget_status()["global_budget_remaining"] == 0  # noqa: SLF001
+    assert second_ordered[-1].request.request_ids[0] == "tail-persist-large"
+    assert second_ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert second_ordered[-1].schedule_metrics["dispatch_group"] == "sunk_tail"
+
+
+def test_stage1_scheduler_sjf_aging_guarded_tail_respects_five_percent_budget():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="sjf_aging_guarded_tail")
+    for idx in range(20):
+        sample_request = _mock_request(f"sample-tail-budget-{idx}", num_inference_steps=1, extra_args={"estimated_cost_s": 1.0})
+        sched._track_sjf_aging_guarded_tail_arrival(sample_request)  # noqa: SLF001
+        setattr(sample_request, "_sjf_aging_guarded_cumulative_execute_ms", 10000.0)
+        sched._record_sjf_aging_guarded_wait_ms(70000.0, request=sample_request)
+
+    now = time.monotonic()
+    first_large = _mock_request("budget-large-1", num_inference_steps=35, extra_args={"estimated_cost_s": 40.0})
+    first_short = _mock_request("budget-short-1", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    first_short_two = _mock_request("budget-short-1b", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    first_large.arrival_time = now - 130.0
+    first_short.arrival_time = now - 1.0
+    first_short_two.arrival_time = now - 0.5
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(first_large)
+        sched._enqueue_request_locked(first_short)
+        sched._enqueue_request_locked(first_short_two)
+        first_ordered = list(sched._waiting_queue)
+        sched._waiting_queue = deque()
+
+    assert first_ordered[-1].request.request_ids[0] == "budget-large-1"
+    assert first_ordered[-1].schedule_metrics["tail_sunk"] == 1
+    assert sched._sjf_aging_guarded_tail_budget_status()["global_budget_remaining"] == 0  # noqa: SLF001
+
+    second_large = _mock_request("budget-large-2", num_inference_steps=35, extra_args={"estimated_cost_s": 38.0})
+    second_short = _mock_request("budget-short-2", num_inference_steps=10, extra_args={"estimated_cost_s": 2.0})
+    second_short_two = _mock_request("budget-short-2b", num_inference_steps=10, extra_args={"estimated_cost_s": 3.0})
+    second_large.arrival_time = now - 130.0
+    second_short.arrival_time = now - 1.0
+    second_short_two.arrival_time = now - 0.5
+
+    with sched._queue_cv:
+        sched._enqueue_request_locked(second_large)
+        sched._enqueue_request_locked(second_short)
+        sched._enqueue_request_locked(second_short_two)
+        second_ordered = list(sched._waiting_queue)
+
+    assert second_ordered[0].request.request_ids[0] == "budget-large-2"
+    assert second_ordered[0].schedule_metrics["tail_protected"] == 1
+    assert second_ordered[0].schedule_metrics["tail_sunk"] == 0
+
 def test_stage1_scheduler_bypass_guard_sjf_locks_old_request_from_bypass():
     sched, _req_q, _res_q = _make_stage1_scheduler(policy="bypass_guard_sjf")
     for idx in range(20):

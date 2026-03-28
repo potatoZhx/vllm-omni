@@ -615,7 +615,7 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
-        valid_policies = {"fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid", "p95-fusion"}
+        valid_policies = {"fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "sjf_aging_guarded_tail", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid", "p95-fusion"}
         if self.instance_scheduler_policy not in valid_policies:
             raise ValueError(
                 "instance_scheduler_policy must be one of "
@@ -688,7 +688,7 @@ class OmniDiffusionConfig:
             raise ValueError(
                 "instance_scheduler_p95_fusion_max_chunk_steps must be >= instance_scheduler_p95_fusion_min_chunk_steps"
             )
-        if self.instance_scheduler_policy in {"p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_hybrid", "sjf_aging_guarded", "bypass_guard_sjf", "type_fifo_defer_budget", "p95-fusion"}:
+        if self.instance_scheduler_policy in {"p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_hybrid", "sjf_aging_guarded", "sjf_aging_guarded_tail", "bypass_guard_sjf", "type_fifo_defer_budget", "p95-fusion"}:
             self.diffusion_enable_step_chunk = True
             self.diffusion_enable_chunk_preemption = True
         if self.diffusion_engine_max_concurrency < 1:
