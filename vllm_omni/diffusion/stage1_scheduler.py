@@ -44,9 +44,13 @@ _BYPASS_GUARD_MAX_WAIT_S = 120.0
 _BYPASS_GUARD_WAIT_COST_RATIO = 2.0
 _TYPE_FIFO_DEFER_DEFAULT_RATIO = 0.05
 _TYPE_FIFO_DEFER_MIN_BUDGET = 0
-_TYPE_FIFO_DEFER_MIN_WAIT_S = 45.0
-_TYPE_FIFO_DEFER_MAX_WAIT_S = 120.0
+_TYPE_FIFO_DEFER_ADAPTIVE_MIN_QUEUE_DEPTH = 8
+_TYPE_FIFO_DEFER_WINDOW_MAXLEN = _P95_FIRST_HISTORY_MAXLEN
+_TYPE_FIFO_DEFER_BASE_MIN_WAIT_S = 15.0
+_TYPE_FIFO_DEFER_DYNAMIC_FLOOR_COST_RATIO = 0.5
 _TYPE_FIFO_DEFER_WAIT_COST_RATIO = 2.0
+_TYPE_FIFO_DEFER_OVERSTARVED_WAIT_P95_MULTIPLIER = 2.0
+_TYPE_FIFO_DEFER_OVERSTARVED_COST_MULTIPLIER = 3.0
 _FIXED_SIZE_BUCKET_MAX_DIM_THRESHOLDS = (512, 768, 1024)
 _SIZE_BUCKET_PROMOTION_WINDOW_S = 10.0
 _SLACK_HYBRID_DEFAULT_PANIC_THRESHOLD = 1.0
@@ -97,6 +101,11 @@ class Stage1Scheduler(Scheduler):
         self._sjf_aging_guarded_wait_history_ms: deque[float] = deque(maxlen=_P95_FIRST_HISTORY_MAXLEN)
         self._bypass_guard_wait_history_ms: deque[float] = deque(maxlen=_P95_FIRST_HISTORY_MAXLEN)
         self._type_fifo_defer_wait_history_ms: deque[float] = deque(maxlen=_P95_FIRST_HISTORY_MAXLEN)
+        self._type_fifo_defer_arrived_request_ids: set[str] = set()
+        self._type_fifo_defer_deferred_request_ids: set[str] = set()
+        self._type_fifo_defer_arrival_window_ids: deque[str] = deque()
+        self._type_fifo_defer_arrival_window_id_set: set[str] = set()
+        self._type_fifo_defer_window_deferred_request_ids: set[str] = set()
         self._p95_first_observed_service_ms_per_work_unit: float | None = None
         self._p95_first_cold_start_max_ms = 0.0
 
@@ -1175,12 +1184,31 @@ class Stage1Scheduler(Scheduler):
         if self._type_fifo_defer_wait_history_ms:
             samples = sorted(self._type_fifo_defer_wait_history_ms)
             if len(samples) < _P95_FIRST_MIN_HISTORY_FOR_QUANTILE:
-                learned_wait_s = float(samples[-1]) / 1000.0
+                return float(samples[-1]) / 1000.0
+            index = max(ceil(len(samples) * 0.95) - 1, 0)
+            return float(samples[index]) / 1000.0
+        return 0.0
+
+    def _type_fifo_defer_wait_floor_s(
+        self,
+        waiting_requests: list[_QueuedRequest] | None = None,
+    ) -> float:
+        if waiting_requests:
+            queue_costs = sorted(max(self._queued_cost_seconds(queued_request), 1e-9) for queued_request in waiting_requests)
+            mid = len(queue_costs) // 2
+            if len(queue_costs) % 2 == 1:
+                median_cost_s = queue_costs[mid]
             else:
-                index = max(ceil(len(samples) * 0.95) - 1, 0)
-                learned_wait_s = float(samples[index]) / 1000.0
-            return min(max(learned_wait_s, _TYPE_FIFO_DEFER_MIN_WAIT_S), _TYPE_FIFO_DEFER_MAX_WAIT_S)
-        return _TYPE_FIFO_DEFER_MIN_WAIT_S
+                median_cost_s = (queue_costs[mid - 1] + queue_costs[mid]) / 2.0
+        else:
+            median_cost_s = 0.0
+        return max(_TYPE_FIFO_DEFER_BASE_MIN_WAIT_S, _TYPE_FIFO_DEFER_DYNAMIC_FLOOR_COST_RATIO * median_cost_s)
+
+    def _type_fifo_defer_wait_p95_s(
+        self,
+        waiting_requests: list[_QueuedRequest] | None = None,
+    ) -> float:
+        return max(self._learned_type_fifo_defer_wait_s(), self._type_fifo_defer_wait_floor_s(waiting_requests))
 
     def _fixed_size_bucket_id(self, queued_request: _QueuedRequest) -> int:
         request_summary = self._request_summary(queued_request.request)
@@ -1198,9 +1226,129 @@ class Stage1Scheduler(Scheduler):
             return _TYPE_FIFO_DEFER_DEFAULT_RATIO
         return min(max(float(ratio), 0.0), 1.0)
 
-    def _type_fifo_defer_threshold_s(self, estimated_cost_s: float) -> float:
+    def _type_fifo_defer_threshold_s(self, estimated_cost_s: float, *, wait_p95_s: float | None = None) -> float:
         estimated_cost_s = max(float(estimated_cost_s), 1e-9)
-        return max(self._learned_type_fifo_defer_wait_s(), _TYPE_FIFO_DEFER_WAIT_COST_RATIO * estimated_cost_s)
+        effective_wait_p95_s = self._type_fifo_defer_wait_p95_s() if wait_p95_s is None else max(float(wait_p95_s), 0.0)
+        return max(effective_wait_p95_s, _TYPE_FIFO_DEFER_WAIT_COST_RATIO * estimated_cost_s)
+
+    def _type_fifo_defer_overstarved_threshold_s(self, estimated_cost_s: float, *, wait_p95_s: float | None = None) -> float:
+        estimated_cost_s = max(float(estimated_cost_s), 1e-9)
+        effective_wait_p95_s = self._type_fifo_defer_wait_p95_s() if wait_p95_s is None else max(float(wait_p95_s), 0.0)
+        return max(
+            _TYPE_FIFO_DEFER_OVERSTARVED_WAIT_P95_MULTIPLIER * effective_wait_p95_s,
+            _TYPE_FIFO_DEFER_OVERSTARVED_COST_MULTIPLIER * estimated_cost_s,
+        )
+
+    def _type_fifo_defer_request_key(self, request: OmniDiffusionRequest) -> str:
+        return self._request_label(request)
+
+    def _track_type_fifo_defer_arrival(self, request: OmniDiffusionRequest) -> None:
+        request_key = self._type_fifo_defer_request_key(request)
+        if request_key in self._type_fifo_defer_arrived_request_ids:
+            return
+        self._type_fifo_defer_arrived_request_ids.add(request_key)
+        self._type_fifo_defer_arrival_window_ids.append(request_key)
+        self._type_fifo_defer_arrival_window_id_set.add(request_key)
+        while len(self._type_fifo_defer_arrival_window_ids) > _TYPE_FIFO_DEFER_WINDOW_MAXLEN:
+            evicted_request_key = self._type_fifo_defer_arrival_window_ids.popleft()
+            self._type_fifo_defer_arrival_window_id_set.discard(evicted_request_key)
+            self._type_fifo_defer_window_deferred_request_ids.discard(evicted_request_key)
+
+    def _type_fifo_defer_budget_status(self, target_ratio: float) -> dict[str, int]:
+        global_limit = int(len(self._type_fifo_defer_arrived_request_ids) * target_ratio)
+        global_used = len(self._type_fifo_defer_deferred_request_ids)
+        window_limit = int(len(self._type_fifo_defer_arrival_window_id_set) * target_ratio)
+        window_used = len(self._type_fifo_defer_window_deferred_request_ids)
+        return {
+            "global_arrived_unique": len(self._type_fifo_defer_arrived_request_ids),
+            "global_budget_limit": global_limit,
+            "global_budget_used": global_used,
+            "global_budget_remaining": max(global_limit - global_used, 0),
+            "window_arrived_unique": len(self._type_fifo_defer_arrival_window_id_set),
+            "window_budget_limit": window_limit,
+            "window_budget_used": window_used,
+            "window_budget_remaining": max(window_limit - window_used, 0),
+        }
+
+    def _mark_type_fifo_deferred(self, request: OmniDiffusionRequest) -> None:
+        request_key = self._type_fifo_defer_request_key(request)
+        self._type_fifo_defer_deferred_request_ids.add(request_key)
+        if request_key in self._type_fifo_defer_arrival_window_id_set:
+            self._type_fifo_defer_window_deferred_request_ids.add(request_key)
+
+    def _type_fifo_defer_distribution_stats(
+        self,
+        grouped_requests: dict[tuple[int, int, int, int, int], list[_QueuedRequest]],
+        type_costs: dict[tuple[int, int, int, int, int], float],
+    ) -> dict[str, float]:
+        total_requests = sum(len(grouped) for grouped in grouped_requests.values())
+        if total_requests <= 0 or not type_costs:
+            return {
+                "queue_depth": 0.0,
+                "type_count": 0.0,
+                "dominant_type_share": 0.0,
+                "heavy_type_share": 0.0,
+                "lighter_request_share": 0.0,
+                "weighted_mean_type_cost_s": 0.0,
+            }
+
+        heaviest_type_cost_s = max(type_costs.values())
+        dominant_type_size = max(len(grouped) for grouped in grouped_requests.values())
+        heavy_request_count = sum(
+            len(grouped_requests[type_key])
+            for type_key, type_cost_s in type_costs.items()
+            if type_cost_s == heaviest_type_cost_s
+        )
+        weighted_mean_type_cost_s = (
+            sum(type_costs[type_key] * len(grouped) for type_key, grouped in grouped_requests.items())
+            / float(total_requests)
+        )
+        heavy_type_share = float(heavy_request_count) / float(total_requests)
+        lighter_request_share = max(1.0 - heavy_type_share, 0.0)
+        return {
+            "queue_depth": float(total_requests),
+            "type_count": float(len(grouped_requests)),
+            "dominant_type_share": float(dominant_type_size) / float(total_requests),
+            "heavy_type_share": heavy_type_share,
+            "lighter_request_share": lighter_request_share,
+            "weighted_mean_type_cost_s": float(weighted_mean_type_cost_s),
+        }
+
+    def _adaptive_type_fifo_defer_budget_limit(
+        self,
+        waiting_queue_len: int,
+        *,
+        target_ratio: float,
+        distribution_stats: dict[str, float],
+    ) -> tuple[int, float]:
+        if waiting_queue_len <= 1 or target_ratio <= 0.0:
+            return 0, 0.0
+
+        dominant_type_share = float(distribution_stats.get("dominant_type_share", 0.0) or 0.0)
+        heavy_type_share = float(distribution_stats.get("heavy_type_share", 0.0) or 0.0)
+        lighter_request_share = float(distribution_stats.get("lighter_request_share", 0.0) or 0.0)
+        type_count = int(distribution_stats.get("type_count", 0.0) or 0.0)
+        adaptive_ratio = min(
+            1.0,
+            target_ratio
+            * (
+                1.0
+                + (dominant_type_share * lighter_request_share)
+                + max(heavy_type_share - target_ratio, 0.0)
+            ),
+        )
+        defer_budget_limit = min(int(waiting_queue_len * adaptive_ratio), waiting_queue_len - 1)
+        if (
+            defer_budget_limit <= 0
+            and type_count >= 2
+            and waiting_queue_len >= _TYPE_FIFO_DEFER_ADAPTIVE_MIN_QUEUE_DEPTH
+            and lighter_request_share > 0.0
+            and heavy_type_share >= max(target_ratio, 1.0 / float(waiting_queue_len))
+        ):
+            defer_budget_limit = 1
+
+        defer_budget_limit = max(defer_budget_limit, _TYPE_FIFO_DEFER_MIN_BUDGET)
+        return defer_budget_limit, adaptive_ratio
 
     @classmethod
     def _request_type_key(cls, queued_request: _QueuedRequest) -> tuple[int, int, int, int, int]:
@@ -1230,7 +1378,7 @@ class Stage1Scheduler(Scheduler):
 
         aging_factor = self._effective_sjf_aging_factor()
         defer_budget_ratio = self._type_fifo_defer_budget_ratio()
-        defer_budget_limit = max(int(len(waiting_requests) * defer_budget_ratio), _TYPE_FIFO_DEFER_MIN_BUDGET)
+        wait_p95_s = self._type_fifo_defer_wait_p95_s(waiting_requests)
         metrics_by_sequence: dict[int, dict[str, Any]] = {}
         grouped_requests: dict[tuple[int, int, int, int, int], list[_QueuedRequest]] = {}
         type_costs: dict[tuple[int, int, int, int, int], float] = {}
@@ -1256,8 +1404,12 @@ class Stage1Scheduler(Scheduler):
                 "same_type_rank": 0,
                 "same_type_size": 0,
                 "defer_budget_ratio": defer_budget_ratio,
-                "defer_budget_limit": defer_budget_limit,
-                "defer_threshold_s": self._type_fifo_defer_threshold_s(estimated_cost_s),
+                "defer_budget_limit": 0,
+                "defer_threshold_s": self._type_fifo_defer_threshold_s(estimated_cost_s, wait_p95_s=wait_p95_s),
+                "over_starved_threshold_s": self._type_fifo_defer_overstarved_threshold_s(
+                    estimated_cost_s,
+                    wait_p95_s=wait_p95_s,
+                ),
                 "deferred": 0,
                 "defer_candidate": 0,
                 "dispatch_group": "normal",
@@ -1278,6 +1430,39 @@ class Stage1Scheduler(Scheduler):
                 request_metrics["same_type_rank"] = same_type_rank
                 request_metrics["same_type_size"] = len(grouped)
 
+        distribution_stats = self._type_fifo_defer_distribution_stats(grouped_requests, type_costs)
+        queue_defer_budget_limit, adaptive_budget_ratio = self._adaptive_type_fifo_defer_budget_limit(
+            len(waiting_requests),
+            target_ratio=defer_budget_ratio,
+            distribution_stats=distribution_stats,
+        )
+        budget_status = self._type_fifo_defer_budget_status(defer_budget_ratio)
+        defer_budget_limit = min(
+            queue_defer_budget_limit,
+            budget_status["global_budget_remaining"],
+            budget_status["window_budget_remaining"],
+        )
+        for request_metrics in metrics_by_sequence.values():
+            request_metrics["defer_budget_limit"] = defer_budget_limit
+            request_metrics["queue_defer_budget_limit"] = queue_defer_budget_limit
+            request_metrics["adaptive_defer_budget_ratio"] = adaptive_budget_ratio
+            request_metrics["dominant_type_share"] = distribution_stats["dominant_type_share"]
+            request_metrics["heavy_type_share"] = distribution_stats["heavy_type_share"]
+            request_metrics["lighter_request_share"] = distribution_stats["lighter_request_share"]
+            request_metrics["weighted_mean_type_cost_s"] = distribution_stats["weighted_mean_type_cost_s"]
+            request_metrics["global_arrived_unique"] = budget_status["global_arrived_unique"]
+            request_metrics["global_budget_limit"] = budget_status["global_budget_limit"]
+            request_metrics["global_budget_used"] = budget_status["global_budget_used"]
+            request_metrics["global_budget_remaining"] = budget_status["global_budget_remaining"]
+            request_metrics["window_arrived_unique"] = budget_status["window_arrived_unique"]
+            request_metrics["window_budget_limit"] = budget_status["window_budget_limit"]
+            request_metrics["window_budget_used"] = budget_status["window_budget_used"]
+            request_metrics["window_budget_remaining"] = budget_status["window_budget_remaining"]
+            request_metrics["wait_p95_s"] = wait_p95_s
+            request_metrics["defer_relief_score"] = 0.0
+            request_metrics["defer_harm_score"] = 0.0
+            request_metrics["over_starved"] = 0
+
         deferred_requests: list[_QueuedRequest] = []
         grouped_remaining = {type_key: list(grouped) for type_key, grouped in grouped_requests.items()}
 
@@ -1291,6 +1476,30 @@ class Stage1Scheduler(Scheduler):
             lighter_type_exists = any(type_cost_s < max_type_cost_s for type_cost_s in remaining_type_costs.values())
             if not lighter_type_exists:
                 break
+            remaining_request_count = sum(len(grouped) for grouped in grouped_remaining.values())
+            lighter_request_count = sum(
+                len(grouped)
+                for type_key, grouped in grouped_remaining.items()
+                if grouped and remaining_type_costs[type_key] < max_type_cost_s
+            )
+            lighter_type_count = sum(
+                1 for type_key, grouped in grouped_remaining.items() if grouped and remaining_type_costs[type_key] < max_type_cost_s
+            )
+            lighter_mean_cost_s = (
+                sum(
+                    remaining_type_costs[type_key] * len(grouped)
+                    for type_key, grouped in grouped_remaining.items()
+                    if grouped and remaining_type_costs[type_key] < max_type_cost_s
+                )
+                / float(lighter_request_count)
+                if lighter_request_count > 0
+                else max_type_cost_s
+            )
+            lighter_request_share = (
+                float(lighter_request_count) / float(remaining_request_count)
+                if remaining_request_count > 0
+                else 0.0
+            )
 
             candidate_type_keys = [
                 type_key for type_key, type_cost_s in remaining_type_costs.items() if type_cost_s == max_type_cost_s
@@ -1300,10 +1509,29 @@ class Stage1Scheduler(Scheduler):
                 head_request = grouped_remaining[type_key][0]
                 request_metrics = metrics_by_sequence[head_request.sequence_id]
                 request_metrics["defer_candidate"] = 1
-                if request_metrics["age_s"] >= request_metrics["defer_threshold_s"]:
+                defer_threshold_s = float(request_metrics["defer_threshold_s"] or 0.0)
+                estimated_cost_s = max(float(request_metrics["estimated_cost_s"] or 0.0), 1e-9)
+                age_s = float(request_metrics["age_s"] or 0.0)
+                over_starved_threshold_s = float(request_metrics["over_starved_threshold_s"] or 0.0)
+                defer_relief_score = float(lighter_request_count) * max(max_type_cost_s - lighter_mean_cost_s, 0.0)
+                defer_harm_score = estimated_cost_s * max(age_s / max(defer_threshold_s, 1e-9), 1.0)
+                over_starved = int(age_s >= over_starved_threshold_s)
+                request_metrics["lighter_request_count"] = lighter_request_count
+                request_metrics["lighter_type_count"] = lighter_type_count
+                request_metrics["lighter_request_share"] = lighter_request_share
+                request_metrics["lighter_mean_cost_s"] = lighter_mean_cost_s
+                request_metrics["defer_relief_score"] = defer_relief_score
+                request_metrics["defer_harm_score"] = defer_harm_score
+                request_metrics["over_starved"] = over_starved
+                if (
+                    age_s >= defer_threshold_s
+                    and not over_starved
+                    and defer_relief_score > defer_harm_score
+                ):
                     eligible_candidates.append(
                         (
-                            -float(request_metrics["age_s"]),
+                            -defer_relief_score,
+                            -age_s,
                             head_request.enqueue_time,
                             head_request.sequence_id,
                             type_key,
@@ -1313,12 +1541,15 @@ class Stage1Scheduler(Scheduler):
             if not eligible_candidates:
                 break
 
-            _neg_age_s, _enqueue_time, _sequence_id, deferred_type_key, deferred_request = min(eligible_candidates)
+            _neg_relief_score, _neg_age_s, _enqueue_time, _sequence_id, deferred_type_key, deferred_request = min(
+                eligible_candidates
+            )
             grouped_remaining[deferred_type_key].pop(0)
             deferred_requests.append(deferred_request)
             deferred_metrics = metrics_by_sequence[deferred_request.sequence_id]
             deferred_metrics["deferred"] = 1
             deferred_metrics["dispatch_group"] = "deferred"
+            self._mark_type_fifo_deferred(deferred_request.request)
 
         ordered_queue: list[_QueuedRequest] = []
         while True:
@@ -1356,10 +1587,16 @@ class Stage1Scheduler(Scheduler):
         )
         ordered_queue.extend(deferred_requests)
 
+        final_budget_status = self._type_fifo_defer_budget_status(defer_budget_ratio)
+
         for queue_rank, queued_request in enumerate(ordered_queue, start=1):
             metrics_by_sequence[queued_request.sequence_id]["queue_rank"] = queue_rank
             metrics_by_sequence[queued_request.sequence_id]["deferred_queue_size"] = len(deferred_requests)
             metrics_by_sequence[queued_request.sequence_id]["deferred_budget_used"] = len(deferred_requests)
+            metrics_by_sequence[queued_request.sequence_id]["global_budget_used"] = final_budget_status["global_budget_used"]
+            metrics_by_sequence[queued_request.sequence_id]["global_budget_remaining"] = final_budget_status["global_budget_remaining"]
+            metrics_by_sequence[queued_request.sequence_id]["window_budget_used"] = final_budget_status["window_budget_used"]
+            metrics_by_sequence[queued_request.sequence_id]["window_budget_remaining"] = final_budget_status["window_budget_remaining"]
 
         return ordered_queue, metrics_by_sequence
 
@@ -1763,14 +2000,19 @@ class Stage1Scheduler(Scheduler):
                     queued_request.schedule_metrics.update(metrics)
             request_metrics = metrics_by_sequence.get(new_request.sequence_id, {})
             logger.info(
-                "QUEUE_REORDER request_id=%s policy=%s type_key=%s aged_cost_s=%.4f age_s=%.4f deferred=%s defer_threshold_s=%.4f queue_rank=%s",
+                "QUEUE_REORDER request_id=%s policy=%s type_key=%s aged_cost_s=%.4f age_s=%.4f deferred=%s over_starved=%s defer_threshold_s=%.4f over_starved_threshold_s=%.4f defer_budget_limit=%s global_budget_remaining=%s window_budget_remaining=%s queue_rank=%s",
                 self._request_label(new_request.request),
                 policy,
                 request_metrics.get("type_key"),
                 float(request_metrics.get("aged_cost_s", 0.0) or 0.0),
                 float(request_metrics.get("age_s", 0.0) or 0.0),
                 request_metrics.get("deferred"),
+                request_metrics.get("over_starved"),
                 float(request_metrics.get("defer_threshold_s", 0.0) or 0.0),
+                float(request_metrics.get("over_starved_threshold_s", 0.0) or 0.0),
+                request_metrics.get("defer_budget_limit"),
+                request_metrics.get("global_budget_remaining"),
+                request_metrics.get("window_budget_remaining"),
                 request_metrics.get("queue_rank"),
             )
             return
@@ -2096,6 +2338,8 @@ class Stage1Scheduler(Scheduler):
             schedule_metrics={"scheduler_policy": self._policy_name()},
         )
         self._waiting_queue.append(queued_request)
+        if is_new_arrival and self._policy_name() == _TYPE_FIFO_DEFER_BUDGET_POLICY:
+            self._track_type_fifo_defer_arrival(request)
         if self._policy_name() in {_P95_FIRST_POLICY, _P95_FIRST_DEADLINE_POLICY, _P95_BUCKET_SJF_NORMALIZED_POLICY, _P95_BUCKET_SJF_POLICY, "slo_first", "slack_age", "slack_cost_age", _SLACK_HYBRID_POLICY}:
             self._record_p95_first_cost_observation(queued_request)
         self._maybe_reorder_waiting_queue(queued_request, enqueue_time)

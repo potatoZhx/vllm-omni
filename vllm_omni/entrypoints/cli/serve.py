@@ -376,7 +376,7 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-type-fifo-defer-budget-ratio",
             type=float,
             default=0.05,
-            help="Maximum fraction of waiting requests that 'type_fifo_defer_budget' may mark as deferred tail requests.",
+            help="Strict deferred-request ratio used by 'type_fifo_defer_budget' as both the global unique-request ceiling and the sliding-window local budget ceiling.",
         )
         omni_config_group.add_argument(
             "--instance-runtime-profile-path",

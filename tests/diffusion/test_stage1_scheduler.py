@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+import vllm_omni.diffusion.stage1_scheduler as stage1_scheduler_module
 from vllm_omni.diffusion.data import DiffusionOutput
 from vllm_omni.diffusion.stage1_scheduler import Stage1Scheduler, _QueuedRequest
 
@@ -779,7 +780,7 @@ def test_stage1_scheduler_type_fifo_defer_budget_caps_deferred_requests():
             num_inference_steps=6,
             extra_args={"estimated_cost_s": 3.0},
         )
-        deferred_oldest.arrival_time = now - 100.0
+        deferred_oldest.arrival_time = now - 25.0
         sched._enqueue_request_locked(deferred_oldest)
 
         deferred_newer = _mock_request(
@@ -788,7 +789,7 @@ def test_stage1_scheduler_type_fifo_defer_budget_caps_deferred_requests():
             num_inference_steps=6,
             extra_args={"estimated_cost_s": 3.0},
         )
-        deferred_newer.arrival_time = now - 90.0
+        deferred_newer.arrival_time = now - 20.0
         sched._enqueue_request_locked(deferred_newer)
 
         ordered = list(sched._waiting_queue)
@@ -853,6 +854,185 @@ def test_stage1_scheduler_type_fifo_defer_budget_uses_learned_wait_threshold():
     assert deferred_ids == ["learned-old"]
     deferred = next(queued for queued in ordered if queued.request.request_ids[0] == "learned-old")
     assert deferred.schedule_metrics["defer_threshold_s"] == pytest.approx(60.0)
+
+
+def test_stage1_scheduler_type_fifo_defer_budget_does_not_cap_wait_p95_at_120s():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    for idx in range(20):
+        sample_request = _mock_request(
+            f"sample-type-long-wait-{idx}",
+            resolution=1280,
+            num_inference_steps=6,
+            extra_args={"estimated_cost_s": 3.0},
+        )
+        setattr(sample_request, "_type_fifo_defer_cumulative_execute_ms", 10000.0)
+        sched._record_type_fifo_defer_wait_ms(310000.0, request=sample_request)
+
+    now = time.monotonic()
+    assert sched._learned_type_fifo_defer_wait_s() == pytest.approx(300.0)
+
+    with sched._queue_cv:
+        for idx in range(18):
+            small = _mock_request(
+                f"small-long-wait-{idx}",
+                resolution=854,
+                num_inference_steps=3,
+                extra_args={"estimated_cost_s": 1.0},
+            )
+            small.arrival_time = now
+            sched._enqueue_request_locked(small)
+
+        heavy = _mock_request(
+            "heavy-long-wait",
+            resolution=1280,
+            num_inference_steps=6,
+            extra_args={"estimated_cost_s": 3.0},
+        )
+        heavy.arrival_time = now - 290.0
+        sched._enqueue_request_locked(heavy)
+
+        ordered = list(sched._waiting_queue)
+
+    tracked = next(queued for queued in ordered if queued.request.request_ids[0] == "heavy-long-wait")
+    assert tracked.schedule_metrics["wait_p95_s"] == pytest.approx(300.0)
+    assert tracked.schedule_metrics["defer_threshold_s"] == pytest.approx(300.0)
+    assert tracked.schedule_metrics["over_starved_threshold_s"] == pytest.approx(600.0)
+
+
+def test_stage1_scheduler_type_fifo_defer_budget_respects_strict_global_budget():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    now = time.monotonic()
+
+    with sched._queue_cv:
+        for idx in range(36):
+            small = _mock_request(
+                f"small-global-{idx}",
+                resolution=854,
+                num_inference_steps=3,
+                extra_args={"estimated_cost_s": 1.0},
+            )
+            small.arrival_time = now
+            sched._enqueue_request_locked(small)
+
+        for idx in range(4):
+            large = _mock_request(
+                f"large-global-{idx}",
+                resolution=1280,
+                num_inference_steps=6,
+                extra_args={"estimated_cost_s": 3.0},
+            )
+            large.arrival_time = now - (25.0 - idx)
+            sched._enqueue_request_locked(large)
+
+        ordered = list(sched._waiting_queue)
+
+    deferred_ids = [queued.request.request_ids[0] for queued in ordered if queued.schedule_metrics["deferred"] == 1]
+    assert len(deferred_ids) == 1
+    assert deferred_ids[0] in {"large-global-0", "large-global-1"}
+    assert len(sched._type_fifo_defer_deferred_request_ids) <= 2
+    assert sched._type_fifo_defer_deferred_request_ids <= {
+        "large-global-0",
+        "large-global-1",
+        "large-global-2",
+        "large-global-3",
+    }
+    deferred_request = next(queued for queued in ordered if queued.request.request_ids[0] == deferred_ids[0])
+    assert deferred_request.schedule_metrics["global_budget_limit"] == 2
+    assert deferred_request.schedule_metrics["global_budget_used"] <= 2
+    assert deferred_request.schedule_metrics["global_budget_remaining"] >= 0
+
+
+def test_stage1_scheduler_type_fifo_defer_budget_respects_sliding_window_budget(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(stage1_scheduler_module, "_TYPE_FIFO_DEFER_WINDOW_MAXLEN", 20)
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    now = time.monotonic()
+
+    with sched._queue_cv:
+        for idx in range(36):
+            small = _mock_request(
+                f"small-window-{idx}",
+                resolution=854,
+                num_inference_steps=3,
+                extra_args={"estimated_cost_s": 1.0},
+            )
+            small.arrival_time = now
+            sched._enqueue_request_locked(small)
+
+        for idx in range(4):
+            large = _mock_request(
+                f"large-window-{idx}",
+                resolution=1280,
+                num_inference_steps=6,
+                extra_args={"estimated_cost_s": 3.0},
+            )
+            large.arrival_time = now - (25.0 - idx)
+            sched._enqueue_request_locked(large)
+
+        ordered = list(sched._waiting_queue)
+
+    deferred_ids = [queued.request.request_ids[0] for queued in ordered if queued.schedule_metrics["deferred"] == 1]
+    assert deferred_ids == []
+    assert len(sched._type_fifo_defer_deferred_request_ids) <= 2
+    assert len(sched._type_fifo_defer_window_deferred_request_ids) <= 1
+    assert sched._type_fifo_defer_window_deferred_request_ids == {"large-window-0"}
+    sample_request = next(queued for queued in ordered if queued.request.request_ids[0] == "large-window-3")
+    assert sample_request.schedule_metrics["global_budget_limit"] == 2
+    assert sample_request.schedule_metrics["window_budget_limit"] == 1
+    assert sample_request.schedule_metrics["window_budget_used"] == 1
+    assert sample_request.schedule_metrics["window_budget_remaining"] == 0
+
+
+def test_stage1_scheduler_type_fifo_defer_budget_stops_deferring_overstarved_heavy_head():
+    sched, _req_q, _res_q = _make_stage1_scheduler(policy="type_fifo_defer_budget")
+    for idx in range(20):
+        sample_request = _mock_request(
+            f"sample-type-overstarved-{idx}",
+            resolution=1280,
+            num_inference_steps=6,
+            extra_args={"estimated_cost_s": 3.0},
+        )
+        setattr(sample_request, "_type_fifo_defer_cumulative_execute_ms", 10000.0)
+        sched._record_type_fifo_defer_wait_ms(70000.0, request=sample_request)
+    now = time.monotonic()
+
+    with sched._queue_cv:
+        for idx in range(19):
+            small = _mock_request(
+                f"small-overstarved-{idx}",
+                resolution=854,
+                num_inference_steps=3,
+                extra_args={"estimated_cost_s": 1.0},
+            )
+            small.arrival_time = now
+            sched._enqueue_request_locked(small)
+
+        very_old_large = _mock_request(
+            "large-overstarved-old",
+            resolution=1280,
+            num_inference_steps=6,
+            extra_args={"estimated_cost_s": 3.0},
+        )
+        very_old_large.arrival_time = now - 220.0
+        sched._enqueue_request_locked(very_old_large)
+
+        newer_large = _mock_request(
+            "large-overstarved-new",
+            resolution=1280,
+            num_inference_steps=6,
+            extra_args={"estimated_cost_s": 3.0},
+        )
+        newer_large.arrival_time = now - 90.0
+        sched._enqueue_request_locked(newer_large)
+
+        ordered = list(sched._waiting_queue)
+
+    overstarved_request = next(queued for queued in ordered if queued.request.request_ids[0] == "large-overstarved-old")
+    deferred_ids = [queued.request.request_ids[0] for queued in ordered if queued.schedule_metrics["deferred"] == 1]
+    assert deferred_ids == []
+    assert overstarved_request.schedule_metrics["over_starved"] == 1
+    assert overstarved_request.schedule_metrics["wait_p95_s"] == pytest.approx(60.0)
+    assert overstarved_request.schedule_metrics["over_starved_threshold_s"] == pytest.approx(120.0)
+    assert overstarved_request.schedule_metrics["over_starved_threshold_s"] < overstarved_request.schedule_metrics["age_s"]
 
 
 def test_stage1_scheduler_sjf_aging_adapts_to_step_chunk_requeue():
