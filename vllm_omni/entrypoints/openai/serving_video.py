@@ -115,6 +115,10 @@ class OmniOpenAIServingVideo:
             gen_params.seed = request.seed
         if request.boundary_ratio is not None:
             gen_params.boundary_ratio = request.boundary_ratio
+        for key in ("slo_ms", "slo_target_ms", "deadline_ts", "estimated_cost_s"):
+            value = getattr(request, key, None)
+            if value is not None:
+                gen_params.extra_args[key] = value
 
         logger.info(
             "Boundary ratio parse: request=%s gen_params=%s",

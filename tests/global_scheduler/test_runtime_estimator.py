@@ -18,6 +18,23 @@ def test_runtime_estimator_uses_profiling_when_hit():
     assert estimate == pytest.approx(2.5)
 
 
+def test_runtime_estimator_prefers_request_estimated_cost():
+    """Estimator should trust explicit request runtime when provided."""
+    estimator = RuntimeEstimator(profiling_data={("wan-video-tp2", 1280, 720, 16, 50): 2.5})
+    request = RequestMeta(
+        request_id="r-explicit",
+        width=1280,
+        height=720,
+        num_frames=16,
+        num_inference_steps=50,
+        estimated_cost_s=3.7,
+    )
+
+    estimate = estimator.estimate_runtime_s(request=request, ewma_fallback_s=1.0, instance_type="wan-video-tp2")
+
+    assert estimate == pytest.approx(3.7)
+
+
 def test_runtime_estimator_falls_back_to_ewma_when_miss():
     """Estimator should fallback to EWMA when profiling key misses."""
     estimator = RuntimeEstimator(profiling_data={("wan-video-tp2", 1280, 720, 16, 50): 2.5})

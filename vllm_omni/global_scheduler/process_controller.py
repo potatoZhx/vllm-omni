@@ -66,7 +66,7 @@ class LocalProcessController(ProcessController):
         parsed = urlparse(instance.endpoint)
         if parsed.port is None:
             raise LifecycleUnsupportedError(f"endpoint has no port for instance {instance.id}")
-        launch_args = LocalProcessController._strip_scheduler_only_args(instance.launch_args)
+        launch_args = list(instance.launch_args)
         argv = [
             instance.launch_executable,
             "serve",
@@ -94,23 +94,6 @@ class LocalProcessController(ProcessController):
         if explicit_node:
             return ["numactl", f"--cpunodebind={explicit_node}", f"--membind={explicit_node}", *argv]
         return argv
-
-    @staticmethod
-    def _strip_scheduler_only_args(args: list[str]) -> list[str]:
-        """Remove scheduler-only args that should not be forwarded to `vllm serve`."""
-        filtered: list[str] = []
-        idx = 0
-        while idx < len(args):
-            item = args[idx]
-            if item == "--max-concurrency":
-                idx += 2
-                continue
-            if item.startswith("--max-concurrency="):
-                idx += 1
-                continue
-            filtered.append(item)
-            idx += 1
-        return filtered
 
     @staticmethod
     def _expand_instance_placeholders(args: list[str], instance: InstanceSpec) -> list[str]:

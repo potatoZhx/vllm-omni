@@ -31,6 +31,9 @@ from vllm_omni.diffusion.models.qwen_image.autoencoder_kl_qwenimage import (
 from vllm_omni.diffusion.models.qwen_image.cfg_parallel import (
     QwenImageCFGParallelMixin,
 )
+from vllm_omni.diffusion.models.qwen_image.pipeline_qwen_image import (
+    set_single_step_warmup_timestep,
+)
 from vllm_omni.diffusion.models.qwen_image.qwen_image_transformer import (
     QwenImageTransformer2DModel,
 )
@@ -755,17 +758,22 @@ the image\n<|vision_start|><|image_pad|><|vision_end|><|im_end|>\n<|im_start|>as
         ] * batch_size
 
         # 5. Prepare timesteps
-        sigmas = np.linspace(1.0, 0, num_inference_steps + 1)[:-1] if sigmas is None else sigmas
-        base_seqlen = 256 * 256 / 16 / 16
-        mu = (image_latents.shape[1] / base_seqlen) ** 0.5
-        timesteps, num_inference_steps = retrieve_timesteps(
-            self.scheduler,
-            num_inference_steps,
-            self.device,
-            sigmas=sigmas,
-            mu=mu,
-        )
-        self._num_timesteps = len(timesteps)
+        if num_inference_steps == 1:
+            sigma = float(sigmas[0]) if sigmas is not None else 1.0
+            timesteps, num_inference_steps = set_single_step_warmup_timestep(self.scheduler, sigma=sigma)
+            self._num_timesteps = len(timesteps)
+        else:
+            sigmas = np.linspace(1.0, 0, num_inference_steps + 1)[:-1] if sigmas is None else sigmas
+            base_seqlen = 256 * 256 / 16 / 16
+            mu = (image_latents.shape[1] / base_seqlen) ** 0.5
+            timesteps, num_inference_steps = retrieve_timesteps(
+                self.scheduler,
+                num_inference_steps,
+                self.device,
+                sigmas=sigmas,
+                mu=mu,
+            )
+            self._num_timesteps = len(timesteps)
 
         # handle guidance
         if self.transformer.guidance_embeds and guidance_scale is None:

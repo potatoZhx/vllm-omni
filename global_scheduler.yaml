@@ -1,3 +1,26 @@
+# Current default template:
+#   global scheduler  = min_queue_length
+#   instance scheduler = sjf
+#   chunk preemption  = enabled
+#
+# Before running, you usually only need to adjust:
+#   1) benchmark.model / instances[].launch.model
+#   2) benchmark.dataset_path
+#   3) benchmark.worker_ids
+#   4) instances[].endpoint
+#   5) instances[].launch.env.CUDA_VISIBLE_DEVICES
+#   6) instances[].stop.args
+#
+# This file is intentionally Qwen-image-first for the current joint experiment.
+# Later, when switching to Wan2.2, keep the same structure and replace:
+#   - benchmark.backend -> v1/videos
+#   - benchmark.task -> t2v / i2v
+#   - benchmark.dataset_path -> video trace
+#   - instances[].backends
+#   - instances[].launch.model
+#   - instances[].launch.args
+#   - instances[].launch.env.CUDA_VISIBLE_DEVICES
+
 server:
   host: 0.0.0.0
   port: 8089
@@ -11,44 +34,86 @@ scheduler:
 
 policy:
   baseline:
-    algorithm: round_robin #short_queue_runtime
-    runtime_profile_path: ./profile/instance_runtime_profile.sample.json
+    algorithm: min_queue_length
 
 benchmark:
-  worker_ids: [worker0]
+  # Keep at least two workers here, otherwise global routing is not meaningful.
+  worker_ids: [worker0, worker1]
   worker_ready_timeout_s: 1200
-  model: /data2/group_谈海生/mumura/models/Wan2.2-T2V-A14B-Diffusers
-  backend: v1/videos
-  task: t2v
+  model: Qwen/Qwen-Image
+  backend: vllm-omni
+  task: t2i
   dataset: trace
-  dataset_path: /home/mumura/omni/vllm-omni/benchmarks/dataset/cogvideox_trace_steps_30_40_50.txt
+  dataset_path: ./benchmarks/dataset/sd3_trace_redistributed.txt
   max_concurrency: 20
   warmup_requests: 1
   warmup_num_inference_steps: 1
-  output_file: logs/global_scheduler_benchmark_metrics.json
+  output_file: ./logs/global_scheduler_benchmark_metrics.json
   auto_stop: true
 
 instances:
   - id: worker0
     endpoint: http://127.0.0.1:8001
-    instance_type: wan
-    numa_node: 0
+    instance_type: qwen-image
+    backends: [vllm-omni, openai]
     launch:
       executable: vllm
-      model: /data2/group_谈海生/mumura/models/Wan2.2-T2V-A14B-Diffusers
+      model: Qwen/Qwen-Image
       args:
         - --omni
-        - --ulysses-degree
-        - "4"
-        - --cfg-parallel-size
+        - --max-concurrency
         - "2"
-        - --use-hsdp
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "4"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
         - --num-weight-load-threads
         - "4"
       env:
-        CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+        CUDA_VISIBLE_DEVICES: "0"
     stop:
       executable: pkill
       args:
         - -f
-        - "vllm serve /data2/group_谈海生/mumura/models/Wan2.2-T2V-A14B-Diffusers --port {endpoint_port}"
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"
+
+  - id: worker1
+    endpoint: http://127.0.0.1:8002
+    instance_type: qwen-image
+    backends: [vllm-omni, openai]
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --max-concurrency
+        - "2"
+        - --instance-scheduler-policy
+        - sjf
+        - --diffusion-enable-step-chunk
+        - --diffusion-enable-chunk-preemption
+        - --diffusion-chunk-budget-steps
+        - "4"
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        CUDA_VISIBLE_DEVICES: "1"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - "vllm serve Qwen/Qwen-Image --port {endpoint_port}"

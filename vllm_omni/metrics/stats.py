@@ -5,6 +5,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
+from numbers import Number
 from typing import Any
 
 from vllm.logger import init_logger
@@ -39,7 +40,7 @@ class StageRequestStats:
     final_output_type: str | None = None
     request_id: str | None = None
     postprocess_time_ms: float = 0.0
-    diffusion_metrics: dict[str, int] = None
+    diffusion_metrics: dict[str, Any] = None
     audio_generated_frames: int = 0
 
     @property
@@ -144,9 +145,8 @@ class OrchestratorAggregator:
         self.accumulated_gen_time_ms: defaultdict[str, defaultdict[int, float]] = defaultdict(
             lambda: defaultdict(float)
         )  # {request_id: {stage_id:accumulated_gen_time_ms}}
-        self.diffusion_metrics: defaultdict[str, defaultdict[str, float]] = defaultdict(
-            lambda: defaultdict(float)
-        )  # {request_id: {diffusion_metrics_key: accumulated_metrics_data}}
+        self.diffusion_metrics: defaultdict[str, dict[str, Any]] = defaultdict(dict)
+        # {request_id: {diffusion_metrics_key: accumulated_metrics_data}}
 
     def _get_or_create_transfer_event(
         self,
@@ -328,11 +328,7 @@ class OrchestratorAggregator:
         stats.stage_id = stage_id
         stats.request_id = req_id
         stats.final_output_type = final_output_type
-        stats.diffusion_metrics = (
-            {k: int(v) for k, v in self.diffusion_metrics.pop(req_id, {}).items()}
-            if req_id in self.diffusion_metrics
-            else None
-        )
+        stats.diffusion_metrics = self.diffusion_metrics.pop(req_id, None)
         return stats
 
     def on_stage_metrics(
@@ -395,7 +391,11 @@ class OrchestratorAggregator:
             diffusion_metrics = diffusion_metrics[0]
         if diffusion_metrics:
             for key, value in diffusion_metrics.items():
-                self.diffusion_metrics[req_id][key] += value
+                current = self.diffusion_metrics[req_id].get(key)
+                if isinstance(value, Number) and not isinstance(value, bool):
+                    self.diffusion_metrics[req_id][key] = float(current or 0.0) + float(value)
+                else:
+                    self.diffusion_metrics[req_id][key] = value
 
     def on_forward(
         self,

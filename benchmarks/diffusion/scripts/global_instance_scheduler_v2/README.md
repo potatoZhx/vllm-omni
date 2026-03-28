@@ -1,0 +1,246 @@
+# Global + Instance Scheduler V2
+
+这一套脚本是对旧版 `benchmarks/diffusion/scripts/run_global_instance_scheduler_*.sh` 的重写版本，目标是：
+
+- 保持功能等价
+- 把 bash 压到最薄
+- 把配置生成、scheduler 启停、benchmark 调度集中到一个 Python 入口
+- 避免 bash heredoc Python 和过长调用链
+
+## 文件
+
+- `run_case.sh`
+  - 单 case 入口
+- `run_suite.sh`
+  - 多 case 批量入口
+- `orchestrate.py`
+  - 真正的实现入口
+  - 子命令：`case` / `suite`
+
+## 调用链
+
+旧版：
+
+- `run_global_instance_scheduler_rps_bench.sh`
+- `run_global_instance_scheduler_case.sh`
+- `run_global_scheduler_benchmark_one_shell.sh`
+- `run_global_scheduler_benchmark.sh`
+- `diffusion_benchmark_serving.py`
+
+新版：
+
+- `run_suite.sh` 或 `run_case.sh`
+- `orchestrate.py`
+- `diffusion_benchmark_serving.py`
+
+`orchestrate.py` 直接负责：
+
+- 生成 `global_scheduler.generated.yaml`
+- 启动 scheduler
+- 等待 scheduler / worker ready
+- 逐 RPS 调 benchmark
+- 汇总 `summary.json` / `summary.csv`
+
+## 功能范围
+
+当前支持：
+
+- 单 case 运行
+- 多 case 批量运行
+- 全局调度策略覆盖
+- 实例内调度策略覆盖
+- step chunk / chunk preemption / chunk budget 覆盖
+- benchmark 模型、数据集、随机请求配置、warmup 请求配置覆盖
+- YAML 优先，显式环境变量覆盖
+- 自动生成结果目录和 summary 汇总
+
+## Benchmark 模式
+
+当前支持两种 benchmark 模式。
+
+### 1. 固定总发送时间
+
+设置：
+
+- `BENCHMARK_MODE=fixed_duration`
+- `NUM_PROMPTS_DURATION_SECONDS=<秒数>`
+
+语义：
+
+- 每个 RPS 档的总发送时长固定
+- 每个 RPS 档的请求数按 `ceil(rps * duration_seconds)` 自动计算
+
+示例：
+
+```bash
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml BENCHMARK_MODE=fixed_duration NUM_PROMPTS_DURATION_SECONDS=600 REQUEST_RATES=0.2,0.4,0.6 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+### 2. 固定总请求数
+
+设置：
+
+- `BENCHMARK_MODE=fixed_num_prompts`
+- `FIXED_NUM_PROMPTS=<请求数>`
+
+语义：
+
+- 每个 RPS 档发送相同数量的请求
+- 总持续时间随 `request_rate` 自动变化
+
+示例：
+
+```bash
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml BENCHMARK_MODE=fixed_num_prompts FIXED_NUM_PROMPTS=100 REQUEST_RATES=0.2,0.4,0.6 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+## 常用环境变量
+
+保留了旧脚本常用环境变量，主要包括：
+
+### 基础运行
+
+- `BASE_CONFIG`
+- `CASE_NAME`
+- `RUN_TAG`
+- `OUT_DIR`
+- `REQUEST_RATES`
+- `REQUEST_DURATION_S`
+- `BENCHMARK_MODE`
+- `NUM_PROMPTS_DURATION_SECONDS`
+- `FIXED_NUM_PROMPTS`
+
+### 调度策略
+
+- `GLOBAL_POLICY`
+- `INSTANCE_POLICY`
+- `ENABLE_STEP_CHUNK`
+- `ENABLE_CHUNK_PREEMPTION`
+- `CHUNK_BUDGET_STEPS`
+- `IMAGE_CHUNK_BUDGET_STEPS`
+- `VIDEO_CHUNK_BUDGET_STEPS`
+- `SMALL_REQUEST_LATENCY_THRESHOLD_MS`
+
+### Benchmark / 数据集
+
+- `WORKER_IDS`
+- `BENCHMARK_MODEL`
+- `BENCHMARK_BACKEND`
+- `BENCHMARK_TASK`
+- `BENCHMARK_DATASET`
+- `BENCHMARK_DATASET_PATH`
+- `BENCHMARK_RANDOM_REQUEST_CONFIG`
+- `BENCHMARK_WARMUP_REQUEST_CONFIG`
+- `BENCHMARK_MAX_CONCURRENCY`
+- `BENCHMARK_WARMUP_REQUESTS`
+- `BENCHMARK_WARMUP_NUM_INFERENCE_STEPS`
+
+### 批量 case
+
+- `CASE_MATRIX`
+- `SUITE_NAME`
+- `OUT_ROOT`
+
+## 默认规则
+
+- YAML 为准
+- 只有显式设置对应环境变量时，才覆盖 YAML
+- 默认结果目录名从最终生成配置反推，不再硬编码策略名
+
+## CASE_MATRIX 格式
+
+`suite` 模式下，每一行格式为：
+
+```text
+case_name|global_policy|instance_policy|enable_step_chunk|enable_chunk_preemption|chunk_budget_steps
+```
+
+示例：
+
+```text
+qwen_minqlen_sjf_preempt|min_queue_length|sjf|1|1|4
+qwen_rr_sjf_preempt|round_robin|sjf|1|1|4
+```
+
+## 示例
+
+### 单 case
+
+```bash
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+### 单 case，显式覆盖策略
+
+```bash
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml GLOBAL_POLICY=round_robin INSTANCE_POLICY=sjf ENABLE_STEP_CHUNK=1 ENABLE_CHUNK_PREEMPTION=1 CHUNK_BUDGET_STEPS=4 REQUEST_RATES=0.2,0.4 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+### 单 case，显式指定 warmup request config
+
+```bash
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
+REQUEST_RATES=0.2,0.4 \
+BENCHMARK_WARMUP_REQUESTS=4 \
+BENCHMARK_WARMUP_REQUEST_CONFIG='[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},{"width":768,"height":768,"num_inference_steps":20,"weight":0.25},{"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},{"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}]' \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+语义：
+
+- `BENCHMARK_WARMUP_REQUEST_CONFIG` 会直接透传到 `diffusion_benchmark_serving.py --warmup-request-config`。
+- 如果 base YAML 里的 `benchmark.warmup_request_config` 已经配置了，环境变量会覆盖它。
+
+### 单 case，显式指定临时目录和编译缓存目录
+
+当服务端启用了 `torch.compile` / Triton JIT，而机器上的 `/tmp` 空间不足时，可以在启动脚本前显式指定：
+
+- `TMPDIR`
+- `TRITON_CACHE_DIR`
+- `TORCHINDUCTOR_CACHE_DIR`
+
+示例：
+
+```bash
+mkdir -p /data/$USER/tmp /data/$USER/triton_cache /data/$USER/torchinductor_cache
+
+TMPDIR=/data/$USER/tmp \
+TRITON_CACHE_DIR=/data/$USER/triton_cache \
+TORCHINDUCTOR_CACHE_DIR=/data/$USER/torchinductor_cache \
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
+REQUEST_RATES=0.2,0.4 \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+语义：
+
+- `TMPDIR` 用于重定向 `gcc` / Python 临时文件目录，避免写到默认 `/tmp`。
+- `TRITON_CACHE_DIR` 用于重定向 Triton 编译缓存。
+- `TORCHINDUCTOR_CACHE_DIR` 用于重定向 TorchInductor 编译缓存。
+- 这几个环境变量会随 `run_case.sh -> orchestrate.py -> global scheduler -> worker` 的进程链路继承下去。
+- 如果没有显式设置 `GLOBAL_SCHEDULER_LOG_DIR`，脚本现在会默认给每个 case 分配独立的 worker 日志目录：`<case_out_dir>/instance_logs/`。例如单实例时，`worker0` 的日志会落到 `<case_out_dir>/instance_logs/worker0.log`，不会再和其他 case 互相覆盖。
+- 如果你想手动统一日志根目录，仍然可以显式设置 `GLOBAL_SCHEDULER_LOG_DIR` 覆盖默认行为。
+
+### 批量 case
+
+下面这个 suite 适合单实例对比实例内调度策略。这里把全局策略统一固定为 `round_robin`，只比较实例内 policy 的差异，并同时覆盖 `slack_age` 和 `slack_cost_age`。
+
+```bash
+CASE_MATRIX=$'fcfs|round_robin|fcfs|0|0|4
+sjf|round_robin|sjf|0|0|4
+sjf_preempt|round_robin|sjf|1|1|4
+p95_first|round_robin|p95-first|1|1|4
+slack_age|round_robin|slack_age|0|0|4
+slack_age_preempt|round_robin|slack_age|1|1|4
+slack_cost_age|round_robin|slack_cost_age|0|0|4
+slack_cost_age_preempt|round_robin|slack_cost_age|1|1|4' \
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
+REQUEST_RATES=0.2,0.4 \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_suite.sh
+```
+
+说明：
+
+- 这个 `single_instance.qwen.yaml` 只保留 `worker0`，适合单实例实验。
+- `p95-first` 会自动开启 `step-chunk + chunk-preemption`，这里显式写 `1|1|4` 只是为了 case 定义清楚。
+- 如果你只想保留一个 `slack` 版本，可以直接删掉对应的两行 case。

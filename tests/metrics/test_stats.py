@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from vllm_omni.metrics import OrchestratorAggregator
@@ -155,3 +157,40 @@ def test_build_and_log_summary_multiple_requests() -> None:
     r2_stage_entry = next(e for e in summary["stage_table"] if e["request_id"] == "r2")
     assert len(r1_stage_entry["stages"]) == 2
     assert len(r2_stage_entry["stages"]) == 1
+
+
+def test_accumulate_diffusion_metrics_accepts_non_numeric_fields() -> None:
+    agg = OrchestratorAggregator(num_stages=1, log_stats=True, wall_start_ts=0.0, final_stage_id_for_e2e=0)
+
+    engine_output = SimpleNamespace(
+        metrics={
+            "scheduler_policy": "sjf",
+            "queue_wait_ms": 12.5,
+            "queue_reorder_count": 1,
+        }
+    )
+
+    agg.accumulate_diffusion_metrics("diffusion", "r1", [engine_output])
+    agg.accumulate_diffusion_metrics("diffusion", "r1", [engine_output])
+
+    stats = agg._as_stage_request_stats(  # noqa: SLF001
+        0,
+        "r1",
+        StageRequestStats(
+            batch_id=1,
+            batch_size=1,
+            num_tokens_in=0,
+            num_tokens_out=1,
+            stage_gen_time_ms=1.0,
+            rx_transfer_bytes=0,
+            rx_decode_time_ms=0.0,
+            rx_in_flight_time_ms=0.0,
+            stage_stats=StageStats(),
+        ),
+    )
+
+    assert stats.diffusion_metrics == {
+        "scheduler_policy": "sjf",
+        "queue_wait_ms": 25.0,
+        "queue_reorder_count": 2.0,
+    }

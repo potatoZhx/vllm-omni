@@ -23,6 +23,7 @@ class RequestFuncInput:
     fps: int | None = None
     timestamp: float | None = None
     slo_ms: float | None = None
+    estimated_cost_s: float | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
     image_paths: list[str] | None = None
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))

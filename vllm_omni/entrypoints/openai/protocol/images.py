@@ -92,6 +92,21 @@ class ImageGenerationRequest(BaseModel):
         default=None,
         description="Device for the seeded torch.Generator (e.g. 'cpu', 'cuda'). Defaults to the runner's device.",
     )
+    slo_ms: float | None = Field(default=None, ge=0.0, description="Per-request scheduler SLO target in milliseconds.")
+    slo_target_ms: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Explicit target SLO in milliseconds for scheduler use.",
+    )
+    deadline_ts: float | None = Field(
+        default=None,
+        description="Absolute deadline timestamp for scheduler use.",
+    )
+    estimated_cost_s: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Per-request runtime estimate in seconds for scheduler use.",
+    )
 
     # vllm-omni extension for per-request LoRA.
     # This mirrors the `extra_body.lora` convention in /v1/chat/completions.

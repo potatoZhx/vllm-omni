@@ -16,6 +16,7 @@ class RequestMeta:
         height: Requested output height if available.
         num_frames: Requested frame count for video/image generation.
         num_inference_steps: Requested denoising or inference step count.
+        estimated_cost_s: Caller-provided runtime estimate in seconds.
         extra: Additional scheduler-facing metadata.
     """
 
@@ -25,6 +26,7 @@ class RequestMeta:
     height: int | None = None
     num_frames: int | None = None
     num_inference_steps: int | None = None
+    estimated_cost_s: float | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -52,6 +54,7 @@ class RuntimeStats:
     queue_len: int = 0
     inflight: int = 0
     ewma_service_time_s: float = 1.0
+    outstanding_runtime_s: float = 0.0
     waiting_requests: tuple[RequestMeta, ...] = field(default_factory=tuple)
 
 

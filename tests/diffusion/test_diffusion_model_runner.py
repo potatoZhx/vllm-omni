@@ -8,7 +8,10 @@ import pytest
 import torch
 
 import vllm_omni.diffusion.worker.diffusion_model_runner as model_runner_module
+from vllm_omni.diffusion.context import DiffusionRequestContext
+from vllm_omni.diffusion.request import OmniDiffusionRequest
 from vllm_omni.diffusion.worker.diffusion_model_runner import DiffusionModelRunner
+from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 
 pytestmark = [pytest.mark.core_model, pytest.mark.diffusion, pytest.mark.cpu]
 
@@ -51,10 +54,12 @@ def _make_runner(cache_backend, cache_backend_name: str, enable_cache_dit_summar
     runner.pipeline = _DummyPipeline(output=SimpleNamespace(output="ok"))
     runner.cache_backend = cache_backend
     runner.offload_backend = None
+    runner.active_contexts = {}
     runner.od_config = SimpleNamespace(
         cache_backend=cache_backend_name,
         enable_cache_dit_summary=enable_cache_dit_summary,
         parallel_config=SimpleNamespace(use_hsdp=False),
+        diffusion_enable_step_chunk=False,
     )
     runner.kv_transfer_manager = SimpleNamespace(
         receive_kv_cache=lambda req, target_device=None: None,
@@ -163,3 +168,141 @@ def test_load_model_clears_cache_backend_for_unsupported_pipeline(monkeypatch):
     assert runner.cache_backend is None
     assert runner.od_config.cache_backend is None
     assert dummy_cache_backend.enabled is False
+
+
+def _make_diffusion_request(request_id: str = "req-1", num_inference_steps: int = 4) -> OmniDiffusionRequest:
+    return OmniDiffusionRequest(
+        prompts=["prompt"],
+        sampling_params=OmniDiffusionSamplingParams(
+            resolution=1024,
+            num_outputs_per_prompt=1,
+            num_inference_steps=num_inference_steps,
+        ),
+        request_ids=[request_id],
+    )
+
+
+def test_prepare_generation_tracks_context_with_request_metadata():
+    runner = _make_runner(cache_backend=None, cache_backend_name="none")
+    req = _make_diffusion_request()
+    req.executed_steps = 2
+
+    ctx = DiffusionModelRunner.prepare_generation(runner, req)
+
+    assert ctx.request_id == "req-1"
+    assert ctx.current_step == 2
+    assert ctx.num_inference_steps == 4
+    assert runner.active_contexts["req-1"] is ctx
+
+
+def test_step_generation_updates_context_and_clears_finished_request():
+    runner = _make_runner(cache_backend=None, cache_backend_name="none")
+    ctx = DiffusionRequestContext(request_id="req-1", current_step=1, num_inference_steps=3)
+    runner.active_contexts["req-1"] = ctx
+
+    next_ctx, finished = DiffusionModelRunner.step_generation(runner, ctx, steps=2)
+
+    assert finished is True
+    assert next_ctx.finished is True
+    assert next_ctx.current_step == 3
+    assert "req-1" not in runner.active_contexts
+
+
+def test_finalize_generation_uses_pipeline_hook_and_cleans_context():
+    runner = _make_runner(cache_backend=None, cache_backend_name="none")
+    ctx = DiffusionRequestContext(request_id="req-1", current_step=4, num_inference_steps=4, finished=True)
+    runner.active_contexts["req-1"] = ctx
+
+    class _FinalizePipeline(_DummyPipeline):
+        def finalize_generation(self, finalize_ctx):
+            return SimpleNamespace(output="done", request_id=finalize_ctx.request_id)
+
+    runner.pipeline = _FinalizePipeline(output=SimpleNamespace(output="ignored"))
+
+    output = DiffusionModelRunner.finalize_generation(runner, ctx)
+
+    assert output.output == "done"
+    assert output.request_id == "req-1"
+    assert "req-1" not in runner.active_contexts
+
+
+def test_abort_generation_cleans_context_and_calls_pipeline_hook():
+    runner = _make_runner(cache_backend=None, cache_backend_name="none")
+    runner.active_contexts["req-1"] = DiffusionRequestContext(request_id="req-1", current_step=0, num_inference_steps=4)
+    aborted = []
+
+    class _AbortPipeline(_DummyPipeline):
+        def abort_generation(self, request_id):
+            aborted.append(request_id)
+
+    runner.pipeline = _AbortPipeline(output=SimpleNamespace(output="ignored"))
+
+    DiffusionModelRunner.abort_generation(runner, "req-1")
+
+    assert aborted == ["req-1"]
+    assert "req-1" not in runner.active_contexts
+
+
+def test_execute_model_returns_unfinished_output_when_step_chunk_enabled(monkeypatch):
+    class _StepAwarePipeline(_DummyPipeline):
+        def prepare_generation(self, req):
+            return DiffusionRequestContext(
+                request_id=req.request_ids[0],
+                current_step=req.executed_steps,
+                num_inference_steps=req.sampling_params.num_inference_steps,
+            )
+
+        def step_generation(self, ctx, steps):
+            ctx.current_step += steps
+            ctx.finished = False
+            return ctx, False
+
+        def finalize_generation(self, ctx):
+            return SimpleNamespace(output="done", request_id=ctx.request_id, finished=True)
+
+    runner = _make_runner(cache_backend=None, cache_backend_name="none")
+    runner.od_config.diffusion_enable_step_chunk = True
+    runner.pipeline = _StepAwarePipeline(output=SimpleNamespace(output="ignored"))
+    req = _make_diffusion_request(num_inference_steps=4)
+    req.max_steps_this_turn = 2
+
+    monkeypatch.setattr(model_runner_module, "set_forward_context", _noop_forward_context)
+
+    output = DiffusionModelRunner.execute_model(runner, req)
+
+    assert output.finished is False
+    assert output.output is None
+    assert output.metrics["executed_steps"] == 2
+    assert req.executed_steps == 2
+
+
+def test_execute_model_finalizes_finished_step_chunk(monkeypatch):
+    class _StepAwarePipeline(_DummyPipeline):
+        def prepare_generation(self, req):
+            return DiffusionRequestContext(
+                request_id=req.request_ids[0],
+                current_step=req.executed_steps,
+                num_inference_steps=req.sampling_params.num_inference_steps,
+            )
+
+        def step_generation(self, ctx, steps):
+            ctx.current_step += steps
+            ctx.finished = True
+            return ctx, True
+
+        def finalize_generation(self, ctx):
+            return SimpleNamespace(output="done", request_id=ctx.request_id, finished=True)
+
+    runner = _make_runner(cache_backend=None, cache_backend_name="none")
+    runner.od_config.diffusion_enable_step_chunk = True
+    runner.pipeline = _StepAwarePipeline(output=SimpleNamespace(output="ignored"))
+    req = _make_diffusion_request(num_inference_steps=4)
+    req.max_steps_this_turn = 4
+
+    monkeypatch.setattr(model_runner_module, "set_forward_context", _noop_forward_context)
+
+    output = DiffusionModelRunner.execute_model(runner, req)
+
+    assert output.finished is True
+    assert output.output == "done"
+    assert req.executed_steps == 4

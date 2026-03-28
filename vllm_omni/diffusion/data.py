@@ -414,6 +414,50 @@ class OmniDiffusionConfig:
 
     scheduler_port: int = 5555
 
+    # Instance-local scheduler configuration
+    instance_scheduler_policy: str = "fcfs"
+    instance_scheduler_slo_target_ms: float | None = None
+    instance_scheduler_slo_floor_ms: float = 0.0
+    instance_scheduler_aging_factor: float = 0.0
+    instance_scheduler_p95_first_base_ms: float | None = None
+    instance_scheduler_p95_first_min_ms: float = 0.0
+    instance_scheduler_p95_first_max_ms: float | None = None
+    instance_scheduler_p95_first_backlog_alpha: float = 1.0
+    instance_scheduler_p95_first_size_bias: float = 0.0
+    instance_scheduler_p95_first_age_bias: float = 0.0
+    instance_scheduler_p95_first_starvation_threshold_s: float | None = None
+    instance_scheduler_p95_first_starvation_boost: float = 0.0
+    instance_scheduler_p95_bucket_count: int = 4
+    instance_scheduler_p95_bucket_min_window_ms: float = 200.0
+    instance_scheduler_p95_bucket_starvation_threshold_s: float | None = None
+    instance_scheduler_p95_bucket_starvation_promote_levels: int = 1
+    instance_scheduler_slack_panic_threshold: float = 1.0
+    instance_scheduler_slack_swap_overhead_ms: float = 0.0
+    instance_scheduler_type_fifo_defer_budget_ratio: float = 0.02
+    instance_scheduler_type_fifo_defer_hard_escape_wait_multiplier: float = 100.0
+    instance_scheduler_type_fifo_defer_hard_escape_cost_multiplier: float = 100.0
+    instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio: float = 0.02
+    instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier: float = 100.0
+    instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier: float = 100.0
+    instance_scheduler_p95_fusion_tail_budget_ratio: float = 0.10
+    instance_scheduler_p95_fusion_heavy_threshold_s: float = 20.0
+    instance_scheduler_p95_fusion_urgent_slack_ratio: float = 1.0
+    instance_scheduler_p95_fusion_promote_wait_s: float = 60.0
+    instance_scheduler_p95_fusion_nonheavy_streak_limit: int = 4
+    instance_scheduler_p95_fusion_growth_every: int = 20
+    instance_scheduler_p95_fusion_borrowed_cap_max: int = 4
+    instance_scheduler_p95_fusion_min_chunk_steps: int = 1
+    instance_scheduler_p95_fusion_max_chunk_steps: int = 8
+    instance_runtime_profile_path: str | None = None
+    instance_runtime_profile_name: str | None = None
+    diffusion_engine_max_concurrency: int = 32
+    diffusion_enable_step_chunk: bool = False
+    diffusion_enable_chunk_preemption: bool = False
+    diffusion_chunk_budget_steps: int = 4
+    diffusion_image_chunk_budget_steps: int | None = None
+    diffusion_video_chunk_budget_steps: int | None = None
+    diffusion_small_request_latency_threshold_ms: float | None = None
+
     # Stage verification
     enable_stage_verification: bool = True
 
@@ -576,6 +620,108 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
+        valid_policies = {"fcfs", "sjf", "sjf_aging", "sjf_aging_guarded", "sjf_aging_guarded_tail", "bypass_guard_sjf", "size_bucket_sjf_aging", "type_fifo_defer_budget", "slo_first", "p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_age", "slack_cost_age", "slack_hybrid", "p95-fusion"}
+        if self.instance_scheduler_policy not in valid_policies:
+            raise ValueError(
+                "instance_scheduler_policy must be one of "
+                f"{sorted(valid_policies)}, got {self.instance_scheduler_policy!r}"
+            )
+        if self.instance_scheduler_slo_target_ms is not None and self.instance_scheduler_slo_target_ms <= 0:
+            raise ValueError("instance_scheduler_slo_target_ms must be > 0 when provided")
+        if self.instance_scheduler_slo_floor_ms < 0:
+            raise ValueError("instance_scheduler_slo_floor_ms must be >= 0")
+        if self.instance_scheduler_aging_factor < 0:
+            raise ValueError("instance_scheduler_aging_factor must be >= 0")
+        if self.instance_scheduler_p95_first_base_ms is not None and self.instance_scheduler_p95_first_base_ms <= 0:
+            raise ValueError("instance_scheduler_p95_first_base_ms must be > 0 when provided")
+        if self.instance_scheduler_p95_first_min_ms < 0:
+            raise ValueError("instance_scheduler_p95_first_min_ms must be >= 0")
+        if self.instance_scheduler_p95_first_max_ms is not None and self.instance_scheduler_p95_first_max_ms <= 0:
+            raise ValueError("instance_scheduler_p95_first_max_ms must be > 0 when provided")
+        if (
+            self.instance_scheduler_p95_first_max_ms is not None
+            and self.instance_scheduler_p95_first_max_ms < self.instance_scheduler_p95_first_min_ms
+        ):
+            raise ValueError("instance_scheduler_p95_first_max_ms must be >= instance_scheduler_p95_first_min_ms")
+        if self.instance_scheduler_p95_first_backlog_alpha < 0:
+            raise ValueError("instance_scheduler_p95_first_backlog_alpha must be >= 0")
+        if self.instance_scheduler_p95_first_size_bias < 0:
+            raise ValueError("instance_scheduler_p95_first_size_bias must be >= 0")
+        if self.instance_scheduler_p95_first_age_bias < 0:
+            raise ValueError("instance_scheduler_p95_first_age_bias must be >= 0")
+        if (
+            self.instance_scheduler_p95_first_starvation_threshold_s is not None
+            and self.instance_scheduler_p95_first_starvation_threshold_s <= 0
+        ):
+            raise ValueError("instance_scheduler_p95_first_starvation_threshold_s must be > 0 when provided")
+        if self.instance_scheduler_p95_first_starvation_boost < 0:
+            raise ValueError("instance_scheduler_p95_first_starvation_boost must be >= 0")
+        if self.instance_scheduler_p95_bucket_count < 1:
+            raise ValueError("instance_scheduler_p95_bucket_count must be >= 1")
+        if self.instance_scheduler_p95_bucket_min_window_ms <= 0:
+            raise ValueError("instance_scheduler_p95_bucket_min_window_ms must be > 0")
+        if (
+            self.instance_scheduler_p95_bucket_starvation_threshold_s is not None
+            and self.instance_scheduler_p95_bucket_starvation_threshold_s <= 0
+        ):
+            raise ValueError("instance_scheduler_p95_bucket_starvation_threshold_s must be > 0 when provided")
+        if self.instance_scheduler_p95_bucket_starvation_promote_levels < 0:
+            raise ValueError("instance_scheduler_p95_bucket_starvation_promote_levels must be >= 0")
+        if self.instance_scheduler_slack_panic_threshold < 0:
+            raise ValueError("instance_scheduler_slack_panic_threshold must be >= 0")
+        if self.instance_scheduler_slack_swap_overhead_ms < 0:
+            raise ValueError("instance_scheduler_slack_swap_overhead_ms must be >= 0")
+        if not 0 <= self.instance_scheduler_type_fifo_defer_budget_ratio <= 1:
+            raise ValueError("instance_scheduler_type_fifo_defer_budget_ratio must be within [0, 1]")
+        if self.instance_scheduler_type_fifo_defer_hard_escape_wait_multiplier <= 0:
+            raise ValueError("instance_scheduler_type_fifo_defer_hard_escape_wait_multiplier must be > 0")
+        if self.instance_scheduler_type_fifo_defer_hard_escape_cost_multiplier <= 0:
+            raise ValueError("instance_scheduler_type_fifo_defer_hard_escape_cost_multiplier must be > 0")
+        if not 0 <= self.instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio <= 1:
+            raise ValueError("instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio must be within [0, 1]")
+        if self.instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier <= 0:
+            raise ValueError("instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier must be > 0")
+        if self.instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier <= 0:
+            raise ValueError("instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier must be > 0")
+        if not 0 < self.instance_scheduler_p95_fusion_tail_budget_ratio <= 1:
+            raise ValueError("instance_scheduler_p95_fusion_tail_budget_ratio must be within (0, 1]")
+        if self.instance_scheduler_p95_fusion_heavy_threshold_s <= 0:
+            raise ValueError("instance_scheduler_p95_fusion_heavy_threshold_s must be > 0")
+        if self.instance_scheduler_p95_fusion_urgent_slack_ratio < 0:
+            raise ValueError("instance_scheduler_p95_fusion_urgent_slack_ratio must be >= 0")
+        if self.instance_scheduler_p95_fusion_promote_wait_s <= 0:
+            raise ValueError("instance_scheduler_p95_fusion_promote_wait_s must be > 0")
+        if self.instance_scheduler_p95_fusion_nonheavy_streak_limit < 1:
+            raise ValueError("instance_scheduler_p95_fusion_nonheavy_streak_limit must be >= 1")
+        if self.instance_scheduler_p95_fusion_growth_every < 1:
+            raise ValueError("instance_scheduler_p95_fusion_growth_every must be >= 1")
+        if self.instance_scheduler_p95_fusion_borrowed_cap_max < 0:
+            raise ValueError("instance_scheduler_p95_fusion_borrowed_cap_max must be >= 0")
+        if self.instance_scheduler_p95_fusion_min_chunk_steps < 1:
+            raise ValueError("instance_scheduler_p95_fusion_min_chunk_steps must be >= 1")
+        if self.instance_scheduler_p95_fusion_max_chunk_steps < self.instance_scheduler_p95_fusion_min_chunk_steps:
+            raise ValueError(
+                "instance_scheduler_p95_fusion_max_chunk_steps must be >= instance_scheduler_p95_fusion_min_chunk_steps"
+            )
+        if self.instance_scheduler_policy in {"p95-first", "p95-first-deadline", "p95-bucket-sjf", "p95-bucket-sjf-normalized", "slack_hybrid", "sjf_aging_guarded", "sjf_aging_guarded_tail", "bypass_guard_sjf", "type_fifo_defer_budget", "p95-fusion"}:
+            self.diffusion_enable_step_chunk = True
+            self.diffusion_enable_chunk_preemption = True
+        if self.diffusion_engine_max_concurrency < 1:
+            raise ValueError("diffusion_engine_max_concurrency must be >= 1")
+        if self.diffusion_enable_chunk_preemption and not self.diffusion_enable_step_chunk:
+            raise ValueError("diffusion_enable_chunk_preemption requires diffusion_enable_step_chunk=True")
+        if self.diffusion_chunk_budget_steps < 1:
+            raise ValueError("diffusion_chunk_budget_steps must be >= 1")
+        if self.diffusion_image_chunk_budget_steps is not None and self.diffusion_image_chunk_budget_steps < 1:
+            raise ValueError("diffusion_image_chunk_budget_steps must be >= 1")
+        if self.diffusion_video_chunk_budget_steps is not None and self.diffusion_video_chunk_budget_steps < 1:
+            raise ValueError("diffusion_video_chunk_budget_steps must be >= 1")
+        if (
+            self.diffusion_small_request_latency_threshold_ms is not None
+            and self.diffusion_small_request_latency_threshold_ms <= 0
+        ):
+            raise ValueError("diffusion_small_request_latency_threshold_ms must be > 0")
+
     def update_multimodal_support(self) -> None:
         self.supports_multimodal_inputs = self.model_class_name in {"QwenImageEditPlusPipeline"}
 
@@ -613,6 +759,10 @@ class DiffusionOutput:
     trajectory_latents: torch.Tensor | None = None
     trajectory_decoded: list[torch.Tensor] | None = None
     error: str | None = None
+    error_code: str | None = None
+    request_id: str | None = None
+    finished: bool = True
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     post_process_func: Callable[..., Any] | None = None
 

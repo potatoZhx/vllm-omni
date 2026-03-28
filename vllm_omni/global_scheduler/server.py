@@ -35,9 +35,9 @@ from .process_controller import (
     ProcessController,
     get_instance_log_path,
 )
-from .router import build_policy
+from .router import build_policy, build_runtime_estimator
 from .state import RuntimeStateStore
-from .types import InstanceSpec, RequestMeta, SUPPORTED_BACKENDS
+from .types import InstanceSpec, RequestMeta, RouteDecision, SUPPORTED_BACKENDS
 
 logger = logging.getLogger("vllm_omni.global_scheduler.server")
 
@@ -132,6 +132,17 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _coerce_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_openai_size(size: Any) -> tuple[int | None, int | None]:
     if not isinstance(size, str):
         return None, None
@@ -157,6 +168,7 @@ def _extract_request_meta_from_payload(payload: dict[str, Any], request_id: str)
     height = _coerce_int(extra_body.get("height"))
     num_frames = _coerce_int(extra_body.get("num_frames"))
     num_inference_steps = _coerce_int(extra_body.get("num_inference_steps"))
+    estimated_cost_s = _coerce_float(extra_body.get("estimated_cost_s"))
 
     if width is None:
         width = _coerce_int(payload.get("width"))
@@ -166,6 +178,8 @@ def _extract_request_meta_from_payload(payload: dict[str, Any], request_id: str)
         num_frames = _coerce_int(payload.get("num_frames"))
     if num_inference_steps is None:
         num_inference_steps = _coerce_int(payload.get("num_inference_steps"))
+    if estimated_cost_s is None:
+        estimated_cost_s = _coerce_float(payload.get("estimated_cost_s"))
 
     if width is None or height is None:
         parsed_width, parsed_height = _parse_openai_size(payload.get("size"))
@@ -180,6 +194,7 @@ def _extract_request_meta_from_payload(payload: dict[str, Any], request_id: str)
         height=height,
         num_frames=num_frames,
         num_inference_steps=num_inference_steps,
+        estimated_cost_s=estimated_cost_s,
     )
 
 
@@ -216,7 +231,98 @@ def _extract_request_meta_from_form_fields(form_fields: dict[str, str], request_
         height=_coerce_int(form_fields.get("height")),
         num_frames=_coerce_int(form_fields.get("num_frames")),
         num_inference_steps=_coerce_int(form_fields.get("num_inference_steps")),
+        estimated_cost_s=_coerce_float(form_fields.get("estimated_cost_s")),
     )
+
+
+def _instance_debug_snapshot(app: FastAPI) -> list[dict[str, Any]]:
+    lifecycle_snapshot = app.state.instance_lifecycle_manager.snapshot()
+    runtime_snapshot = app.state.runtime_state_store.snapshot()
+    payload: list[dict[str, Any]] = []
+    for instance_id, lifecycle in lifecycle_snapshot.items():
+        runtime = runtime_snapshot.get(instance_id)
+        payload.append(
+            {
+                "id": instance_id,
+                "enabled": lifecycle.enabled,
+                "healthy": lifecycle.healthy,
+                "draining": lifecycle.draining,
+                "process_state": lifecycle.process_state,
+                "queue_len": runtime.queue_len if runtime else 0,
+                "inflight": runtime.inflight if runtime else 0,
+                "last_error": lifecycle.last_error,
+            }
+        )
+    return payload
+
+
+def _no_routable_instance_response(app: FastAPI, backend: str, request_id: str) -> JSONResponse:
+    logger.warning(
+        "route.reject.no_routable request_id=%s backend=%s instances=%s",
+        request_id,
+        backend,
+        _instance_debug_snapshot(app),
+    )
+    return JSONResponse(
+        status_code=503,
+        content=_build_error_payload(
+            code="GS_NO_ROUTABLE_INSTANCE",
+            message=f"No routable instance is available for backend {backend}",
+            request_id=request_id,
+        ),
+    )
+
+
+def _select_waitable_candidates_for_backend(app: FastAPI, backend: str) -> list[InstanceSpec]:
+    waitable_process_states = {"running", "starting", "restarting"}
+    lifecycle_snapshot = app.state.instance_lifecycle_manager.snapshot()
+    all_candidates = [
+        status.instance
+        for status in lifecycle_snapshot.values()
+        if status.enabled and not status.draining and status.process_state in waitable_process_states
+    ]
+    return _select_candidates_for_backend(all_candidates, backend=backend)
+
+
+async def _wait_and_reserve_route(
+    app: FastAPI,
+    *,
+    backend: str,
+    request_meta: RequestMeta,
+    request_id: str,
+) -> tuple[RouteDecision, int] | JSONResponse:
+    candidates = _select_waitable_candidates_for_backend(app, backend)
+    if not candidates:
+        return _no_routable_instance_response(app, backend, request_id)
+
+    async with app.state.routing_lock:
+        runtime_snapshot = app.state.runtime_state_store.snapshot()
+        try:
+            decision = app.state.policy.select_instance(
+                request=request_meta,
+                instances=candidates,
+                runtime_stats=runtime_snapshot,
+            )
+        except (ValueError, KeyError) as exc:
+            logger.warning(
+                "route.reject.selection_error request_id=%s backend=%s candidates=%s error=%s instances=%s",
+                request_id,
+                backend,
+                [instance.id for instance in candidates],
+                str(exc),
+                _instance_debug_snapshot(app),
+            )
+            return JSONResponse(
+                status_code=503,
+                content=_build_error_payload(
+                    code="GS_NO_ROUTABLE_INSTANCE",
+                    message=str(exc),
+                    request_id=request_id,
+                ),
+            )
+
+        app.state.runtime_state_store.on_request_start(decision.instance_id, request=request_meta)
+        return decision, len(candidates)
 
 
 def _filter_forward_headers(headers: Any) -> dict[str, str]:
@@ -489,10 +595,12 @@ def create_app(
                 current_config = getattr(app.state, "global_scheduler_config", config)
                 timeout_s = current_config.server.instance_health_check_timeout_s
                 interval_s = current_config.server.instance_health_check_interval_s
+                unhealthy_after_failures = current_config.server.instance_health_check_failures_before_unhealthy
 
                 await asyncio.to_thread(
                     app.state.instance_lifecycle_manager.probe_all,
                     timeout_s,
+                    unhealthy_after_failures,
                 )
                 app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
                 await asyncio.sleep(interval_s)
@@ -512,18 +620,21 @@ def create_app(
     app = FastAPI(title="vLLM-Omni Global Scheduler", version=__version__, lifespan=lifespan)
     app.state.global_scheduler_config = config
     instance_specs = _to_instance_specs(config)
+    runtime_estimator = build_runtime_estimator(config)
     app.state.runtime_state_store = RuntimeStateStore(
         instances=instance_specs,
         ewma_alpha=config.scheduler.ewma_alpha,
+        estimator=runtime_estimator,
     )
     app.state.instance_lifecycle_manager = InstanceLifecycleManager(instance_specs)
-    app.state.policy = build_policy(config)
+    app.state.policy = build_policy(config, estimator=runtime_estimator)
     app.state.config_loader = config_loader
     app.state.health_probe_task = None
     app.state.process_controller = process_controller or LocalProcessController()
     app.state.reload_in_progress = False
     app.state.lifecycle_operation_locks: dict[str, asyncio.Lock] = {}
     app.state.lifecycle_operation_locks_guard = RLock()
+    app.state.routing_lock = asyncio.Lock()
 
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -625,6 +736,7 @@ def create_app(
         await asyncio.to_thread(
             app.state.instance_lifecycle_manager.probe_all,
             current_config.server.instance_health_check_timeout_s,
+            current_config.server.instance_health_check_failures_before_unhealthy,
         )
         app.state.instance_lifecycle_manager.converge_draining(app.state.runtime_state_store.snapshot())
         return JSONResponse(status_code=200, content={"status": "ok"})
@@ -798,38 +910,16 @@ def create_app(
         payload = await request.json()
         request_id = request.headers.get("x-request-id") or payload.get("request_id") or str(uuid.uuid4())
         request_meta = _extract_request_meta_from_payload(payload, request_id=request_id)
-        runtime_snapshot = app.state.runtime_state_store.snapshot()
-        candidates = _select_candidates_for_backend(
-            app.state.instance_lifecycle_manager.get_routable_instances(),
+        route_result = await _wait_and_reserve_route(
+            app,
             backend="vllm-omni",
+            request_meta=request_meta,
+            request_id=request_id,
         )
-        if not candidates:
-            return JSONResponse(
-                status_code=503,
-                content=_build_error_payload(
-                    code="GS_NO_ROUTABLE_INSTANCE",
-                    message="No routable instance is available for backend vllm-omni",
-                    request_id=request_id,
-                ),
-            )
+        if isinstance(route_result, JSONResponse):
+            return route_result
 
-        try:
-            decision = app.state.policy.select_instance(
-                request=request_meta,
-                instances=candidates,
-                runtime_stats=runtime_snapshot,
-            )
-        except (ValueError, KeyError) as exc:
-            return JSONResponse(
-                status_code=503,
-                content=_build_error_payload(
-                    code="GS_NO_ROUTABLE_INSTANCE",
-                    message=str(exc),
-                    request_id=request_id,
-                ),
-            )
-
-        app.state.runtime_state_store.on_request_start(decision.instance_id, request=request_meta)
+        decision, candidate_count = route_result
         started_at = time.monotonic()
         current_config = getattr(app.state, "global_scheduler_config", config)
         filtered_headers = _filter_forward_headers(request.headers)
@@ -841,7 +931,7 @@ def create_app(
             request_id,
             model_name,
             is_stream,
-            len(candidates),
+            candidate_count,
             decision.instance_id,
             decision.endpoint,
         )
@@ -886,6 +976,7 @@ def create_app(
                     decision.instance_id,
                     latency_s=time.monotonic() - started_at,
                     ok=False,
+                    request_id=request_id,
                 )
                 return _attach_route_headers(
                     JSONResponse(
@@ -907,6 +998,7 @@ def create_app(
                     decision.instance_id,
                     latency_s=time.monotonic() - started_at,
                     ok=False,
+                    request_id=request_id,
                 )
                 return _attach_route_headers(
                     JSONResponse(
@@ -929,6 +1021,7 @@ def create_app(
                     decision.instance_id,
                     latency_s=time.monotonic() - started_at,
                     ok=False,
+                    request_id=request_id,
                 )
                 return _attach_route_headers(
                     JSONResponse(
@@ -968,6 +1061,7 @@ def create_app(
                         decision.instance_id,
                         latency_s=elapsed_s,
                         ok=stream_ok,
+                        request_id=request_id,
                     )
 
             response = StreamingResponse(
@@ -1071,6 +1165,7 @@ def create_app(
                 decision.instance_id,
                 latency_s=elapsed_s,
                 ok=ok,
+                request_id=request_id,
             )
 
         return _attach_route_headers(response)
@@ -1080,38 +1175,16 @@ def create_app(
         payload = await request.json()
         request_id = request.headers.get("x-request-id") or payload.get("request_id") or str(uuid.uuid4())
         request_meta = _extract_request_meta_from_payload(payload, request_id=request_id)
-        runtime_snapshot = app.state.runtime_state_store.snapshot()
-        candidates = _select_candidates_for_backend(
-            app.state.instance_lifecycle_manager.get_routable_instances(),
+        route_result = await _wait_and_reserve_route(
+            app,
             backend="openai",
+            request_meta=request_meta,
+            request_id=request_id,
         )
-        if not candidates:
-            return JSONResponse(
-                status_code=503,
-                content=_build_error_payload(
-                    code="GS_NO_ROUTABLE_INSTANCE",
-                    message="No routable instance is available for backend openai",
-                    request_id=request_id,
-                ),
-            )
+        if isinstance(route_result, JSONResponse):
+            return route_result
 
-        try:
-            decision = app.state.policy.select_instance(
-                request=request_meta,
-                instances=candidates,
-                runtime_stats=runtime_snapshot,
-            )
-        except (ValueError, KeyError) as exc:
-            return JSONResponse(
-                status_code=503,
-                content=_build_error_payload(
-                    code="GS_NO_ROUTABLE_INSTANCE",
-                    message=str(exc),
-                    request_id=request_id,
-                ),
-            )
-
-        app.state.runtime_state_store.on_request_start(decision.instance_id, request=request_meta)
+        decision, candidate_count = route_result
         started_at = time.monotonic()
         current_config = getattr(app.state, "global_scheduler_config", config)
         filtered_headers = _filter_forward_headers(request.headers)
@@ -1123,7 +1196,7 @@ def create_app(
             payload.get("model") if isinstance(payload, dict) else None,
             False,
             "/v1/images/generations",
-            len(candidates),
+            candidate_count,
             decision.instance_id,
             decision.endpoint,
         )
@@ -1185,6 +1258,7 @@ def create_app(
                 decision.instance_id,
                 latency_s=time.monotonic() - started_at,
                 ok=ok,
+                request_id=request_id,
             )
 
         return _attach_route_headers(response)
@@ -1196,38 +1270,16 @@ def create_app(
         request_id = request.headers.get("x-request-id") or form_fields.get("request_id") or str(uuid.uuid4())
         request_meta = _extract_request_meta_from_form_fields(form_fields, request_id=request_id)
 
-        runtime_snapshot = app.state.runtime_state_store.snapshot()
-        candidates = _select_candidates_for_backend(
-            app.state.instance_lifecycle_manager.get_routable_instances(),
+        route_result = await _wait_and_reserve_route(
+            app,
             backend="v1/videos",
+            request_meta=request_meta,
+            request_id=request_id,
         )
-        if not candidates:
-            return JSONResponse(
-                status_code=503,
-                content=_build_error_payload(
-                    code="GS_NO_ROUTABLE_INSTANCE",
-                    message="No routable instance is available for backend v1/videos",
-                    request_id=request_id,
-                ),
-            )
+        if isinstance(route_result, JSONResponse):
+            return route_result
 
-        try:
-            decision = app.state.policy.select_instance(
-                request=request_meta,
-                instances=candidates,
-                runtime_stats=runtime_snapshot,
-            )
-        except (ValueError, KeyError) as exc:
-            return JSONResponse(
-                status_code=503,
-                content=_build_error_payload(
-                    code="GS_NO_ROUTABLE_INSTANCE",
-                    message=str(exc),
-                    request_id=request_id,
-                ),
-            )
-
-        app.state.runtime_state_store.on_request_start(decision.instance_id, request=request_meta)
+        decision, candidate_count = route_result
         started_at = time.monotonic()
         current_config = getattr(app.state, "global_scheduler_config", config)
         filtered_headers = _filter_forward_headers(request.headers)
@@ -1238,7 +1290,7 @@ def create_app(
             form_fields.get("model"),
             False,
             "/v1/videos",
-            len(candidates),
+            candidate_count,
             decision.instance_id,
             decision.endpoint,
         )
@@ -1252,6 +1304,14 @@ def create_app(
         response: Response
         ok = False
         try:
+            logger.info(
+                "request.proxy.begin request_id=%s instance_id=%s endpoint=%s path=%s timeout_s=%s",
+                request_id,
+                decision.instance_id,
+                decision.endpoint,
+                "/v1/videos",
+                current_config.server.request_timeout_s,
+            )
             upstream_result = await asyncio.to_thread(
                 _proxy_request,
                 decision.endpoint,
@@ -1268,7 +1328,23 @@ def create_app(
             for key, value in _select_upstream_response_headers(upstream_result.headers).items():
                 response.headers[key] = value
             ok = True
+            logger.info(
+                "request.proxy.ok request_id=%s instance_id=%s path=%s status_code=%s",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+                response.status_code,
+            )
         except UpstreamHTTPError as exc:
+            body_excerpt = exc.body[:256].decode("utf-8", errors="replace") if exc.body else ""
+            logger.warning(
+                "request.proxy.http_error request_id=%s instance_id=%s path=%s status_code=%s upstream_body=%r",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+                exc.status_code,
+                body_excerpt,
+            )
             response = JSONResponse(
                 status_code=exc.status_code,
                 content=_build_error_payload(
@@ -1278,6 +1354,12 @@ def create_app(
                 ),
             )
         except TimeoutError:
+            logger.warning(
+                "request.proxy.timeout request_id=%s instance_id=%s path=%s",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+            )
             response = JSONResponse(
                 status_code=502,
                 content=_build_error_payload(
@@ -1287,6 +1369,13 @@ def create_app(
                 ),
             )
         except OSError as exc:
+            logger.warning(
+                "request.proxy.network_error request_id=%s instance_id=%s path=%s error=%s",
+                request_id,
+                decision.instance_id,
+                "/v1/videos",
+                str(exc),
+            )
             response = JSONResponse(
                 status_code=502,
                 content=_build_error_payload(
@@ -1296,10 +1385,20 @@ def create_app(
                 ),
             )
         finally:
+            elapsed_s = time.monotonic() - started_at
+            logger.info(
+                "request.finish request_id=%s instance_id=%s stream=%s ok=%s latency_s=%.3f",
+                request_id,
+                decision.instance_id,
+                False,
+                ok,
+                elapsed_s,
+            )
             app.state.runtime_state_store.on_request_finish(
                 decision.instance_id,
-                latency_s=time.monotonic() - started_at,
+                latency_s=elapsed_s,
                 ok=ok,
+                request_id=request_id,
             )
 
         return _attach_route_headers(response)

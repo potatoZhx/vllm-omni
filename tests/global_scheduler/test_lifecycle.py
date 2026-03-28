@@ -1,6 +1,10 @@
 import pytest
 
-from vllm_omni.global_scheduler.lifecycle import InstanceLifecycleManager, _probe_http_ready
+from vllm_omni.global_scheduler.lifecycle import (
+    InstanceLifecycleManager,
+    _probe_http_health,
+    _probe_http_ready,
+)
 from vllm_omni.global_scheduler.state import RuntimeStateStore
 from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta
 
@@ -173,3 +177,128 @@ def test_probe_http_ready_reports_empty_models_as_unhealthy(monkeypatch):
 
     assert healthy is False
     assert error == "ready_probe_empty_models"
+
+
+def test_probe_http_health_reports_success_on_http_200(monkeypatch):
+    """Runtime health probe should accept a lightweight HTTP 200 response."""
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    seen = {}
+
+    def _fake_open(request, timeout):
+        seen["url"] = request.full_url
+        seen["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._NO_PROXY_OPENER.open",
+        _fake_open,
+    )
+
+    healthy, error = _probe_http_health("http://127.0.0.1:9001", 0.5)
+
+    assert healthy is True
+    assert error is None
+    assert seen == {"url": "http://127.0.0.1:9001/health", "timeout": 0.5}
+
+
+def test_probe_all_uses_runtime_health_for_steady_state_instance(monkeypatch):
+    """Steady-state instances should use the lightweight runtime probe."""
+    manager = InstanceLifecycleManager(_instances())
+    calls: list[tuple[str, str, float]] = []
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_ready",
+        lambda endpoint, timeout_s: calls.append(("ready", endpoint, timeout_s)) or (True, None),
+    )
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: calls.append(("health", endpoint, timeout_s)) or (True, None),
+    )
+
+    manager.probe_all(0.75)
+
+    assert calls == [
+        ("health", "http://127.0.0.1:9001", 0.75),
+        ("health", "http://127.0.0.1:9002", 0.75),
+    ]
+
+
+def test_probe_all_keeps_newly_started_instance_on_readiness_probe(monkeypatch):
+    """Instances awaiting startup readiness should keep probing `/v1/models`."""
+    manager = InstanceLifecycleManager(_instances())
+    manager.mark_health("worker-0", healthy=False, error="awaiting_http_ready_after_start")
+    manager.mark_health("worker-1", healthy=False, error="awaiting_probe_after_restart")
+    calls: list[tuple[str, str, float]] = []
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_ready",
+        lambda endpoint, timeout_s: calls.append(("ready", endpoint, timeout_s)) or (True, None),
+    )
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: calls.append(("health", endpoint, timeout_s)) or (True, None),
+    )
+
+    manager.probe_all(1.25)
+
+    assert calls == [
+        ("ready", "http://127.0.0.1:9001", 1.25),
+        ("ready", "http://127.0.0.1:9002", 1.25),
+    ]
+
+
+def test_probe_failures_require_threshold_before_marking_unhealthy(monkeypatch):
+    """Transient probe failures should not eject a healthy instance immediately."""
+    manager = InstanceLifecycleManager(_instances())
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: (False, "timed out"),
+    )
+
+    manager.probe_all(0.5, unhealthy_after_failures=3)
+    after_first = manager.snapshot()["worker-0"]
+    assert after_first.healthy is True
+    assert after_first.last_error == "timed out"
+
+    manager.probe_all(0.5, unhealthy_after_failures=3)
+    after_second = manager.snapshot()["worker-0"]
+    assert after_second.healthy is True
+
+    manager.probe_all(0.5, unhealthy_after_failures=3)
+    after_third = manager.snapshot()["worker-0"]
+    assert after_third.healthy is False
+    assert after_third.consecutive_probe_failures == 3
+
+
+def test_successful_probe_resets_failure_streak(monkeypatch):
+    """A successful probe should reset the consecutive failure counter."""
+    manager = InstanceLifecycleManager([InstanceSpec(id="worker-0", endpoint="http://127.0.0.1:9001")])
+    outcomes = iter([(False, "timed out"), (True, None), (False, "timed out")])
+
+    monkeypatch.setattr(
+        "vllm_omni.global_scheduler.lifecycle._probe_http_health",
+        lambda endpoint, timeout_s: next(outcomes),
+    )
+
+    manager.probe_all(0.5, unhealthy_after_failures=2)
+    after_first = manager.snapshot()["worker-0"]
+    assert after_first.healthy is True
+    assert after_first.consecutive_probe_failures == 1
+
+    manager.probe_all(0.5, unhealthy_after_failures=2)
+    after_success = manager.snapshot()["worker-0"]
+    assert after_success.healthy is True
+    assert after_success.consecutive_probe_failures == 0
+
+    manager.probe_all(0.5, unhealthy_after_failures=2)
+    after_reset_fail = manager.snapshot()["worker-0"]
+    assert after_reset_fail.healthy is True
+    assert after_reset_fail.consecutive_probe_failures == 1

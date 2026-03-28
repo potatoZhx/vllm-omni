@@ -185,6 +185,87 @@ class AsyncOmni(OmniBase):
                     "vae_use_tiling": kwargs.get("vae_use_tiling", False),
                     "cache_backend": cache_backend,
                     "cache_config": cache_config,
+                    "instance_scheduler_policy": kwargs.get("instance_scheduler_policy", "fcfs"),
+                    "instance_scheduler_slo_target_ms": kwargs.get("instance_scheduler_slo_target_ms", None),
+                    "instance_scheduler_slo_floor_ms": kwargs.get("instance_scheduler_slo_floor_ms", 0.0),
+                    "instance_scheduler_aging_factor": kwargs.get("instance_scheduler_aging_factor", 0.0),
+                    "instance_scheduler_p95_first_base_ms": kwargs.get("instance_scheduler_p95_first_base_ms", None),
+                    "instance_scheduler_p95_first_min_ms": kwargs.get("instance_scheduler_p95_first_min_ms", 0.0),
+                    "instance_scheduler_p95_first_max_ms": kwargs.get("instance_scheduler_p95_first_max_ms", None),
+                    "instance_scheduler_p95_first_backlog_alpha": kwargs.get(
+                        "instance_scheduler_p95_first_backlog_alpha", 1.0
+                    ),
+                    "instance_scheduler_p95_first_size_bias": kwargs.get("instance_scheduler_p95_first_size_bias", 0.0),
+                    "instance_scheduler_p95_first_age_bias": kwargs.get("instance_scheduler_p95_first_age_bias", 0.0),
+                    "instance_scheduler_p95_first_starvation_threshold_s": kwargs.get(
+                        "instance_scheduler_p95_first_starvation_threshold_s", None
+                    ),
+                    "instance_scheduler_p95_first_starvation_boost": kwargs.get(
+                        "instance_scheduler_p95_first_starvation_boost", 0.0
+                    ),
+                    "instance_scheduler_slack_panic_threshold": kwargs.get(
+                        "instance_scheduler_slack_panic_threshold", 1.0
+                    ),
+                    "instance_scheduler_slack_swap_overhead_ms": kwargs.get(
+                        "instance_scheduler_slack_swap_overhead_ms", 0.0
+                    ),
+                    "instance_scheduler_type_fifo_defer_budget_ratio": kwargs.get(
+                        "instance_scheduler_type_fifo_defer_budget_ratio", 0.02
+                    ),
+                    "instance_scheduler_type_fifo_defer_hard_escape_wait_multiplier": kwargs.get(
+                        "instance_scheduler_type_fifo_defer_hard_escape_wait_multiplier", 100.0
+                    ),
+                    "instance_scheduler_type_fifo_defer_hard_escape_cost_multiplier": kwargs.get(
+                        "instance_scheduler_type_fifo_defer_hard_escape_cost_multiplier", 100.0
+                    ),
+                    "instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio": kwargs.get(
+                        "instance_scheduler_sjf_aging_guarded_tail_defer_budget_ratio", 0.02
+                    ),
+                    "instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier": kwargs.get(
+                        "instance_scheduler_sjf_aging_guarded_tail_hard_escape_wait_multiplier", 100.0
+                    ),
+                    "instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier": kwargs.get(
+                        "instance_scheduler_sjf_aging_guarded_tail_hard_escape_cost_multiplier", 100.0
+                    ),
+                    "instance_scheduler_p95_fusion_tail_budget_ratio": kwargs.get(
+                        "instance_scheduler_p95_fusion_tail_budget_ratio", 0.10
+                    ),
+                    "instance_scheduler_p95_fusion_heavy_threshold_s": kwargs.get(
+                        "instance_scheduler_p95_fusion_heavy_threshold_s", 20.0
+                    ),
+                    "instance_scheduler_p95_fusion_urgent_slack_ratio": kwargs.get(
+                        "instance_scheduler_p95_fusion_urgent_slack_ratio", 1.0
+                    ),
+                    "instance_scheduler_p95_fusion_promote_wait_s": kwargs.get(
+                        "instance_scheduler_p95_fusion_promote_wait_s", 60.0
+                    ),
+                    "instance_scheduler_p95_fusion_nonheavy_streak_limit": kwargs.get(
+                        "instance_scheduler_p95_fusion_nonheavy_streak_limit", 4
+                    ),
+                    "instance_scheduler_p95_fusion_growth_every": kwargs.get(
+                        "instance_scheduler_p95_fusion_growth_every", 20
+                    ),
+                    "instance_scheduler_p95_fusion_borrowed_cap_max": kwargs.get(
+                        "instance_scheduler_p95_fusion_borrowed_cap_max", 4
+                    ),
+                    "instance_scheduler_p95_fusion_min_chunk_steps": kwargs.get(
+                        "instance_scheduler_p95_fusion_min_chunk_steps", 1
+                    ),
+                    "instance_scheduler_p95_fusion_max_chunk_steps": kwargs.get(
+                        "instance_scheduler_p95_fusion_max_chunk_steps", 8
+                    ),
+                    "instance_runtime_profile_path": kwargs.get("instance_runtime_profile_path", None),
+                    "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
+                    "diffusion_engine_max_concurrency": kwargs.get("diffusion_engine_max_concurrency", 32),
+                    "diffusion_enable_step_chunk": kwargs.get("diffusion_enable_step_chunk", False),
+                    "diffusion_enable_chunk_preemption": kwargs.get("diffusion_enable_chunk_preemption", False),
+                    "diffusion_chunk_budget_steps": kwargs.get("diffusion_chunk_budget_steps", 4),
+                    "diffusion_image_chunk_budget_steps": kwargs.get("diffusion_image_chunk_budget_steps", None),
+                    "diffusion_video_chunk_budget_steps": kwargs.get("diffusion_video_chunk_budget_steps", None),
+                    "diffusion_small_request_latency_threshold_ms": kwargs.get(
+                        "diffusion_small_request_latency_threshold_ms",
+                        None,
+                    ),
                     "enable_cache_dit_summary": kwargs.get("enable_cache_dit_summary", False),
                     "enable_cpu_offload": kwargs.get("enable_cpu_offload", False),
                     "enable_layerwise_offload": kwargs.get("enable_layerwise_offload", False),

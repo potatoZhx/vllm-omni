@@ -8,9 +8,56 @@ from fastapi.testclient import TestClient
 
 from vllm_omni.global_scheduler.config import load_config
 from vllm_omni.global_scheduler.process_controller import ProcessController
-from vllm_omni.global_scheduler.server import UpstreamHTTPError, create_app
+from vllm_omni.global_scheduler.server import (
+    UpstreamHTTPError,
+    _extract_request_meta_from_form_fields,
+    _extract_request_meta_from_payload,
+    create_app,
+)
+from vllm_omni.global_scheduler.types import InstanceSpec, RequestMeta
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
+
+
+def test_extract_request_meta_from_payload_reads_estimated_cost_s():
+    """JSON payload metadata should include benchmark-estimated_cost_s."""
+    request_meta = _extract_request_meta_from_payload(
+        {
+            "model": "demo",
+            "extra_body": {
+                "width": 1024,
+                "height": 1024,
+                "num_inference_steps": 30,
+                "estimated_cost_s": 1.25,
+            },
+        },
+        request_id="req-est-1",
+    )
+
+    assert request_meta.width == 1024
+    assert request_meta.height == 1024
+    assert request_meta.num_inference_steps == 30
+    assert request_meta.estimated_cost_s == pytest.approx(1.25)
+
+
+def test_extract_request_meta_from_form_fields_reads_estimated_cost_s():
+    """Form payload metadata should include benchmark-estimated_cost_s."""
+    request_meta = _extract_request_meta_from_form_fields(
+        {
+            "width": "832",
+            "height": "480",
+            "num_frames": "33",
+            "num_inference_steps": "4",
+            "estimated_cost_s": "2.5",
+        },
+        request_id="req-est-form-1",
+    )
+
+    assert request_meta.width == 832
+    assert request_meta.height == 480
+    assert request_meta.num_frames == 33
+    assert request_meta.num_inference_steps == 4
+    assert request_meta.estimated_cost_s == pytest.approx(2.5)
 
 
 def test_health_endpoint_returns_scheduler_and_ok(tmp_path):
@@ -227,6 +274,7 @@ def test_probe_endpoint_runs_probe_in_to_thread(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert len(calls) == 1
+    assert calls[0][1] == (0.1, 3)
 
 
 def test_chat_completions_success_sets_route_headers_and_state(tmp_path, monkeypatch):
@@ -305,6 +353,93 @@ def test_chat_completions_returns_503_when_no_routable_instance(tmp_path):
     payload = response.json()
     assert payload["error"]["code"] == "GS_NO_ROUTABLE_INSTANCE"
     assert payload["error"]["request_id"]
+
+
+def test_chat_completions_no_routable_logs_instance_snapshot(tmp_path, monkeypatch):
+    """No-routable rejection should log lifecycle and runtime snapshot for debugging."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+    app.state.instance_lifecycle_manager.mark_health("worker-0", healthy=False, error="ready_probe_timeout")
+    app.state.instance_lifecycle_manager.set_process_state("worker-0", process_state="stopped")
+
+    log_messages: list[str] = []
+
+    def _capture_warning(message, *args):
+        log_messages.append(message % args)
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.logger.warning", _capture_warning)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-request-id": "req-no-route-1"},
+        json={"model": "demo", "messages": []},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "GS_NO_ROUTABLE_INSTANCE"
+    assert any("route.reject.no_routable request_id=req-no-route-1 backend=vllm-omni" in message for message in log_messages)
+    assert any("'healthy': False" in message or '"healthy": False' in message for message in log_messages)
+    assert any("ready_probe_timeout" in message for message in log_messages)
+
+
+def test_chat_completions_waits_for_recoverable_instance_before_routing(tmp_path, monkeypatch):
+    """Transiently unhealthy running instances should be waited on instead of rejected immediately."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+    app.state.instance_lifecycle_manager.mark_health("worker-0", healthy=False, error="timed out")
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        app.state.instance_lifecycle_manager.mark_health("worker-0", healthy=True, error=None)
+
+    def _fake_proxy(endpoint, body, headers, timeout_s):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert timeout_s == 2
+        return b'{"id": "resp-waited"}'
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_chat_completion", _fake_proxy)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-request-id": "req-wait-route-1"},
+        json={"model": "demo", "messages": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "resp-waited"
+    assert sleep_calls == [0.5]
 
 
 @pytest.mark.parametrize(
@@ -451,6 +586,62 @@ def test_chat_completions_streaming_passthrough_and_state_cleanup(tmp_path, monk
     assert snapshot["worker-0"].inflight == 0
 
 
+def test_image_generations_finish_passes_request_id_to_runtime_store(tmp_path, monkeypatch):
+    """Image endpoint should release reserved runtime using the routed request_id."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            policy:
+              baseline:
+                algorithm: fcfs
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+
+    finish_calls: list[tuple[str, float, bool, str | None]] = []
+    original_finish = app.state.runtime_state_store.on_request_finish
+
+    def _record_finish(instance_id, latency_s, ok, request_id=None):
+        finish_calls.append((instance_id, latency_s, ok, request_id))
+        return original_finish(instance_id, latency_s=latency_s, ok=ok, request_id=request_id)
+
+    def _fake_proxy(endpoint, upstream_path, body, headers, timeout_s):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert upstream_path == "/v1/images/generations"
+        assert timeout_s == 2
+        return type("_Resp", (), {
+            "status_code": 200,
+            "body": b'{"created": 1, "data": []}',
+            "headers": {"content-type": "application/json"},
+        })()
+
+    monkeypatch.setattr(app.state.runtime_state_store, "on_request_finish", _record_finish)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request", _fake_proxy)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/images/generations",
+        headers={"content-type": "application/json", "x-request-id": "req-img-finish-1"},
+        json={"model": "demo", "prompt": "test", "size": "1024x1024", "num_inference_steps": 20},
+    )
+
+    assert response.status_code == 200
+    assert finish_calls
+    assert finish_calls[-1][0] == "worker-0"
+    assert finish_calls[-1][2] is True
+    assert finish_calls[-1][3] == "req-img-finish-1"
+
+
 def test_image_generations_success_sets_route_headers_and_state(tmp_path, monkeypatch):
     """Image generation endpoint should proxy and cleanup runtime counters."""
     config_path = tmp_path / "scheduler.yaml"
@@ -530,9 +721,9 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
         assert endpoint == "http://127.0.0.1:9001"
         assert upstream_path == "/v1/videos"
         assert timeout_s == 2
-        assert b'name="prompt"' in body
-        assert b'name="width"' in body
-        assert headers["content-type"].startswith("multipart/form-data; boundary=")
+        assert b"prompt=city+at+sunset" in body
+        assert b"width=832" in body
+        assert headers["content-type"] == "application/x-www-form-urlencoded"
         return type("_Resp", (), {
             "status_code": 200,
             "body": b'{"id": "video-1"}',
@@ -558,6 +749,126 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
     assert response.json()["id"] == "video-1"
     assert response.headers["X-Routed-Instance"] == "worker-0"
     assert "router=fcfs" in response.headers["X-Route-Reason"]
+
+    snapshot = app.state.runtime_state_store.snapshot()
+    assert snapshot["worker-0"].queue_len == 0
+    assert snapshot["worker-0"].inflight == 0
+
+
+def test_videos_http_error_logs_request_context(tmp_path, monkeypatch):
+    """Video upstream 503 should emit request-scoped proxy logs for debugging."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+
+    def _fake_proxy(*_args, **_kwargs):
+        raise UpstreamHTTPError(status_code=503, body=b'{"detail":"busy"}')
+
+    log_messages: list[str] = []
+
+    def _capture_info(message, *args):
+        log_messages.append(message % args)
+
+    def _capture_warning(message, *args):
+        log_messages.append(message % args)
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request", _fake_proxy)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.logger.info", _capture_info)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server.logger.warning", _capture_warning)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/videos",
+        headers={"x-request-id": "req-video-log-1"},
+        data={
+            "prompt": "city at sunset",
+            "width": "832",
+            "height": "480",
+            "num_frames": "33",
+            "num_inference_steps": "4",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "GS_UPSTREAM_HTTP_ERROR"
+    assert any("request.proxy.http_error request_id=req-video-log-1 instance_id=worker-0 path=/v1/videos status_code=503" in message for message in log_messages)
+    assert any("request.finish request_id=req-video-log-1 instance_id=worker-0 stream=False ok=False" in message for message in log_messages)
+
+
+
+def test_chat_completions_waits_for_capacity_before_forwarding(tmp_path, monkeypatch):
+    """Scheduler should wait in global layer when the only worker is full."""
+    config_path = tmp_path / "scheduler.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            server:
+              request_timeout_s: 2
+              instance_health_check_interval_s: 100
+            policy:
+              baseline:
+                algorithm: fcfs
+            instances:
+              - id: worker-0
+                endpoint: http://127.0.0.1:9001
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    app = create_app(config)
+    app.state.runtime_state_store.sync_instances(
+        [
+            InstanceSpec(
+                id="worker-0",
+                endpoint="http://127.0.0.1:9001",
+                launch_args=["--diffusion-engine-max-concurrency", "1"],
+            )
+        ]
+    )
+    app.state.runtime_state_store.on_request_start("worker-0", RequestMeta(request_id="prefill"))
+    wait_calls: list[tuple[tuple[str, ...], float | None]] = []
+
+    def _fake_wait(instance_ids, timeout_s):
+        wait_calls.append((tuple(instance_ids), timeout_s))
+        app.state.runtime_state_store.on_request_finish("worker-0", latency_s=0.1, ok=True)
+        return True
+
+    def _fake_proxy(endpoint, body, headers, timeout_s):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert timeout_s == 2
+        assert b'"model": "demo"' in body
+        return b'{"id": "resp-wait"}'
+
+    monkeypatch.setattr(app.state.runtime_state_store, "wait_for_available_capacity", _fake_wait)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_chat_completion", _fake_proxy)
+
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"content-type": "application/json", "x-request-id": "req-wait"},
+        json={"model": "demo", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "resp-wait"
+    assert response.headers["X-Routed-Instance"] == "worker-0"
+    assert len(wait_calls) == 1
+    assert wait_calls[0][0] == ("worker-0",)
+    assert wait_calls[0][1] == 0.5
 
     snapshot = app.state.runtime_state_store.snapshot()
     assert snapshot["worker-0"].queue_len == 0

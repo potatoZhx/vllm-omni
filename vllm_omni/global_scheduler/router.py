@@ -6,7 +6,14 @@ from vllm_omni.global_scheduler.policies.runtime_estimator import RuntimeEstimat
 from vllm_omni.global_scheduler.runtime_profile import load_runtime_profile
 
 
-def build_policy(config: GlobalSchedulerConfig):
+def build_runtime_estimator(config: GlobalSchedulerConfig) -> RuntimeEstimator:
+    runtime_profile_path = config.policy.baseline.runtime_profile_path
+    return RuntimeEstimator(
+        profiling_data=load_runtime_profile(runtime_profile_path) if runtime_profile_path is not None else None
+    )
+
+
+def build_policy(config: GlobalSchedulerConfig, estimator: RuntimeEstimator | None = None):
     """Build baseline policy router from validated scheduler config.
 
     Args:
@@ -15,10 +22,7 @@ def build_policy(config: GlobalSchedulerConfig):
     Returns:
         Algorithm policy router configured by `policy.baseline.algorithm`.
     """
-    runtime_profile_path = config.policy.baseline.runtime_profile_path
-    estimator = RuntimeEstimator(
-        profiling_data=load_runtime_profile(runtime_profile_path) if runtime_profile_path is not None else None
-    )
+    estimator = estimator or build_runtime_estimator(config)
 
     return AlgorithmPolicyRouter(
         algorithm=config.policy.baseline.algorithm,

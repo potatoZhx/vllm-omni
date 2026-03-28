@@ -31,7 +31,10 @@ from vllm_omni.diffusion.models.interface import SupportImageInput
 from vllm_omni.diffusion.models.qwen_image.cfg_parallel import (
     QwenImageCFGParallelMixin,
 )
-from vllm_omni.diffusion.models.qwen_image.pipeline_qwen_image import calculate_shift
+from vllm_omni.diffusion.models.qwen_image.pipeline_qwen_image import (
+    calculate_shift,
+    set_single_step_warmup_timestep,
+)
 from vllm_omni.diffusion.models.qwen_image.qwen_image_transformer import (
     QwenImageTransformer2DModel,
 )
@@ -561,6 +564,10 @@ class QwenImageEditPipeline(nn.Module, SupportImageInput, QwenImageCFGParallelMi
         return latents, image_latents
 
     def prepare_timesteps(self, num_inference_steps, sigmas, image_seq_len):
+        if num_inference_steps == 1:
+            sigma = float(sigmas[0]) if sigmas is not None else 1.0
+            return set_single_step_warmup_timestep(self.scheduler, sigma=sigma)
+
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
         mu = calculate_shift(
             image_seq_len,
