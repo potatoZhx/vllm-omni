@@ -5,6 +5,8 @@ from vllm.utils.import_utils import resolve_obj_by_qualname
 
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.request import OmniDiffusionRequest
+from vllm_omni.diffusion.sched.interface import DiffusionSchedulerOutput
+from vllm_omni.diffusion.worker.utils import RunnerOutput
 
 
 class DiffusionExecutor(ABC):
@@ -73,6 +75,11 @@ class DiffusionExecutor(ABC):
         unique_reply_rank: int | None = None,
     ) -> Any:
         """Execute a method on workers."""
+        pass
+
+    @abstractmethod
+    def execute_stepwise(self, scheduler_output: DiffusionSchedulerOutput) -> RunnerOutput:
+        """Execute one stepwise diffusion turn on all ranks and return rank-0 output."""
         pass
 
     @abstractmethod

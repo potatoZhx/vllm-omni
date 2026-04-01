@@ -13,6 +13,7 @@ from vllm_omni.diffusion.sched.interface import (
     DiffusionRequestState,
     DiffusionRequestStatus,
     DiffusionSchedulerOutput,
+    ExecutionOutput,
     NewRequestData,
 )
 
@@ -68,7 +69,9 @@ class RequestScheduler(_BaseScheduler):
         self._finished_req_ids.clear()
         return scheduler_output
 
-    def update_from_output(self, sched_output: DiffusionSchedulerOutput, output: DiffusionOutput) -> set[str]:
+    def update_from_output(self, sched_output: DiffusionSchedulerOutput, output: ExecutionOutput) -> set[str]:
+        if not isinstance(output, DiffusionOutput):
+            raise TypeError(f"RequestScheduler expects DiffusionOutput, got {type(output)!r}")
         scheduled_req_ids = sched_output.scheduled_req_ids
         if not scheduled_req_ids:
             return set()

@@ -14,8 +14,10 @@ from vllm_omni.diffusion.sched import (
     RequestScheduler,
     Scheduler,
     SchedulerInterface,
+    StepLevelRequestScheduler,
 )
-from vllm_omni.diffusion.sched.interface import CachedRequestData, NewRequestData
+from vllm_omni.diffusion.sched.interface import CachedRequestData, DiffusionExecutionState, NewRequestData
+from vllm_omni.diffusion.worker.utils import RunnerOutput
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu, pytest.mark.diffusion]
@@ -50,6 +52,7 @@ class _StubScheduler(SchedulerInterface):
         self._sched_req_id = request.request_ids[0]
         self._state = None
         self._scheduled = False
+        self._execution_state = None
 
     def initialize(self, od_config) -> None:
         self.initialized_with = od_config
@@ -57,6 +60,7 @@ class _StubScheduler(SchedulerInterface):
     def add_request(self, request: OmniDiffusionRequest) -> str:
         assert request is self._request
         self._state = Mock(sched_req_id=self._sched_req_id, req=request)
+        self._execution_state = DiffusionExecutionState(sched_req_id=self._sched_req_id)
         return self._sched_req_id
 
     def schedule(self):
@@ -87,6 +91,10 @@ class _StubScheduler(SchedulerInterface):
         del sched_req_id
         return self._state
 
+    def get_execution_state(self, sched_req_id: str):
+        del sched_req_id
+        return self._execution_state
+
     def get_sched_req_id(self, request_id: str) -> str | None:
         if request_id in self._request.request_ids:
             return self._sched_req_id
@@ -97,6 +105,14 @@ class _StubScheduler(SchedulerInterface):
         return self._state
 
     def preempt_request(self, sched_req_id: str) -> bool:
+        del sched_req_id
+        return False
+
+    def mark_abort_pending(self, sched_req_id: str) -> bool:
+        del sched_req_id
+        return False
+
+    def is_abort_pending(self, sched_req_id: str) -> bool:
         del sched_req_id
         return False
 
@@ -226,6 +242,64 @@ class TestRequestScheduler:
 
         assert self.scheduler.get_sched_req_id("map-a") is None
         assert self.scheduler.get_sched_req_id("map-b") is None
+
+
+class TestStepLevelRequestScheduler:
+    def setup_method(self) -> None:
+        self.scheduler = StepLevelRequestScheduler()
+        self.scheduler.initialize(Mock(instance_scheduler_policy="fcfs"))
+
+    def test_single_request_requeues_as_cached_after_unfinished_step(self) -> None:
+        req_id = self.scheduler.add_request(_make_request("step"))
+
+        first = self.scheduler.schedule()
+        assert _new_ids(first) == [req_id]
+        assert _cached_ids(first) == []
+
+        finished = self.scheduler.update_from_output(
+            first,
+            RunnerOutput(req_id=req_id, step_index=1, finished=False, result=None),
+        )
+        assert finished == set()
+        state = self.scheduler.get_request_state(req_id)
+        exec_state = self.scheduler.get_execution_state(req_id)
+        assert state.status == DiffusionRequestStatus.PREEMPTED
+        assert exec_state.executed_steps == 1
+
+        second = self.scheduler.schedule()
+        assert _new_ids(second) == []
+        assert _cached_ids(second) == [req_id]
+
+    def test_finished_runner_output_marks_request_completed(self) -> None:
+        req_id = self.scheduler.add_request(_make_request("done"))
+        sched_output = self.scheduler.schedule()
+
+        finished = self.scheduler.update_from_output(
+            sched_output,
+            RunnerOutput(
+                req_id=req_id,
+                step_index=2,
+                finished=True,
+                result=DiffusionOutput(output=None),
+            ),
+        )
+
+        assert finished == {req_id}
+        assert self.scheduler.get_request_state(req_id).status == DiffusionRequestStatus.FINISHED_COMPLETED
+
+    def test_abort_pending_finishes_on_next_scheduler_update(self) -> None:
+        req_id = self.scheduler.add_request(_make_request("abort"))
+        sched_output = self.scheduler.schedule()
+        assert self.scheduler.mark_abort_pending(req_id) is True
+
+        finished = self.scheduler.update_from_output(
+            sched_output,
+            RunnerOutput(req_id=req_id, step_index=1, finished=False, result=None),
+        )
+
+        assert finished == {req_id}
+        state = self.scheduler.get_request_state(req_id)
+        assert state.status == DiffusionRequestStatus.FINISHED_ABORTED
 
 
 class TestDiffusionEngine:
