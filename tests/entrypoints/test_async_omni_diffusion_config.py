@@ -4,6 +4,7 @@
 import pytest
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
+from vllm_omni.diffusion.data import OmniDiffusionConfig
 from vllm_omni.engine.async_omni_engine import AsyncOmniEngine
 from vllm_omni.entrypoints.cli.serve import OmniServeCommand, _create_default_diffusion_stage_cfg
 
@@ -93,3 +94,42 @@ def test_serve_cli_accepts_ulysses_mode():
     assert args.ulysses_mode == "advanced_uaa"
     assert parallel_config.ulysses_degree == 4
     assert parallel_config.ulysses_mode == "advanced_uaa"
+
+
+def test_default_stage_config_derives_step_execution_for_step_level_backend():
+    stage_cfg = AsyncOmniEngine._create_default_diffusion_stage_cfg(
+        {
+            "diffusion_scheduler_backend": "step_level_request_scheduler",
+            "diffusion_enable_step_chunk": True,
+        }
+    )[0]
+
+    engine_args = stage_cfg["engine_args"]
+    assert engine_args["diffusion_scheduler_backend"] == "step_level_request_scheduler"
+    assert engine_args["diffusion_enable_step_chunk"] is True
+    assert engine_args["step_execution"] is True
+
+
+def test_step_level_scheduler_requires_step_chunk():
+    with pytest.raises(ValueError, match="diffusion_enable_step_chunk"):
+        OmniDiffusionConfig(
+            diffusion_scheduler_backend="step_level_request_scheduler",
+            diffusion_enable_step_chunk=False,
+        )
+
+
+def test_request_scheduler_rejects_step_chunk():
+    with pytest.raises(ValueError, match="diffusion_enable_step_chunk=True"):
+        OmniDiffusionConfig(
+            diffusion_scheduler_backend="request_scheduler",
+            diffusion_enable_step_chunk=True,
+        )
+
+
+def test_step_level_scheduler_rejects_non_fcfs_policy():
+    with pytest.raises(NotImplementedError, match="fcfs"):
+        OmniDiffusionConfig(
+            diffusion_scheduler_backend="step_level_request_scheduler",
+            diffusion_enable_step_chunk=True,
+            instance_scheduler_policy="sjf",
+        )

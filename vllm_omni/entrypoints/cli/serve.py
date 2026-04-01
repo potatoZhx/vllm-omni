@@ -367,6 +367,24 @@ class OmniServeCommand(CLISubcommand):
             action="store_true",
             help="Enable diffusion pipeline profiler to display stage durations.",
         )
+        omni_config_group.add_argument(
+            "--diffusion-scheduler-backend",
+            type=str,
+            default="request_scheduler",
+            choices=["request_scheduler", "step_level_request_scheduler"],
+            help="Diffusion scheduler backend. The step-level backend is the MVP path for step-chunk scheduling.",
+        )
+        omni_config_group.add_argument(
+            "--diffusion-enable-step-chunk",
+            action="store_true",
+            help="Enable step-chunk execution for the diffusion step-level scheduler backend.",
+        )
+        omni_config_group.add_argument(
+            "--instance-scheduler-policy",
+            type=str,
+            default="fcfs",
+            help="Instance selection policy for the diffusion step-level scheduler. MVP currently supports only fcfs.",
+        )
         return serve_parser
 
 

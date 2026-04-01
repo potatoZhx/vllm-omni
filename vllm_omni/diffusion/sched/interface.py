@@ -8,11 +8,13 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
+from typing import TypeAlias
 
 from vllm.logger import init_logger
 
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.request import OmniDiffusionRequest
+from vllm_omni.diffusion.worker.utils import RunnerOutput
 
 logger = init_logger(__name__)
 
@@ -48,6 +50,19 @@ class DiffusionRequestState:
 
     def is_finished(self) -> bool:
         return DiffusionRequestStatus.is_finished(self.status)
+
+
+@dataclass
+class DiffusionExecutionState:
+    """Scheduler-owned execution metadata for one active request."""
+
+    sched_req_id: str
+    arrival_time: float | None = None
+    planned_chunk_budget_steps: int = 1
+    executed_steps: int = 0
+    dispatch_epoch: int = 0
+    estimated_runtime_s: float | None = None
+    abort_pending: bool = False
 
 
 @dataclass
@@ -106,6 +121,9 @@ class DiffusionSchedulerOutput:
         return self.num_scheduled_reqs == 0
 
 
+ExecutionOutput: TypeAlias = DiffusionOutput | RunnerOutput
+
+
 class SchedulerInterface(ABC):
     """Abstract lifecycle contract for diffusion schedulers."""
 
@@ -141,12 +159,16 @@ class SchedulerInterface(ABC):
         """Run one scheduling cycle."""
 
     @abstractmethod
-    def update_from_output(self, sched_output: DiffusionSchedulerOutput, output: DiffusionOutput) -> set[str]:
+    def update_from_output(self, sched_output: DiffusionSchedulerOutput, output: ExecutionOutput) -> set[str]:
         """Update scheduler state from executor output."""
 
     @abstractmethod
     def get_request_state(self, sched_req_id: str) -> DiffusionRequestState | None:
         """Return request state if present."""
+
+    @abstractmethod
+    def get_execution_state(self, sched_req_id: str) -> DiffusionExecutionState | None:
+        """Return execution state if present."""
 
     @abstractmethod
     def has_requests(self) -> bool:
@@ -163,6 +185,14 @@ class SchedulerInterface(ABC):
     @abstractmethod
     def preempt_request(self, sched_req_id: str) -> bool:
         """Preempt a running request back to waiting."""
+
+    @abstractmethod
+    def mark_abort_pending(self, sched_req_id: str) -> bool:
+        """Mark a running request for step-boundary abort."""
+
+    @abstractmethod
+    def is_abort_pending(self, sched_req_id: str) -> bool:
+        """Return whether a request has a pending abort marker."""
 
     @abstractmethod
     def finish_requests(self, sched_req_ids: str | list[str], status: DiffusionRequestStatus) -> None:

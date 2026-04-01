@@ -28,6 +28,11 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+_VALID_DIFFUSION_SCHEDULER_BACKENDS = {
+    "request_scheduler",
+    "step_level_request_scheduler",
+}
+
 
 @config
 @dataclass
@@ -489,6 +494,15 @@ class OmniDiffusionConfig:
     # Diffusion pipeline Profiling config
     enable_diffusion_pipeline_profiler: bool = False
 
+    # Diffusion scheduler backend settings
+    diffusion_scheduler_backend: str = "request_scheduler"
+    instance_scheduler_policy: str = "fcfs"
+    diffusion_enable_step_chunk: bool = False
+    diffusion_enable_chunk_preemption: bool = False
+    diffusion_chunk_budget_steps: int = 1
+    instance_runtime_profile_path: str | None = None
+    instance_runtime_profile_name: str | None = None
+
     # Step mode settings
     step_execution: bool = False
 
@@ -504,6 +518,10 @@ class OmniDiffusionConfig:
             return any(isinstance(n, int) and n > 0 for n in num_experts)
 
         return False
+
+    @property
+    def uses_step_level_scheduler(self) -> bool:
+        return self.diffusion_scheduler_backend == "step_level_request_scheduler"
 
     def settle_port(self, port: int, port_inc: int = 42, max_attempts: int = 100) -> int:
         """
@@ -614,8 +632,41 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
+        self._validate_scheduler_config()
+
     def update_multimodal_support(self) -> None:
         self.supports_multimodal_inputs = self.model_class_name in {"QwenImageEditPlusPipeline"}
+
+    def _validate_scheduler_config(self) -> None:
+        if self.diffusion_scheduler_backend not in _VALID_DIFFUSION_SCHEDULER_BACKENDS:
+            raise ValueError(
+                "diffusion_scheduler_backend must be one of "
+                f"{sorted(_VALID_DIFFUSION_SCHEDULER_BACKENDS)!r}, "
+                f"but got {self.diffusion_scheduler_backend!r}"
+            )
+
+        if self.diffusion_chunk_budget_steps < 1:
+            raise ValueError("diffusion_chunk_budget_steps must be >= 1")
+
+        if self.uses_step_level_scheduler:
+            if not self.diffusion_enable_step_chunk:
+                raise ValueError(
+                    "diffusion_enable_step_chunk must be True when "
+                    "diffusion_scheduler_backend='step_level_request_scheduler'"
+                )
+            if self.instance_scheduler_policy != "fcfs":
+                raise NotImplementedError(
+                    "Only instance_scheduler_policy='fcfs' is supported for "
+                    "step_level_request_scheduler in the MVP."
+                )
+            self.step_execution = True
+            return
+
+        if self.diffusion_enable_step_chunk:
+            raise ValueError(
+                "diffusion_enable_step_chunk=True requires "
+                "diffusion_scheduler_backend='step_level_request_scheduler'"
+            )
 
     @classmethod
     def from_kwargs(cls, **kwargs: Any) -> "OmniDiffusionConfig":

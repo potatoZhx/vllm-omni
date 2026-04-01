@@ -812,6 +812,15 @@ class AsyncOmniEngine:
             cache_backend,
             normalized_kwargs.get("cache_config", None),
         )
+        diffusion_scheduler_backend = normalized_kwargs.get("diffusion_scheduler_backend", "request_scheduler")
+        diffusion_enable_step_chunk = bool(normalized_kwargs.get("diffusion_enable_step_chunk", False))
+        step_execution = bool(
+            normalized_kwargs.get("step_execution", False)
+            or (
+                diffusion_scheduler_backend == "step_level_request_scheduler"
+                and diffusion_enable_step_chunk
+            )
+        )
 
         parallel_config = normalized_kwargs.get("parallel_config")
         if isinstance(parallel_config, dict):
@@ -876,6 +885,14 @@ class AsyncOmniEngine:
                     "num_weight_load_threads": kwargs.get("num_weight_load_threads", 4),
                     "quantization": kwargs.get("quantization", None),
                     "enable_diffusion_pipeline_profiler": kwargs.get("enable_diffusion_pipeline_profiler", False),
+                    "diffusion_scheduler_backend": diffusion_scheduler_backend,
+                    "instance_scheduler_policy": kwargs.get("instance_scheduler_policy", "fcfs"),
+                    "diffusion_enable_step_chunk": diffusion_enable_step_chunk,
+                    "diffusion_enable_chunk_preemption": kwargs.get("diffusion_enable_chunk_preemption", False),
+                    "diffusion_chunk_budget_steps": kwargs.get("diffusion_chunk_budget_steps", 1),
+                    "instance_runtime_profile_path": kwargs.get("instance_runtime_profile_path", None),
+                    "instance_runtime_profile_name": kwargs.get("instance_runtime_profile_name", None),
+                    "step_execution": step_execution,
                     **(
                         {
                             "profiler_config": asdict(kwargs["profiler_config"])

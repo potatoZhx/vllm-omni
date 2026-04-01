@@ -327,6 +327,10 @@ class StageConfigFactory:
             engine_args["parallel_config"] = asdict(kwargs["parallel_config"])
 
         engine_args.setdefault("cache_backend", "none")
+        diffusion_scheduler_backend = engine_args.get("diffusion_scheduler_backend", "request_scheduler")
+        diffusion_enable_step_chunk = bool(engine_args.get("diffusion_enable_step_chunk", False))
+        if diffusion_scheduler_backend == "step_level_request_scheduler" and diffusion_enable_step_chunk:
+            engine_args["step_execution"] = True
         engine_args["model_stage"] = "diffusion"
 
         # Convert dtype to string for OmegaConf
