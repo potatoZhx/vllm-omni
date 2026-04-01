@@ -379,10 +379,6 @@ class AsyncOmniDiffusion:
         """Alias for close() method."""
         self.close()
 
-    async def abort(self, request_id: str | Iterable[str]) -> None:
-        """Abort a request."""
-        self.engine.abort(request_id)
-
     @property
     def is_running(self) -> bool:
         """Check if the engine is running."""
