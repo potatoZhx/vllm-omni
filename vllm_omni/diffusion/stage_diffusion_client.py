@@ -98,6 +98,10 @@ class StageDiffusionClient:
         and the combined result is placed on the output queue with a single
         *request_id*.
         """
+        if self._engine.od_config.uses_step_level_scheduler:
+            raise NotImplementedError(
+                "Step-level diffusion scheduling does not support stage batch requests yet."
+            )
         task = asyncio.create_task(
             self._run_batch(request_id, prompts, sampling_params),
             name=f"diffusion-batch-{request_id}",
@@ -138,6 +142,8 @@ class StageDiffusionClient:
             task = self._tasks.pop(rid, None)
             if task:
                 task.cancel()
+        if request_ids:
+            await self._engine.abort(request_ids)
 
     async def collective_rpc_async(
         self,

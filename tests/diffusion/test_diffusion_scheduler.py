@@ -371,3 +371,83 @@ class TestDiffusionEngine:
 
         with pytest.raises(RuntimeError, match="Dummy run failed: boom"):
             engine._dummy_run()
+
+    def test_step_level_engine_waits_for_terminal_output(self) -> None:
+        engine = DiffusionEngine.__new__(DiffusionEngine)
+        scheduler = StepLevelRequestScheduler()
+        scheduler.initialize(Mock(instance_scheduler_policy="fcfs"))
+        engine.scheduler = scheduler
+        engine.executor = Mock()
+        engine._engine_lock = threading.Lock()
+        engine._rpc_lock = engine._engine_lock
+        engine._scheduler_cv = threading.Condition(engine._engine_lock)
+        engine._request_events = {}
+        engine._request_outputs = {}
+        engine._fatal_error = None
+        engine._closed = False
+        expected = DiffusionOutput(output=None)
+        request = _make_request("step_engine")
+
+        def _execute_stepwise(sched_output):
+            sched_req_id = sched_output.scheduled_req_ids[0]
+            exec_state = scheduler.get_execution_state(sched_req_id)
+            if exec_state.executed_steps == 0:
+                return RunnerOutput(req_id=sched_req_id, step_index=1, finished=False, result=None)
+            return RunnerOutput(req_id=sched_req_id, step_index=2, finished=True, result=expected)
+
+        engine.executor.execute_stepwise.side_effect = _execute_stepwise
+        engine.executor.shutdown = Mock()
+
+        scheduler_thread = threading.Thread(target=engine._scheduler_loop, daemon=True)
+        engine._scheduler_thread = scheduler_thread
+        scheduler_thread.start()
+
+        output = engine.add_req_and_wait_for_response(request)
+        engine.close()
+
+        assert output is expected
+        assert engine.executor.execute_stepwise.call_count == 2
+
+    def test_step_level_engine_close_unblocks_waiter(self) -> None:
+        engine = DiffusionEngine.__new__(DiffusionEngine)
+        scheduler = StepLevelRequestScheduler()
+        scheduler.initialize(Mock(instance_scheduler_policy="fcfs"))
+        engine.scheduler = scheduler
+        engine.executor = Mock()
+        engine._engine_lock = threading.Lock()
+        engine._rpc_lock = engine._engine_lock
+        engine._scheduler_cv = threading.Condition(engine._engine_lock)
+        engine._request_events = {}
+        engine._request_outputs = {}
+        engine._fatal_error = None
+        engine._closed = False
+        engine.executor.shutdown = Mock()
+
+        def _blocked_execute_stepwise(sched_output):
+            threading.Event().wait(0.2)
+            return RunnerOutput(
+                req_id=sched_output.scheduled_req_ids[0],
+                step_index=1,
+                finished=False,
+                result=None,
+            )
+
+        engine.executor.execute_stepwise.side_effect = _blocked_execute_stepwise
+
+        scheduler_thread = threading.Thread(target=engine._scheduler_loop, daemon=True)
+        engine._scheduler_thread = scheduler_thread
+        scheduler_thread.start()
+
+        results = {}
+
+        def _run_request():
+            results["output"] = engine.add_req_and_wait_for_response(_make_request("close_me"))
+
+        request_thread = threading.Thread(target=_run_request, daemon=True)
+        request_thread.start()
+        threading.Event().wait(0.05)
+
+        engine.close()
+        request_thread.join(timeout=5)
+
+        assert results["output"].error == "DiffusionEngine closed."

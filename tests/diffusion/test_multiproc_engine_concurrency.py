@@ -12,6 +12,7 @@ from vllm_omni.diffusion.data import DiffusionOutput
 from vllm_omni.diffusion.diffusion_engine import DiffusionEngine
 from vllm_omni.diffusion.executor.multiproc_executor import MultiprocDiffusionExecutor
 from vllm_omni.diffusion.sched import RequestScheduler
+from vllm_omni.diffusion.worker.utils import RunnerOutput
 
 pytestmark = [pytest.mark.diffusion, pytest.mark.core_model, pytest.mark.cpu]
 
@@ -302,6 +303,19 @@ class TestSerialOperations:
 
         assert gen_out.error == "result_for_gen"
         assert rpc_out.error == "result_for_rpc"
+
+    def test_serial_execute_stepwise_runs_all_ranks_and_returns_runner_output(self):
+        _, executor, req_q, res_q = _make_engine(num_gpus=2)
+        expected = RunnerOutput(req_id="sched-req", step_index=1, finished=False, result=None)
+        res_q.put(expected)
+
+        result = executor.execute_stepwise(Mock())
+        rpc_request = req_q.get(timeout=5)
+
+        assert result is expected
+        assert rpc_request["method"] == "execute_stepwise"
+        assert rpc_request["exec_all_ranks"] is True
+        assert rpc_request["output_rank"] == 0
 
     def test_serial_add_req_error_propagation(self):
         """``add_req`` should raise when the worker reports an error."""

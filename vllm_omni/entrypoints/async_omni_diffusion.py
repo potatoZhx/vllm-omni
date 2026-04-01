@@ -195,6 +195,10 @@ class AsyncOmniDiffusion:
         Returns:
             A single ``OmniRequestOutput`` with all images combined.
         """
+        if self.od_config.uses_step_level_scheduler:
+            raise NotImplementedError(
+                "Step-level diffusion scheduling does not support batched generate_batch() requests yet."
+            )
         if request_id is None:
             request_id = f"diff-batch-{uuid.uuid4().hex[:8]}"
         return await self._generate_batch(prompts, sampling_params, request_id, lora_request)
@@ -311,6 +315,17 @@ class AsyncOmniDiffusion:
         if not result.request_id:
             result.request_id = request_id
         return result
+
+    async def abort(self, request_id: str | Iterable[str]) -> None:
+        if self._closed:
+            return
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            self._executor,
+            self.engine.abort,
+            request_id,
+        )
 
     async def generate_stream(
         self,

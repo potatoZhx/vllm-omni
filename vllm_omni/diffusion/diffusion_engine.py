@@ -19,7 +19,12 @@ from vllm_omni.diffusion.registry import (
     get_diffusion_pre_process_func,
 )
 from vllm_omni.diffusion.request import OmniDiffusionRequest
-from vllm_omni.diffusion.sched import RequestScheduler, SchedulerInterface
+from vllm_omni.diffusion.sched import (
+    DiffusionRequestStatus,
+    RequestScheduler,
+    SchedulerInterface,
+    StepLevelRequestScheduler,
+)
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniTextPrompt
 from vllm_omni.outputs import OmniRequestOutput
 
@@ -72,9 +77,26 @@ class DiffusionEngine:
 
         executor_class = DiffusionExecutor.get_class(od_config)
         self.executor = executor_class(od_config)
-        self.scheduler: SchedulerInterface = scheduler or RequestScheduler()
+        self.scheduler = self._make_scheduler(scheduler)
         self.scheduler.initialize(od_config)
-        self._rpc_lock = threading.Lock()
+        self._engine_lock = threading.Lock()
+        # Keep the old attribute name as an alias for existing tests and
+        # callers that still refer to the transport lock directly.
+        self._rpc_lock = self._engine_lock
+        self._scheduler_cv = threading.Condition(self._engine_lock)
+        self._request_events: dict[str, threading.Event] = {}
+        self._request_outputs: dict[str, DiffusionOutput] = {}
+        self._fatal_error: str | None = None
+        self._closed = False
+        self._scheduler_thread: threading.Thread | None = None
+
+        if self._uses_step_level_scheduler():
+            self._scheduler_thread = threading.Thread(
+                target=self._scheduler_loop,
+                name="DiffusionStepScheduler",
+                daemon=True,
+            )
+            self._scheduler_thread.start()
 
         try:
             self._dummy_run()
@@ -82,6 +104,19 @@ class DiffusionEngine:
             logger.error(f"Dummy run failed: {e}")
             self.close()
             raise e
+
+    def _make_scheduler(self, scheduler: SchedulerInterface | None) -> SchedulerInterface:
+        if scheduler is not None:
+            return scheduler
+        if self.od_config.uses_step_level_scheduler:
+            return StepLevelRequestScheduler()
+        return RequestScheduler()
+
+    def _get_engine_lock(self) -> threading.Lock:
+        return getattr(self, "_engine_lock", getattr(self, "_rpc_lock"))
+
+    def _uses_step_level_scheduler(self) -> bool:
+        return isinstance(self.scheduler, StepLevelRequestScheduler)
 
     def step(self, request: OmniDiffusionRequest) -> list[OmniRequestOutput]:
         diffusion_engine_start_time = time.perf_counter()
@@ -276,7 +311,11 @@ class DiffusionEngine:
         return DiffusionEngine(config, scheduler=scheduler)
 
     def add_req_and_wait_for_response(self, request: OmniDiffusionRequest) -> DiffusionOutput:
-        with self._rpc_lock:
+        if self._uses_step_level_scheduler():
+            return self._add_step_level_request_and_wait_for_response(request)
+
+        engine_lock = self._get_engine_lock()
+        with engine_lock:
             target_sched_req_id = self.scheduler.add_request(request)
 
             # keep scheduling and executing until the target request is finished
@@ -307,6 +346,118 @@ class DiffusionEngine:
                 if target_sched_req_id in finished_req_ids:
                     self.scheduler.pop_request_state(target_sched_req_id)
                     return output
+
+    def _add_step_level_request_and_wait_for_response(self, request: OmniDiffusionRequest) -> DiffusionOutput:
+        if len(request.prompts) != 1:
+            raise NotImplementedError(
+                "Step-level diffusion scheduling currently supports only single-prompt requests."
+            )
+
+        engine_lock = self._get_engine_lock()
+        with engine_lock:
+            if self._closed:
+                raise RuntimeError("DiffusionEngine is closed.")
+            if self._fatal_error is not None:
+                return DiffusionOutput(error=self._fatal_error)
+
+            target_sched_req_id = self.scheduler.add_request(request)
+            event = threading.Event()
+            self._request_events[target_sched_req_id] = event
+            self._scheduler_cv.notify_all()
+
+        event.wait()
+
+        with engine_lock:
+            output = self._request_outputs.pop(target_sched_req_id, None)
+            self._request_events.pop(target_sched_req_id, None)
+            self.scheduler.pop_request_state(target_sched_req_id)
+            if output is None:
+                if self._fatal_error is not None:
+                    output = DiffusionOutput(error=self._fatal_error)
+                else:
+                    output = DiffusionOutput(
+                        error=f"Step-level diffusion request {target_sched_req_id} completed without an output."
+                    )
+            return output
+
+    def _scheduler_loop(self) -> None:
+        try:
+            while True:
+                with self._get_engine_lock():
+                    while not self._closed and not self.scheduler.has_requests():
+                        self._scheduler_cv.wait()
+
+                    if self._closed:
+                        return
+
+                    sched_output = self.scheduler.schedule()
+                    if sched_output.is_empty:
+                        continue
+
+                    runner_output = self.executor.execute_stepwise(sched_output)
+                    finished_req_ids = self.scheduler.update_from_output(sched_output, runner_output)
+                    self._publish_finished_requests_locked(
+                        finished_req_ids,
+                        runner_output=runner_output,
+                    )
+        except Exception as exc:
+            logger.error("Step-level diffusion scheduler thread failed", exc_info=True)
+            with self._get_engine_lock():
+                self._fatal_error = str(exc)
+                self._complete_pending_requests_locked(str(exc))
+                self._scheduler_cv.notify_all()
+
+    def _publish_finished_requests_locked(
+        self,
+        finished_req_ids: set[str],
+        runner_output: object | None = None,
+    ) -> None:
+        for sched_req_id in finished_req_ids:
+            state = self.scheduler.get_request_state(sched_req_id)
+            if state is None:
+                continue
+
+            output = self._make_terminal_output(
+                sched_req_id,
+                state,
+                runner_output=runner_output,
+            )
+            self._request_outputs[sched_req_id] = output
+            event = self._request_events.get(sched_req_id)
+            if event is not None:
+                event.set()
+
+    def _make_terminal_output(
+        self,
+        sched_req_id: str,
+        state,
+        runner_output: object | None = None,
+    ) -> DiffusionOutput:
+        if (
+            runner_output is not None
+            and getattr(runner_output, "req_id", None) == sched_req_id
+            and getattr(runner_output, "finished", False)
+        ):
+            result = getattr(runner_output, "result", None)
+            if isinstance(result, DiffusionOutput):
+                return result
+
+        if state.status == DiffusionRequestStatus.FINISHED_ABORTED:
+            return DiffusionOutput(error=f"Diffusion request {sched_req_id} aborted.")
+        if state.status == DiffusionRequestStatus.FINISHED_ERROR:
+            return DiffusionOutput(error=state.error or f"Diffusion request {sched_req_id} failed.")
+        return DiffusionOutput(error=f"Diffusion request {sched_req_id} completed without a terminal output.")
+
+    def _complete_pending_requests_locked(self, error_message: str) -> None:
+        pending_req_ids = list(self._request_events)
+        for sched_req_id in pending_req_ids:
+            state = self.scheduler.get_request_state(sched_req_id)
+            if state is not None and not state.is_finished():
+                self.scheduler.finish_requests(sched_req_id, DiffusionRequestStatus.FINISHED_ERROR)
+            self._request_outputs.setdefault(sched_req_id, DiffusionOutput(error=error_message))
+            event = self._request_events.get(sched_req_id)
+            if event is not None:
+                event.set()
 
     def profile(self, is_start: bool = True, profile_prefix: str | None = None) -> None:
         """Start or stop torch profiling on all diffusion workers.
@@ -406,12 +557,13 @@ class DiffusionEngine:
         deadline = None if timeout is None else time.monotonic() + timeout
         acquired = False
         try:
+            engine_lock = self._get_engine_lock()
             if deadline is None:
-                self._rpc_lock.acquire()
+                engine_lock.acquire()
                 acquired = True
             else:
                 lock_timeout = max(0, deadline - time.monotonic())
-                acquired = self._rpc_lock.acquire(timeout=lock_timeout)
+                acquired = engine_lock.acquire(timeout=lock_timeout)
             if not acquired:
                 raise TimeoutError(f"RPC call to {method} timed out waiting for engine lock.")
 
@@ -428,15 +580,56 @@ class DiffusionEngine:
             )
         finally:
             if acquired:
-                self._rpc_lock.release()
+                engine_lock.release()
 
     def close(self) -> None:
+        scheduler_thread = None
+        if hasattr(self, "scheduler"):
+            with self._get_engine_lock():
+                if getattr(self, "_closed", False):
+                    scheduler_thread = getattr(self, "_scheduler_thread", None)
+                else:
+                    self._closed = True
+                    if hasattr(self, "_scheduler_cv"):
+                        self._complete_pending_requests_locked("DiffusionEngine closed.")
+                        self._scheduler_cv.notify_all()
+                    scheduler_thread = getattr(self, "_scheduler_thread", None)
+
+        if (
+            scheduler_thread is not None
+            and scheduler_thread.is_alive()
+            and scheduler_thread is not threading.current_thread()
+        ):
+            scheduler_thread.join(timeout=30)
+
         if hasattr(self, "scheduler"):
             self.scheduler.close()
         if hasattr(self, "executor"):
             self.executor.shutdown()
 
     def abort(self, request_id: str | Iterable[str]) -> None:
-        # TODO implement it
-        logger.warning("DiffusionEngine abort is not implemented yet")
-        pass
+        request_ids = [request_id] if isinstance(request_id, str) else list(request_id)
+        with self._get_engine_lock():
+            for public_req_id in request_ids:
+                sched_req_id = self.scheduler.get_sched_req_id(public_req_id)
+                if sched_req_id is None:
+                    continue
+
+                state = self.scheduler.get_request_state(sched_req_id)
+                if state is None or state.is_finished():
+                    continue
+
+                if state.status == DiffusionRequestStatus.RUNNING:
+                    self.scheduler.mark_abort_pending(sched_req_id)
+                    continue
+
+                self.scheduler.finish_requests(sched_req_id, DiffusionRequestStatus.FINISHED_ABORTED)
+                self._request_outputs[sched_req_id] = DiffusionOutput(
+                    error=f"Diffusion request {public_req_id} aborted."
+                )
+                event = self._request_events.get(sched_req_id)
+                if event is not None:
+                    event.set()
+
+            if hasattr(self, "_scheduler_cv"):
+                self._scheduler_cv.notify_all()
