@@ -379,7 +379,7 @@ class TestDiffusionEngine:
         engine.scheduler = scheduler
         engine.executor = Mock()
         engine._engine_lock = threading.Lock()
-        engine._rpc_lock = engine._engine_lock
+        engine._rpc_lock = threading.Lock()
         engine._scheduler_cv = threading.Condition(engine._engine_lock)
         engine._request_events = {}
         engine._request_outputs = {}
@@ -415,7 +415,7 @@ class TestDiffusionEngine:
         engine.scheduler = scheduler
         engine.executor = Mock()
         engine._engine_lock = threading.Lock()
-        engine._rpc_lock = engine._engine_lock
+        engine._rpc_lock = threading.Lock()
         engine._scheduler_cv = threading.Condition(engine._engine_lock)
         engine._request_events = {}
         engine._request_outputs = {}

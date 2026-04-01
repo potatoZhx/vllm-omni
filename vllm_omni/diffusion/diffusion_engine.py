@@ -80,9 +80,7 @@ class DiffusionEngine:
         self.scheduler = self._make_scheduler(scheduler)
         self.scheduler.initialize(od_config)
         self._engine_lock = threading.Lock()
-        # Keep the old attribute name as an alias for existing tests and
-        # callers that still refer to the transport lock directly.
-        self._rpc_lock = self._engine_lock
+        self._rpc_lock = threading.Lock()
         self._scheduler_cv = threading.Condition(self._engine_lock)
         self._request_events: dict[str, threading.Event] = {}
         self._request_outputs: dict[str, DiffusionOutput] = {}
@@ -114,6 +112,9 @@ class DiffusionEngine:
 
     def _get_engine_lock(self) -> threading.Lock:
         return getattr(self, "_engine_lock", getattr(self, "_rpc_lock"))
+
+    def _get_rpc_lock(self) -> threading.Lock:
+        return getattr(self, "_rpc_lock", self._get_engine_lock())
 
     def _uses_step_level_scheduler(self) -> bool:
         return isinstance(self.scheduler, StepLevelRequestScheduler)
@@ -394,7 +395,12 @@ class DiffusionEngine:
                     if sched_output.is_empty:
                         continue
 
+                with self._get_rpc_lock():
                     runner_output = self.executor.execute_stepwise(sched_output)
+
+                with self._get_engine_lock():
+                    if self._closed:
+                        continue
                     finished_req_ids = self.scheduler.update_from_output(sched_output, runner_output)
                     self._publish_finished_requests_locked(
                         finished_req_ids,
@@ -557,15 +563,15 @@ class DiffusionEngine:
         deadline = None if timeout is None else time.monotonic() + timeout
         acquired = False
         try:
-            engine_lock = self._get_engine_lock()
+            rpc_lock = self._get_rpc_lock()
             if deadline is None:
-                engine_lock.acquire()
+                rpc_lock.acquire()
                 acquired = True
             else:
                 lock_timeout = max(0, deadline - time.monotonic())
-                acquired = engine_lock.acquire(timeout=lock_timeout)
+                acquired = rpc_lock.acquire(timeout=lock_timeout)
             if not acquired:
-                raise TimeoutError(f"RPC call to {method} timed out waiting for engine lock.")
+                raise TimeoutError(f"RPC call to {method} timed out waiting for rpc lock.")
 
             rpc_timeout = None if deadline is None else max(0, deadline - time.monotonic())
             if deadline is not None and rpc_timeout <= 0:
@@ -580,7 +586,7 @@ class DiffusionEngine:
             )
         finally:
             if acquired:
-                engine_lock.release()
+                rpc_lock.release()
 
     def close(self) -> None:
         scheduler_thread = None
