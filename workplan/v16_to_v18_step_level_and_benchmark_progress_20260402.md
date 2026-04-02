@@ -522,3 +522,104 @@
 - step-level MVP 主链路与本地实例 benchmark 客户端能力已经在同一轮收口
 - `estimated_cost_s` 注入路径已打通，为后续非 `fcfs` 策略和 global scheduler 恢复保留了 benchmark 侧接口
 - global scheduler runtime 与 orchestration 脚本迁移仍是后续独立里程碑
+
+## 12. `2026-04-02` Global Scheduler 迁移落地
+
+### 12.1 本轮确认后的边界
+
+- 全局策略只保留:
+  - `min_queue_length`
+  - `round_robin`
+  - `short_queue_runtime`
+- worker 侧只接受并透传:
+  - `slo_ms`
+  - `estimated_cost_s`
+- 不恢复 `--diffusion-engine-max-concurrency`
+- orchestration 只保留并强制 worker 启动参数:
+  - `--diffusion-scheduler-backend step_level_request_scheduler`
+  - `--diffusion-enable-step-chunk`
+
+补充决定:
+
+- `global scheduler` 按 pure routing 落地，不在 scheduler 侧等待请求
+- runtime state 只做 bookkeeping，不维护 scheduler-side waiting queue
+- worker 内部是否等待、如何执行，继续由 worker 本地 scheduler 决定
+
+### 12.2 本轮已迁移内容
+
+- `vllm_omni/global_scheduler/*`
+  - 恢复 `config.py`、`types.py`、`runtime_profile.py`、`router.py`、`state.py`
+  - 恢复 `lifecycle.py`、`process_controller.py`、`server.py`
+  - 恢复 `__init__.py`、`README.md`、`README_zh.md`
+- `vllm_omni/global_scheduler/policies/*`
+  - 恢复 `policy_base.py`
+  - 恢复 `algorithm_policy_router.py`
+  - 恢复 `runtime_estimator.py`
+  - 恢复 `min_queue_length.py`
+  - 恢复 `round_robin.py`
+  - 恢复 `short_queue_runtime.py`
+- worker metadata 透传
+  - `vllm_omni/entrypoints/openai/protocol/images.py`
+  - `vllm_omni/entrypoints/openai/protocol/videos.py`
+  - `vllm_omni/entrypoints/openai/api_server.py`
+  - `vllm_omni/entrypoints/openai/serving_video.py`
+  - `vllm_omni/entrypoints/openai/serving_chat.py`
+- benchmark / orchestration 精简版恢复
+  - `benchmarks/diffusion/scripts/global_instance_scheduler_v2/orchestrate.py`
+  - `benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh`
+  - `benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_suite.sh`
+  - `benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml`
+  - `benchmarks/diffusion/scripts/global_instance_scheduler_v2/README.md`
+  - `benchmarks/diffusion/scripts/README_global_instance_scheduler.md`
+  - `benchmarks/diffusion/scripts/run_global_scheduler_benchmark.sh`
+  - `benchmarks/diffusion/scripts/run_global_scheduler_benchmark_one_shell.sh`
+- 测试恢复
+  - 恢复 `tests/global_scheduler/*`
+  - 新增 / 更新 `slo_ms` 与 `estimated_cost_s` 透传测试
+
+### 12.3 与旧方案相比的明确变化
+
+- 不再从 worker launch args 解析 `diffusion_engine_max_concurrency`
+- 不再让 `global scheduler` 等待“容量释放”后再转发
+- `min_queue_length` 与 `short_queue_runtime` 仅基于当前已路由请求的 bookkeeping 打分
+- orchestration 不再依赖:
+  - `chunk_preemption`
+  - `chunk_budget`
+  - `diffusion_engine_max_concurrency`
+
+### 12.4 本轮未纳入项
+
+- `fcfs`
+- `estimated_completion_time`
+- worker 字段 `slo_target_ms`
+- worker 字段 `deadline_ts`
+- 实例内复杂策略:
+  - `sjf`
+  - `p95-first`
+  - `guarded`
+  - `fusion`
+- `api_server.py` request-id / arrival / finish 日志增强
+
+### 12.5 验证
+
+已完成:
+
+- `PYTHONNOUSERSITE=1 /home/tianzhu/.conda/envs/vllm-omni-v18/bin/python -m pytest -q tests/global_scheduler tests/entrypoints/openai_api/test_image_server.py tests/entrypoints/openai_api/test_video_server.py tests/entrypoints/openai_api/test_serving_chat_sampling_params.py`
+- `PYTHONNOUSERSITE=1 /home/tianzhu/.conda/envs/vllm-omni-v18/bin/python -m py_compile vllm_omni/global_scheduler/*.py vllm_omni/global_scheduler/policies/*.py benchmarks/diffusion/scripts/global_instance_scheduler_v2/orchestrate.py`
+- `bash -n benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_suite.sh benchmarks/diffusion/scripts/run_global_scheduler_benchmark.sh benchmarks/diffusion/scripts/run_global_scheduler_benchmark_one_shell.sh`
+- `PYTHONNOUSERSITE=1 /home/tianzhu/.conda/envs/vllm-omni-v18/bin/python -c "from vllm_omni.global_scheduler.config import load_config; from vllm_omni.global_scheduler.server import create_app; cfg=load_config('benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml'); app=create_app(cfg); print(len(app.routes))"`
+
+结果:
+
+- 定向 pytest 通过，`148 passed`
+- Python 语法检查通过
+- shell 语法检查通过
+- `load_config + create_app` smoke 通过，创建出的 app route 数为 `16`
+
+### 12.6 当前结论
+
+- `v18-base` 已具备最小可用的 global scheduler runtime
+- 3 个目标全局策略已恢复并可测试
+- `estimated_cost_s` 从 benchmark / client -> global scheduler -> worker 的链路已收口
+- `slo_ms` 已在 worker 侧接受并透传，为后续 SLO-aware 策略保留接口
+- 当前实现刻意保持 pure routing 语义，避免把请求堆在 global scheduler 侧

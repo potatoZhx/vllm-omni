@@ -94,6 +94,15 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _apply_scheduler_request_metadata(gen_params: OmniDiffusionSamplingParams, metadata: dict[str, Any]) -> None:
+    """Forward scheduler-facing metadata into diffusion extra args."""
+
+    for field_name in ("slo_ms", "estimated_cost_s"):
+        value = metadata.get(field_name)
+        if value is not None:
+            gen_params.extra_args[field_name] = value
+
+
 class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
     """OpenAI-compatible chat serving for both LLM and Diffusion models.
 
@@ -2122,6 +2131,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
                 num_outputs_per_prompt=num_outputs_per_prompt,
                 seed=seed,
             )
+            _apply_scheduler_request_metadata(gen_params, extra_body)
 
             # Only override defaults when the user explicitly provides values
             if num_inference_steps is not None:

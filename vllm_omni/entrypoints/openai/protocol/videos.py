@@ -142,6 +142,11 @@ class VideoGenerationRequest(BaseModel):
         default=None,
         description="Scheduler flow_shift for video models (Wan2.2)",
     )
+    slo_ms: float | None = Field(default=None, description="Optional SLO target in milliseconds.")
+    estimated_cost_s: float | None = Field(
+        default=None,
+        description="Optional caller-provided runtime estimate in seconds.",
+    )
     true_cfg_scale: float | None = Field(
         default=None,
         ge=0.0,

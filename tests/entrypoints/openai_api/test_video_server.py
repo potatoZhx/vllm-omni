@@ -316,6 +316,8 @@ def test_sampling_params_pass_through(test_client, mocker: MockerFixture):
             "true_cfg_scale": "4.0",
             "boundary_ratio": "0.7",
             "flow_shift": "0.25",
+            "slo_ms": "900",
+            "estimated_cost_s": "1.75",
         },
     )
 
@@ -330,6 +332,8 @@ def test_sampling_params_pass_through(test_client, mocker: MockerFixture):
     assert captured.true_cfg_scale == 4.0
     assert captured.boundary_ratio == 0.7
     assert captured.extra_args["flow_shift"] == 0.25
+    assert captured.extra_args["slo_ms"] == 900.0
+    assert captured.extra_args["estimated_cost_s"] == 1.75
 
 
 def test_audio_sample_rate_comes_from_model_config(test_client, mocker: MockerFixture):

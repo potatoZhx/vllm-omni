@@ -332,3 +332,23 @@ def test_get_comprehension_stage_index_raises_when_not_found(mocker: MockerFixtu
 
     with pytest.raises(ValueError, match="No comprehension stage"):
         instance._get_comprehension_stage_index()
+
+
+def test_apply_scheduler_request_metadata_sets_extra_args():
+    from vllm_omni.entrypoints.openai.serving_chat import _apply_scheduler_request_metadata
+    from vllm_omni.inputs.data import OmniDiffusionSamplingParams
+
+    gen_params = OmniDiffusionSamplingParams()
+    _apply_scheduler_request_metadata(
+        gen_params,
+        {
+            "slo_ms": 1500,
+            "estimated_cost_s": 3.2,
+            "ignored_field": "x",
+        },
+    )
+
+    assert gen_params.extra_args == {
+        "slo_ms": 1500,
+        "estimated_cost_s": 3.2,
+    }

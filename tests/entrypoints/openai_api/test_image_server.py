@@ -635,6 +635,8 @@ def test_parameters_passed_through(test_client, mock_async_diffusion):
             "guidance_scale": 7.5,
             "true_cfg_scale": 3.0,
             "seed": 42,
+            "slo_ms": 1200,
+            "estimated_cost_s": 2.5,
         },
     )
     assert response.status_code == 200
@@ -645,6 +647,8 @@ def test_parameters_passed_through(test_client, mock_async_diffusion):
     assert captured.guidance_scale == 7.5
     assert captured.true_cfg_scale == 3.0
     assert captured.seed == 42
+    assert captured.extra_args["slo_ms"] == 1200
+    assert captured.extra_args["estimated_cost_s"] == 2.5
 
 
 def test_model_field_omitted_works(test_client):

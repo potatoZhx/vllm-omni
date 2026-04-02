@@ -119,6 +119,10 @@ class OmniOpenAIServingVideo:
             request.boundary_ratio,
             gen_params.boundary_ratio,
         )
+        if request.slo_ms is not None:
+            gen_params.extra_args["slo_ms"] = request.slo_ms
+        if request.estimated_cost_s is not None:
+            gen_params.extra_args["estimated_cost_s"] = request.estimated_cost_s
         if request.flow_shift is not None:
             gen_params.extra_args["flow_shift"] = request.flow_shift
 

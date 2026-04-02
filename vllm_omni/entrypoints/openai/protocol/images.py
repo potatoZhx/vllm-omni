@@ -92,6 +92,11 @@ class ImageGenerationRequest(BaseModel):
         default=None,
         description="Device for the seeded torch.Generator (e.g. 'cpu', 'cuda'). Defaults to the runner's device.",
     )
+    slo_ms: float | None = Field(default=None, description="Optional SLO target in milliseconds.")
+    estimated_cost_s: float | None = Field(
+        default=None,
+        description="Optional caller-provided runtime estimate in seconds.",
+    )
 
     # vllm-omni extension for per-request LoRA.
     # This mirrors the `extra_body.lora` convention in /v1/chat/completions.

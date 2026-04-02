@@ -1292,6 +1292,10 @@ async def generate_images(request: ImageGenerationRequest, raw_request: Request)
             gen_params, "seed", request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
         )
         _update_if_not_none(gen_params, "generator_device", request.generator_device)
+        if request.slo_ms is not None:
+            gen_params.extra_args["slo_ms"] = request.slo_ms
+        if request.estimated_cost_s is not None:
+            gen_params.extra_args["estimated_cost_s"] = request.estimated_cost_s
 
         request_id = f"img_gen-{random_uuid()}"
 
@@ -1963,6 +1967,8 @@ async def create_video(
     flow_shift: float | None = Form(default=None),
     true_cfg_scale: float | None = Form(default=None),
     seed: int | None = Form(default=None),
+    slo_ms: float | None = Form(default=None),
+    estimated_cost_s: float | None = Form(default=None),
     negative_prompt: str | None = Form(default=None),
     lora: str | None = Form(default=None),
     extra_params: str | None = Form(default=None),
@@ -2032,6 +2038,8 @@ async def create_video(
         "flow_shift": flow_shift,
         "true_cfg_scale": true_cfg_scale,
         "seed": seed,
+        "slo_ms": slo_ms,
+        "estimated_cost_s": estimated_cost_s,
         "negative_prompt": negative_prompt,
         "lora": _parse_form_json(lora, expected_type=dict),
         "extra_params": _parse_form_json(extra_params, expected_type=dict),
