@@ -16,8 +16,8 @@ What this directory supports:
   - `round_robin`
   - `short_queue_runtime`
 - worker launch normalization:
-  - `--diffusion-scheduler-backend step_level_request_scheduler`
-  - `--diffusion-enable-step-chunk`
+  - supports both `request_scheduler` and `step_level_request_scheduler`
+  - injects `--diffusion-enable-step-chunk` only when `step_level_request_scheduler` is selected
 - benchmark-side warmup profile construction via `benchmark.warmup_request_config`
 - single-case runs and multi-case suites
 
@@ -49,7 +49,7 @@ For each case, the orchestrator does the following:
 
 1. Read a base YAML config.
 2. Apply environment-variable overrides.
-3. Rewrite worker launch args so step-level scheduling is enabled.
+3. Rewrite worker launch args so the selected worker diffusion scheduler backend is applied consistently.
 4. Write a generated config file into the output directory.
 5. Start `python -m vllm_omni.global_scheduler.server --config <generated-config>`.
 6. Wait for `/health`, `/instances`, and worker `/v1/models` readiness.
@@ -66,6 +66,15 @@ Single case with the Qwen template:
 ```bash
 BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
 GLOBAL_POLICY=min_queue_length \
+REQUEST_RATES=0.2,0.4 \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+Run the original `v18-base` worker path (`request_scheduler`) with the same template:
+
+```bash
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
+DIFFUSION_SCHEDULER_BACKEND=request_scheduler \
 REQUEST_RATES=0.2,0.4 \
 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
@@ -158,6 +167,14 @@ Important `instances[*]` fields:
 - `launch`: how the orchestrator starts the worker
 - `stop`: how the orchestrator stops the worker
 
+Worker diffusion scheduler backend selection:
+
+- if `DIFFUSION_SCHEDULER_BACKEND` is set, it overrides the backend encoded in the base YAML
+- otherwise the orchestrator follows the backend already present in `launch.args`
+- if neither is present, it falls back to `request_scheduler`
+- when `step_level_request_scheduler` is selected, step chunk is always injected
+- when `request_scheduler` is selected, step-level-only flags are stripped
+
 ## Warmup Behavior
 
 `benchmark.warmup_request_config` is mapped to:
@@ -182,7 +199,8 @@ Case-level variables:
 
 - `BASE_CONFIG`: base YAML file. Default is `single_instance.qwen.yaml`
 - `GLOBAL_POLICY`: override global routing policy
-- `ENABLE_STEP_CHUNK`: `1` by default. If set to `0`, the boolean launch flag is not injected
+- `DIFFUSION_SCHEDULER_BACKEND`: optional worker backend override. Supported values: `request_scheduler`, `step_level_request_scheduler`
+- `ENABLE_STEP_CHUNK`: optional explicit override for the step-chunk launch flag. Only meaningful with `step_level_request_scheduler`
 - `REQUEST_RATES`: comma- or space-separated rates, for example `0.2,0.4,0.6`
 - `BENCHMARK_MODE`: `fixed_duration` or `fixed_num_prompts`
 - `NUM_PROMPTS_DURATION_SECONDS`: used by `fixed_duration`
@@ -263,6 +281,7 @@ For `run_suite.sh`, the suite root additionally contains:
 - default backend is `vllm-omni`
 - default task is `t2i`
 - includes a four-shape warmup profile
+- base worker launch args currently default to `step_level_request_scheduler`
 
 `single_instance.wan2_2.yaml`:
 
@@ -271,6 +290,7 @@ For `run_suite.sh`, the suite root additionally contains:
 - default task is `t2v`
 - includes a three-profile warmup mix
 - includes a 4-GPU worker launch example with `usp/cfg/hsdp`
+- base worker launch args currently default to `step_level_request_scheduler`
 
 These templates are starting points, not frozen production configs.
 You are expected to edit ports, model paths, GPU visibility, and worker launch args
@@ -282,3 +302,4 @@ for your environment.
 - `fixed_duration` is request-count derivation, not a hard benchmark-side wall-clock cutoff.
 - The orchestrator only documents and validates the three migrated global policies.
 - Scheduler-side waiting is intentionally absent in this migration.
+- `ENABLE_STEP_CHUNK=1` is invalid with `request_scheduler`.

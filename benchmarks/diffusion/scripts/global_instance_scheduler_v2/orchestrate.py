@@ -25,6 +25,7 @@ DEFAULT_SCHEDULER_MODULE = "vllm_omni.global_scheduler.server"
 DEFAULT_BENCHMARK_SCRIPT = REPO_ROOT / "benchmarks" / "diffusion" / "diffusion_benchmark_serving.py"
 NO_PROXY_OPENER = urllib_request.build_opener(urllib_request.ProxyHandler({}))
 SUPPORTED_GLOBAL_POLICIES = {"min_queue_length", "round_robin", "short_queue_runtime"}
+SUPPORTED_DIFFUSION_SCHEDULER_BACKENDS = {"request_scheduler", "step_level_request_scheduler"}
 
 
 def env_str(name: str, default: str = "") -> str:
@@ -94,6 +95,20 @@ def strip_boolean_flag(args: list[str], flag: str) -> list[str]:
     return [str(item) for item in args if str(item) != flag]
 
 
+def get_flag_value(args: list[str], flag: str) -> str | None:
+    idx = 0
+    while idx < len(args):
+        item = str(args[idx])
+        if item == flag:
+            if idx + 1 >= len(args):
+                return None
+            return str(args[idx + 1]).strip()
+        if item.startswith(flag + "="):
+            return item.split("=", 1)[1].strip()
+        idx += 1
+    return None
+
+
 def resolve_case_name(config_path: Path) -> str:
     payload = read_yaml(config_path)
     policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
@@ -143,7 +158,16 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
         if value:
             benchmark[config_key] = int(value)
 
-    enable_step_chunk = options.get("ENABLE_STEP_CHUNK", "1").strip()
+    explicit_scheduler_backend = options.get("DIFFUSION_SCHEDULER_BACKEND", "").strip()
+    explicit_enable_step_chunk = options.get("ENABLE_STEP_CHUNK", "").strip()
+    if explicit_scheduler_backend and explicit_scheduler_backend not in SUPPORTED_DIFFUSION_SCHEDULER_BACKENDS:
+        raise ValueError(
+            "Unsupported DIFFUSION_SCHEDULER_BACKEND="
+            f"{explicit_scheduler_backend}, expected one of: {', '.join(sorted(SUPPORTED_DIFFUSION_SCHEDULER_BACKENDS))}"
+        )
+    if explicit_enable_step_chunk and explicit_enable_step_chunk not in {"0", "1"}:
+        raise ValueError("ENABLE_STEP_CHUNK must be '', '0', or '1'")
+
     target_worker_ids = set(benchmark.get("worker_ids") or [])
     matched_instances: list[str] = []
     for instance in instances:
@@ -157,14 +181,32 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
         if not isinstance(launch, dict):
             continue
         args = [str(item) for item in launch.get("args", [])]
+        existing_scheduler_backend = get_flag_value(args, "--diffusion-scheduler-backend")
+        desired_scheduler_backend = explicit_scheduler_backend or existing_scheduler_backend or "request_scheduler"
+        if desired_scheduler_backend not in SUPPORTED_DIFFUSION_SCHEDULER_BACKENDS:
+            raise ValueError(
+                "Unsupported diffusion scheduler backend in base config for "
+                f"{instance_id}: {desired_scheduler_backend}"
+            )
+
         args = strip_flag(args, "--diffusion-scheduler-backend")
         args = strip_boolean_flag(args, "--diffusion-enable-step-chunk")
         args = strip_boolean_flag(args, "--diffusion-enable-chunk-preemption")
         args = strip_flag(args, "--diffusion-chunk-budget-steps")
         args = strip_flag(args, "--diffusion-engine-max-concurrency")
-        args.extend(["--diffusion-scheduler-backend", "step_level_request_scheduler"])
-        if enable_step_chunk != "0":
+
+        if desired_scheduler_backend == "step_level_request_scheduler":
+            enable_step_chunk = True if not explicit_enable_step_chunk else explicit_enable_step_chunk == "1"
+            if not enable_step_chunk:
+                raise ValueError(
+                    "step_level_request_scheduler requires step chunk. "
+                    "Unset ENABLE_STEP_CHUNK or set it to '1'."
+                )
+            args.extend(["--diffusion-scheduler-backend", "step_level_request_scheduler"])
             args.append("--diffusion-enable-step-chunk")
+        else:
+            if explicit_enable_step_chunk == "1":
+                raise ValueError("ENABLE_STEP_CHUNK=1 is incompatible with request_scheduler")
         launch["args"] = args
         matched_instances.append(instance_id)
 
@@ -493,7 +535,8 @@ def collect_case_options() -> dict[str, str]:
             str(REPO_ROOT / "benchmarks" / "diffusion" / "scripts" / "global_instance_scheduler_v2" / "single_instance.qwen.yaml"),
         ),
         "GLOBAL_POLICY": env_str("GLOBAL_POLICY"),
-        "ENABLE_STEP_CHUNK": env_str("ENABLE_STEP_CHUNK", "1"),
+        "DIFFUSION_SCHEDULER_BACKEND": env_str("DIFFUSION_SCHEDULER_BACKEND"),
+        "ENABLE_STEP_CHUNK": env_str("ENABLE_STEP_CHUNK"),
         "REQUEST_RATES": env_str("REQUEST_RATES", env_str("REQUEST_RATE", "0.2,0.4,0.6")),
         "REQUEST_DURATION_S": env_str("REQUEST_DURATION_S", "600"),
         "BENCHMARK_MODE": env_str("BENCHMARK_MODE", "fixed_duration"),

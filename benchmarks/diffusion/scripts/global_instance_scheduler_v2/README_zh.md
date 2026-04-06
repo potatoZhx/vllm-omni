@@ -17,8 +17,8 @@ orchestration 入口。
   - `round_robin`
   - `short_queue_runtime`
 - worker 启动参数归一化：
-  - `--diffusion-scheduler-backend step_level_request_scheduler`
-  - `--diffusion-enable-step-chunk`
+  - 同时支持 `request_scheduler` 和 `step_level_request_scheduler`
+  - 只有在选中 `step_level_request_scheduler` 时才注入 `--diffusion-enable-step-chunk`
 - 通过 `benchmark.warmup_request_config` 构造 benchmark warmup
 - 支持单 case 和 suite 两种运行方式
 
@@ -51,7 +51,7 @@ orchestration 入口。
 
 1. 读取一份基础 YAML 配置
 2. 套用环境变量覆盖
-3. 重写 worker launch args，确保 step-level 调度参数生效
+3. 重写 worker launch args，确保选中的 worker diffusion scheduler backend 被一致应用
 4. 在输出目录里写出一份 generated config
 5. 启动 `python -m vllm_omni.global_scheduler.server --config <generated-config>`
 6. 等待 `/health`、`/instances` 以及 worker `/v1/models` 就绪
@@ -70,6 +70,15 @@ Qwen 单 case：
 ```bash
 BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
 GLOBAL_POLICY=min_queue_length \
+REQUEST_RATES=0.2,0.4 \
+benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
+```
+
+使用同一份模板切到原始 `v18-base` worker 路径 `request_scheduler`：
+
+```bash
+BASE_CONFIG=./benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml \
+DIFFUSION_SCHEDULER_BACKEND=request_scheduler \
 REQUEST_RATES=0.2,0.4 \
 benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 ```
@@ -162,6 +171,14 @@ benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 - `launch`：如何启动 worker
 - `stop`：如何停止 worker
 
+worker diffusion scheduler backend 的选择规则：
+
+- 如果设置了 `DIFFUSION_SCHEDULER_BACKEND`，它会覆盖基础 YAML 中的 backend 配置
+- 如果没设置，就沿用 `launch.args` 里原本的 backend
+- 如果两边都没有，就回退到 `request_scheduler`
+- 如果选中 `step_level_request_scheduler`，orchestrator 会强制注入 step chunk
+- 如果选中 `request_scheduler`，会自动剥离 step-level 专用参数
+
 ## Warmup 语义
 
 `benchmark.warmup_request_config` 会透传为：
@@ -185,7 +202,8 @@ case 级变量：
 
 - `BASE_CONFIG`：基础 YAML 路径，默认是 `single_instance.qwen.yaml`
 - `GLOBAL_POLICY`：覆盖全局路由策略
-- `ENABLE_STEP_CHUNK`：默认 `1`；如果设成 `0`，就不注入对应布尔启动参数
+- `DIFFUSION_SCHEDULER_BACKEND`：可选的 worker backend 覆盖。支持 `request_scheduler`、`step_level_request_scheduler`
+- `ENABLE_STEP_CHUNK`：可选的 step-chunk 布尔覆盖，只对 `step_level_request_scheduler` 有意义
 - `REQUEST_RATES`：逗号或空格分隔的 request rate，例如 `0.2,0.4,0.6`
 - `BENCHMARK_MODE`：`fixed_duration` 或 `fixed_num_prompts`
 - `NUM_PROMPTS_DURATION_SECONDS`：`fixed_duration` 使用
@@ -266,6 +284,7 @@ CASE_MATRIX=$'mql|min_queue_length\nrr|round_robin\nsqr|short_queue_runtime'
 - 默认 backend 是 `vllm-omni`
 - 默认 task 是 `t2i`
 - 内置了 4 类 shape 的 warmup profile
+- 当前模板中的 worker launch args 默认是 `step_level_request_scheduler`
 
 `single_instance.wan2_2.yaml`：
 
@@ -274,6 +293,7 @@ CASE_MATRIX=$'mql|min_queue_length\nrr|round_robin\nsqr|short_queue_runtime'
 - 默认 task 是 `t2v`
 - 内置了 3 类视频请求的 warmup mix
 - 给了一份 4 卡 `usp/cfg/hsdp` 的 worker 启动样例
+- 当前模板中的 worker launch args 默认是 `step_level_request_scheduler`
 
 这些模板只是起点，不是冻结不变的生产配置。
 你仍然需要根据本地环境修改端口、模型路径、GPU 可见性和 worker 启动参数。
@@ -284,3 +304,4 @@ CASE_MATRIX=$'mql|min_queue_length\nrr|round_robin\nsqr|short_queue_runtime'
 - `fixed_duration` 是“按目标时长推导请求数”，不是 benchmark 内部的硬截止时长
 - 这个 orchestrator 目前只面向这轮迁移保留的 3 个全局策略
 - scheduler 侧等待在这轮迁移里是刻意不支持的
+- `request_scheduler` 与 `ENABLE_STEP_CHUNK=1` 不能同时使用
