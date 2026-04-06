@@ -86,6 +86,7 @@ class BenchmarkConfig(BaseModel):
     dataset: str = "trace"
     dataset_path: str | None = None
     random_request_config: str | None = None
+    warmup_request_config: str | None = None
     max_concurrency: int = Field(default=20, ge=1)
     warmup_requests: int = Field(default=0, ge=0)
     warmup_num_inference_steps: int = Field(default=1, ge=1)
@@ -130,14 +131,15 @@ class BenchmarkConfig(BaseModel):
             raise ValueError("benchmark.dataset must be one of: vbench, trace, random")
         return value
 
-    @field_validator("dataset_path", "random_request_config", "output_file")
+    @field_validator("dataset_path", "random_request_config", "warmup_request_config", "output_file")
     @classmethod
     def validate_optional_non_empty_str(cls, value: str | None) -> str | None:
         if value is None:
             return value
         if not value.strip():
             raise ValueError(
-                "benchmark.dataset_path, benchmark.random_request_config, and benchmark.output_file cannot be empty"
+                "benchmark.dataset_path, benchmark.random_request_config, "
+                "benchmark.warmup_request_config, and benchmark.output_file cannot be empty"
             )
         return value
 

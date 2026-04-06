@@ -45,6 +45,7 @@ def test_load_config_benchmark_section_success(tmp_path):
               task: t2i
               dataset: trace
               dataset_path: /tmp/prompts.txt
+              warmup_request_config: '[{"width":512,"height":512,"num_inference_steps":20}]'
               max_concurrency: 16
               warmup_requests: 2
               warmup_num_inference_steps: 3
@@ -63,6 +64,7 @@ def test_load_config_benchmark_section_success(tmp_path):
     config = load_config(config_path)
     assert config.benchmark.worker_ids == ["worker-0", "worker-1"]
     assert config.benchmark.model == "Qwen/Qwen-Image"
+    assert config.benchmark.warmup_request_config == '[{"width":512,"height":512,"num_inference_steps":20}]'
     assert config.benchmark.max_concurrency == 16
     assert config.benchmark.auto_stop is False
 
