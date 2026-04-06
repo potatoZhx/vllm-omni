@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import threading
+from time import monotonic
 from unittest.mock import Mock, patch
 
 import pytest
@@ -16,17 +17,44 @@ from vllm_omni.diffusion.sched import (
     SchedulerInterface,
     StepLevelRequestScheduler,
 )
-from vllm_omni.diffusion.sched.interface import CachedRequestData, DiffusionExecutionState, NewRequestData
+from vllm_omni.diffusion.sched.interface import (
+    CachedRequestData,
+    DiffusionExecutionState,
+    DiffusionRequestState,
+    NewRequestData,
+)
+from vllm_omni.diffusion.sched.policy import (
+    P95FirstSelectionPolicy,
+    SJFAgingGuardedSelectionPolicy,
+    SJFAgingGuardedTailSelectionPolicy,
+    SJFAgingSelectionPolicy,
+    SJFSelectionPolicy,
+    build_request_selection_policy,
+)
 from vllm_omni.diffusion.worker.utils import RunnerOutput
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu, pytest.mark.diffusion]
 
 
-def _make_request(req_id: str) -> OmniDiffusionRequest:
+def _make_request(
+    req_id: str,
+    *,
+    num_inference_steps: int = 1,
+    estimated_cost_s: float | None = None,
+    resolution: int = 1024,
+    num_outputs_per_prompt: int = 1,
+) -> OmniDiffusionRequest:
+    sampling_params = OmniDiffusionSamplingParams(
+        num_inference_steps=num_inference_steps,
+        resolution=resolution,
+        num_outputs_per_prompt=num_outputs_per_prompt,
+    )
+    if estimated_cost_s is not None:
+        sampling_params.extra_args["estimated_cost_s"] = estimated_cost_s
     return OmniDiffusionRequest(
         prompts=[f"prompt_{req_id}"],
-        sampling_params=OmniDiffusionSamplingParams(num_inference_steps=1),
+        sampling_params=sampling_params,
         request_ids=[req_id],
     )
 
@@ -42,6 +70,10 @@ def _new_ids(sched_output) -> list[str]:
 
 def _cached_ids(sched_output) -> list[str]:
     return list(sched_output.scheduled_cached_reqs.sched_req_ids)
+
+
+def _set_request_age(scheduler: StepLevelRequestScheduler, sched_req_id: str, age_s: float) -> None:
+    scheduler.get_execution_state(sched_req_id).arrival_time = monotonic() - age_s
 
 
 class _StubScheduler(SchedulerInterface):
@@ -249,6 +281,17 @@ class TestStepLevelRequestScheduler:
         self.scheduler = StepLevelRequestScheduler()
         self.scheduler.initialize(Mock(instance_scheduler_policy="fcfs"))
 
+    def _make_scheduler(self, policy: str) -> StepLevelRequestScheduler:
+        scheduler = StepLevelRequestScheduler()
+        scheduler.initialize(
+            Mock(
+                instance_scheduler_policy=policy,
+                instance_runtime_profile_path=None,
+                instance_runtime_profile_name=None,
+            )
+        )
+        return scheduler
+
     def test_single_request_requeues_as_cached_after_unfinished_step(self) -> None:
         req_id = self.scheduler.add_request(_make_request("step"))
 
@@ -300,6 +343,134 @@ class TestStepLevelRequestScheduler:
         assert finished == {req_id}
         state = self.scheduler.get_request_state(req_id)
         assert state.status == DiffusionRequestStatus.FINISHED_ABORTED
+
+    def test_policy_builder_returns_migrated_policy_implementations(self) -> None:
+        assert isinstance(build_request_selection_policy("sjf"), SJFSelectionPolicy)
+        assert isinstance(build_request_selection_policy("sjf_aging"), SJFAgingSelectionPolicy)
+        assert isinstance(build_request_selection_policy("sjf_aging_guarded"), SJFAgingGuardedSelectionPolicy)
+        assert isinstance(build_request_selection_policy("sjf_aging_guard"), SJFAgingGuardedSelectionPolicy)
+        assert isinstance(build_request_selection_policy("sjf_aging_guarded_tail"), SJFAgingGuardedTailSelectionPolicy)
+        assert isinstance(build_request_selection_policy("p95-first"), P95FirstSelectionPolicy)
+
+    def test_sjf_uses_remaining_estimated_runtime(self) -> None:
+        scheduler = self._make_scheduler("sjf")
+        long_req_id = scheduler.add_request(_make_request("long", num_inference_steps=10, estimated_cost_s=10.0))
+        short_req_id = scheduler.add_request(_make_request("short-remaining", num_inference_steps=10, estimated_cost_s=10.0))
+        scheduler.get_execution_state(short_req_id).executed_steps = 8
+
+        sched_output = scheduler.schedule()
+
+        assert sched_output.scheduled_req_ids == [short_req_id]
+        assert long_req_id in scheduler._waiting  # noqa: SLF001
+
+    def test_sjf_aging_promotes_old_request_over_short_new_request(self) -> None:
+        scheduler = self._make_scheduler("sjf_aging")
+        old_req_id = scheduler.add_request(_make_request("old", num_inference_steps=10, estimated_cost_s=10.0))
+        new_req_id = scheduler.add_request(_make_request("new", num_inference_steps=1, estimated_cost_s=1.0))
+        _set_request_age(scheduler, old_req_id, 20.0)
+        _set_request_age(scheduler, new_req_id, 0.0)
+
+        sched_output = scheduler.schedule()
+
+        assert sched_output.scheduled_req_ids == [old_req_id]
+
+    def test_sjf_aging_guarded_prioritizes_protected_request(self) -> None:
+        scheduler = self._make_scheduler("sjf_aging_guarded")
+        old_req_id = scheduler.add_request(_make_request("old-large", num_inference_steps=35, estimated_cost_s=37.0))
+        new_req_id = scheduler.add_request(_make_request("new-medium", num_inference_steps=25, estimated_cost_s=12.0))
+        _set_request_age(scheduler, old_req_id, 80.0)
+        _set_request_age(scheduler, new_req_id, 0.0)
+
+        sched_output = scheduler.schedule()
+
+        assert sched_output.scheduled_req_ids == [old_req_id]
+
+    def test_sjf_aging_guarded_tail_sinks_old_super_heavy_request(self) -> None:
+        scheduler = self._make_scheduler("sjf_aging_guarded_tail")
+        policy = scheduler._policy
+        assert isinstance(policy, SJFAgingGuardedTailSelectionPolicy)
+        for index in range(20):
+            prime_req_id = f"prime-{index}"
+            prime_state = DiffusionRequestState(
+                sched_req_id=prime_req_id,
+                req=_make_request(prime_req_id, estimated_cost_s=1.0),
+            )
+            prime_exec_state = DiffusionExecutionState(
+                sched_req_id=prime_req_id,
+                arrival_time=monotonic(),
+                estimated_runtime_s=1.0,
+            )
+            policy.on_request_arrival(prime_req_id, prime_state, prime_exec_state)
+
+        heavy_req_id = scheduler.add_request(_make_request("heavy", num_inference_steps=35, estimated_cost_s=40.0))
+        short_a_req_id = scheduler.add_request(_make_request("short-a", num_inference_steps=10, estimated_cost_s=2.0))
+        short_b_req_id = scheduler.add_request(_make_request("short-b", num_inference_steps=10, estimated_cost_s=3.0))
+        _set_request_age(scheduler, heavy_req_id, 130.0)
+        _set_request_age(scheduler, short_a_req_id, 2.0)
+        _set_request_age(scheduler, short_b_req_id, 1.0)
+
+        ordered_waiting = policy.order_waiting(
+            list(scheduler._waiting),  # noqa: SLF001
+            scheduler._request_states,  # noqa: SLF001
+            scheduler._execution_states,  # noqa: SLF001
+        )
+
+        assert ordered_waiting == [short_a_req_id, short_b_req_id, heavy_req_id]
+
+    def test_p95_first_orders_by_normalized_tail_pressure(self) -> None:
+        scheduler = self._make_scheduler("p95-first")
+        policy = scheduler._policy
+        assert isinstance(policy, P95FirstSelectionPolicy)
+        policy._observed_service_ms_per_work_unit = 1000.0  # noqa: SLF001
+        policy._slowdown_history.append(2.0)  # noqa: SLF001
+
+        old_req_id = scheduler.add_request(_make_request("old", num_inference_steps=10, estimated_cost_s=10.0))
+        new_req_id = scheduler.add_request(_make_request("new", num_inference_steps=1, estimated_cost_s=1.0))
+        _set_request_age(scheduler, old_req_id, 20.0)
+        _set_request_age(scheduler, new_req_id, 0.0)
+
+        ordered_waiting = policy.order_waiting(
+            list(scheduler._waiting),  # noqa: SLF001
+            scheduler._request_states,  # noqa: SLF001
+            scheduler._execution_states,  # noqa: SLF001
+        )
+
+        assert ordered_waiting == [old_req_id, new_req_id]
+
+    def test_p95_first_updates_service_rate_and_slowdown_from_runtime_hooks(self) -> None:
+        policy = P95FirstSelectionPolicy()
+        policy.initialize(Mock(instance_runtime_profile_path=None, instance_runtime_profile_name=None))
+
+        request_state = DiffusionRequestState(
+            sched_req_id="p95",
+            req=_make_request("p95", num_inference_steps=2, estimated_cost_s=2.0),
+        )
+        execution_state = DiffusionExecutionState(
+            sched_req_id="p95",
+            arrival_time=0.0,
+            estimated_runtime_s=2.0,
+            executed_steps=1,
+            cumulative_execute_time_s=0.4,
+        )
+
+        policy.on_step_complete(
+            "p95",
+            request_state,
+            execution_state,
+            RunnerOutput(req_id="p95", step_index=1, finished=False, result=None),
+            0,
+            0.4,
+        )
+        policy.on_request_finished(
+            "p95",
+            request_state,
+            execution_state,
+            DiffusionRequestStatus.FINISHED_COMPLETED,
+            1.0,
+        )
+
+        assert policy._observed_service_ms_per_work_unit == pytest.approx(400.0)  # noqa: SLF001
+        assert policy._learned_slowdown_p95() == pytest.approx(2.5)  # noqa: SLF001
 
 
 class TestDiffusionEngine:

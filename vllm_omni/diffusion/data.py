@@ -33,6 +33,19 @@ _VALID_DIFFUSION_SCHEDULER_BACKENDS = {
     "step_level_request_scheduler",
 }
 
+_STEP_LEVEL_POLICY_ALIASES = {
+    "sjf_aging_guard": "sjf_aging_guarded",
+}
+
+_VALID_STEP_LEVEL_SELECTION_POLICIES = {
+    "fcfs",
+    "sjf",
+    "sjf_aging",
+    "sjf_aging_guarded",
+    "sjf_aging_guarded_tail",
+    "p95-first",
+}
+
 
 @config
 @dataclass
@@ -654,10 +667,15 @@ class OmniDiffusionConfig:
                     "diffusion_enable_step_chunk must be True when "
                     "diffusion_scheduler_backend='step_level_request_scheduler'"
                 )
-            if self.instance_scheduler_policy != "fcfs":
+            self.instance_scheduler_policy = _STEP_LEVEL_POLICY_ALIASES.get(
+                self.instance_scheduler_policy,
+                self.instance_scheduler_policy,
+            )
+            if self.instance_scheduler_policy not in _VALID_STEP_LEVEL_SELECTION_POLICIES:
                 raise NotImplementedError(
-                    "Only instance_scheduler_policy='fcfs' is supported for "
-                    "step_level_request_scheduler in the MVP."
+                    "instance_scheduler_policy must be one of "
+                    f"{sorted(_VALID_STEP_LEVEL_SELECTION_POLICIES)!r} for "
+                    "step_level_request_scheduler."
                 )
             self.step_execution = True
             return

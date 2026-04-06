@@ -21,13 +21,20 @@ orchestration 入口。
   - 只有在选中 `step_level_request_scheduler` 时才注入 `--diffusion-enable-step-chunk`
 - 通过 `benchmark.warmup_request_config` 构造 benchmark warmup
 - 支持单 case 和 suite 两种运行方式
+- worker 侧已迁移的实例内策略可以继续保留在 `launch.args` 中，包括：
+  - `fcfs`
+  - `sjf`
+  - `sjf_aging`
+  - `sjf_aging_guarded`
+  - `sjf_aging_guarded_tail`
+  - `p95-first`
 
 当前明确不做：
 
 - scheduler 侧等待 / admission blocking
 - `diffusion_engine_max_concurrency`
 - orchestration 对 `chunk_preemption` / `chunk_budget` 的依赖
-- 实例内复杂策略，例如 `sjf`、`p95-first`、`guarded`、`fusion`
+- orchestration 侧自动合成 guarded / tail / p95 这类策略专属调参参数
 
 关键运行语义：
 
@@ -178,6 +185,8 @@ worker diffusion scheduler backend 的选择规则：
 - 如果两边都没有，就回退到 `request_scheduler`
 - 如果选中 `step_level_request_scheduler`，orchestrator 会强制注入 step chunk
 - 如果选中 `request_scheduler`，会自动剥离 step-level 专用参数
+- `--instance-scheduler-policy` 则默认沿用基础 YAML / launch args 中已有的值；
+  当前没有额外的 `INSTANCE_POLICY` 环境变量覆盖入口
 
 ## Warmup 语义
 

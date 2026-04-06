@@ -23,7 +23,13 @@ Current MVP behavior is intentionally narrow:
 - only single-prompt requests are supported
 - scheduler batch size is fixed to `1`
 - each dispatch executes exactly `1` diffusion step
-- only `instance_scheduler_policy="fcfs"` is enabled in config validation
+- config validation currently allows:
+  - `fcfs`
+  - `sjf`
+  - `sjf_aging`
+  - `sjf_aging_guarded`
+  - `sjf_aging_guarded_tail`
+  - `p95-first`
 - LoRA, cache backends, and request batching are not part of this MVP path
 
 The runtime loop is:
@@ -69,7 +75,92 @@ Output:
 
 - a reordered list of scheduler request ids
 
-The current `FCFSSelectionPolicy` simply preserves the existing waiting order.
+The base class now also exposes optional lifecycle hooks:
+
+- `initialize()`
+- `on_request_arrival()`
+- `on_request_scheduled()`
+- `on_step_complete()`
+- `on_request_finished()`
+
+These hooks are how migrated policies keep small amounts of scheduler-local
+learning state without pushing that logic back into `StepLevelRequestScheduler`.
+
+## Migrated Policies
+
+### `fcfs`
+
+Preserves the waiting deque order exactly. This remains the safest baseline and
+the default config value.
+
+### `sjf`
+
+Orders waiting requests by estimated remaining runtime.
+
+Runtime estimation uses this priority order:
+
+1. request `sampling_params.extra_args["estimated_cost_s"]`
+2. `instance_runtime_profile_path` + `instance_runtime_profile_name`
+3. scheduler-local heuristic fallback
+
+For resumed requests, remaining cost is scaled by
+`(total_steps - executed_steps) / total_steps`.
+
+### `sjf_aging`
+
+Starts from the same remaining-cost estimate as `sjf`, then applies the
+`v16-base` aged-cost ranking:
+
+- older requests get an aging discount
+- larger requests get a bounded cost-aware aging weight
+
+This keeps the basic SJF throughput bias while reducing starvation.
+
+### `sjf_aging_guarded`
+
+Builds on `sjf_aging` and adds a protected queue for old requests.
+
+A request becomes protected when its wait time exceeds:
+
+- the learned wait guard from completed-request history, or
+- `2.0 * estimated_remaining_cost_s`
+
+Protected requests are served ahead of normal requests and ordered by arrival
+time within the protected group.
+
+Alias:
+
+- `sjf_aging_guard` is accepted and normalized to `sjf_aging_guarded`
+
+### `sjf_aging_guarded_tail`
+
+Builds on `sjf_aging_guarded` and adds the `v16-base` tail-sink idea:
+
+- only protected, super-heavy requests are eligible
+- only a strict 5% global/sliding-window defer budget is available
+- at most one request is sunk per reorder pass
+- sunk requests stay at the tail across requeues until hard escape releases them
+
+Important limitation in the current `v18-base` landing:
+
+- the migrated policy only controls waiting-queue ordering
+- it does not yet migrate the old chunk-budget overrides such as idle-only `3x`
+  chunk expansion, because the current step-level backend still dispatches one
+  step per turn
+
+### `p95-first`
+
+Implements the normalized tail-pressure ordering path from `v16-base`:
+
+- learns observed service time from completed step runtime
+- learns slowdown from end-to-end request latency over cumulative execute time
+- greedily orders the waiting queue by normalized predicted tail pressure
+
+The current landing intentionally keeps the algorithm narrow:
+
+- it uses the learned service-rate / slowdown path
+- it does not expose the old large CLI tuning surface (`base_ms`, `max_ms`,
+  backlog alpha, bucket knobs, fusion knobs, etc.)
 
 ## How To Add A New Step-Level Policy
 
@@ -100,7 +191,8 @@ Guidelines:
 - make ordering deterministic; use the original `waiting` order as a tie-breaker
 - read state only from scheduler-owned structures; do not reach into worker
   internals
-- keep ordering pure; the policy should not mutate scheduler state
+- prefer keeping policy-owned learning state inside the policy object, driven by
+  lifecycle hooks, instead of bloating the scheduler core
 
 ### 2. Register it in the builder
 
@@ -120,13 +212,13 @@ def build_request_selection_policy(name: str) -> RequestSelectionPolicy:
 
 ### 3. Allow the policy in config validation
 
-Today `OmniDiffusionConfig` explicitly rejects any step-level policy other than
-`fcfs`. To enable a new policy, update the validation logic in
+Today `OmniDiffusionConfig` validates step-level policies against an explicit
+allowlist. To enable a new policy, update the validation logic in
 `vllm_omni/diffusion/data.py`.
 
 At minimum:
 
-- replace the current hard-coded `fcfs` restriction with an allowlist
+- extend the existing allowlist
 - keep the existing `diffusion_enable_step_chunk=True` requirement
 - decide whether the new policy is MVP-safe for batch size `1`
 
@@ -171,6 +263,8 @@ These are important when designing new policies:
 - no true request batching; `_max_batch_size` stays at `1`
 - a policy only reorders the waiting queue; it does not allocate multi-step
   budgets yet
+- the migrated `sjf_aging_guarded_tail` policy does not yet port the old
+  chunk-budget override behavior
 - requests are resumed through cached scheduler ids rather than full payload
   re-submission
 - abort is step-boundary based, not mid-step interruption

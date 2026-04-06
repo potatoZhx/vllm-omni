@@ -21,7 +21,13 @@
 - 只支持单 prompt 请求
 - scheduler batch size 固定为 `1`
 - 每次 dispatch 只执行 `1` 个 diffusion step
-- config 校验目前只允许 `instance_scheduler_policy="fcfs"`
+- config 校验当前允许：
+  - `fcfs`
+  - `sjf`
+  - `sjf_aging`
+  - `sjf_aging_guarded`
+  - `sjf_aging_guarded_tail`
+  - `p95-first`
 - LoRA、cache backend、request batching 还不在当前 step-level 路径内
 
 运行流程如下：
@@ -71,7 +77,88 @@ class RequestSelectionPolicy(Protocol):
 
 - 返回一个重新排序后的 scheduler request id 列表
 
-当前默认实现 `FCFSSelectionPolicy` 只是保留 waiting 队列原始顺序。
+当前基类额外提供了一组可选 lifecycle hook：
+
+- `initialize()`
+- `on_request_arrival()`
+- `on_request_scheduled()`
+- `on_step_complete()`
+- `on_request_finished()`
+
+这组 hook 的作用是：让迁移过来的策略把少量在线学习状态保留在 policy 对象自己内部，
+而不是再次把旧 `Stage1Scheduler` 的算法状态塞回 scheduler 主体。
+
+## 已迁移策略说明
+
+### `fcfs`
+
+严格保持 waiting 队列原始顺序。它仍然是最稳妥的默认基线。
+
+### `sjf`
+
+按“预计剩余运行时间”给 waiting 请求排序。
+
+估时优先级如下：
+
+1. 请求显式携带的 `sampling_params.extra_args["estimated_cost_s"]`
+2. `instance_runtime_profile_path` + `instance_runtime_profile_name`
+3. scheduler 本地启发式 fallback
+
+对于已经执行过的请求，剩余 cost 会按
+`(total_steps - executed_steps) / total_steps` 缩放。
+
+### `sjf_aging`
+
+在 `sjf` 的剩余 cost 基础上，沿用 `v16-base` 的 aged-cost 排序语义：
+
+- 等待越久，请求获得越强的 aging 折扣
+- cost 越大，aging 权重会按有界 cost-aware 规则放大
+
+这样既保留了 SJF 对短请求的吞吐偏好，也避免纯 SJF 的明显饥饿问题。
+
+### `sjf_aging_guarded`
+
+在 `sjf_aging` 基础上增加 protected 队列。
+
+当请求等待时间超过以下两者中的较大值时，请求会进入 protected：
+
+- 从已完成请求等待历史中学到的 wait guard
+- `2.0 * estimated_remaining_cost_s`
+
+进入 protected 后，请求会整体排在 normal 请求之前，且 protected 组内按到达时间排序。
+
+别名：
+
+- `sjf_aging_guard` 会被接受并归一化为 `sjf_aging_guarded`
+
+### `sjf_aging_guarded_tail`
+
+在 `sjf_aging_guarded` 基础上，迁入了 `v16-base` 的 tail-sink 语义：
+
+- 只有 protected 且 super-heavy 的请求才可能被 sink
+- 只允许严格的 5% 全局 / 滑动窗口 defer budget
+- 每轮 reorder 最多 sink 1 个请求
+- 被 sink 的请求在后续 requeue 中会保持尾部状态，直到 hard escape 释放
+
+当前 `v18-base` 最小落地版本的明确限制：
+
+- 这次迁移只覆盖 waiting 队列重排语义
+- 还没有把旧实现里的 chunk-budget override 一并迁过来，例如 idle-only `3x`
+  chunk 扩张，因为当前 step-level backend 仍然固定为单 step dispatch
+
+### `p95-first`
+
+迁入了 `v16-base` 的 normalized tail-pressure 排序主路径：
+
+- 用真实 step runtime 学习 observed service time
+- 用 end-to-end latency / cumulative execute time 学习 slowdown
+- 通过 greedy 方式，按归一化 tail pressure 重排 waiting 队列
+
+当前落地刻意保持收敛：
+
+- 保留了 learned service-rate / slowdown 主链路
+- 没有把旧版大规模 CLI 调参面一起暴露出来，例如 `base_ms` / `max_ms` /
+  backlog alpha / bucket / fusion 等参数
 
 ## 如何新增一个 Step-Level 策略
 
@@ -101,7 +188,8 @@ class ShortestExecutedStepsPolicy:
 - `waiting` 应当视为当前可运行请求的唯一真值来源
 - 排序要保持确定性，tie-break 尽量回退到原始 `waiting` 顺序
 - 只读取 scheduler 持有的状态，不要直接依赖 worker 内部状态
-- 策略应保持纯函数语义，不要在排序过程中修改 scheduler 状态
+- 优先把策略自己的在线学习状态保留在 policy 对象内部，并由 lifecycle hook 驱动，
+  不要把它们重新塞回 scheduler 主体
 
 ### 2. 在 builder 中注册
 
@@ -121,13 +209,13 @@ def build_request_selection_policy(name: str) -> RequestSelectionPolicy:
 
 ### 3. 放开 config 校验
 
-当前 `OmniDiffusionConfig` 会明确拒绝除 `fcfs` 之外的 step-level 策略。
+当前 `OmniDiffusionConfig` 对 step-level policy 使用显式 allowlist。
 如果要启用新策略，需要同步更新
 `vllm_omni/diffusion/data.py` 里的校验逻辑。
 
 最少要做的事情：
 
-- 把现在写死的 `fcfs` 限制改成 allowlist
+- 扩展已有 allowlist
 - 继续保留 `diffusion_enable_step_chunk=True` 的要求
 - 明确判断新策略在当前 batch size 为 `1` 的 MVP 路径下是否安全
 
@@ -172,6 +260,7 @@ def build_request_selection_policy(name: str) -> RequestSelectionPolicy:
 
 - 没有真正的 request batching，`_max_batch_size` 固定为 `1`
 - 策略当前只能重排 waiting 队列，不能分配多 step budget
+- 已迁入的 `sjf_aging_guarded_tail` 也还没有迁 chunk-budget override 行为
 - 请求恢复依赖 cached scheduler id，而不是重新发送完整请求负载
 - abort 发生在 step 边界，不是 mid-step interrupt
 - 策略效果上限受 `DiffusionExecutionState` 中已有元数据约束

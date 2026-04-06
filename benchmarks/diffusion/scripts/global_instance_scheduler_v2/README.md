@@ -20,13 +20,21 @@ What this directory supports:
   - injects `--diffusion-enable-step-chunk` only when `step_level_request_scheduler` is selected
 - benchmark-side warmup profile construction via `benchmark.warmup_request_config`
 - single-case runs and multi-case suites
+- worker-side migrated instance policies can remain in `launch.args`, including:
+  - `fcfs`
+  - `sjf`
+  - `sjf_aging`
+  - `sjf_aging_guarded`
+  - `sjf_aging_guarded_tail`
+  - `p95-first`
 
 What is intentionally out of scope:
 
 - scheduler-side waiting / admission blocking
 - `diffusion_engine_max_concurrency`
 - orchestration dependency on `chunk_preemption` or `chunk_budget`
-- instance-level complex policies such as `sjf`, `p95-first`, `guarded`, `fusion`
+- orchestration-side synthesis of policy-specific tuning knobs for guarded /
+  tail / p95 variants
 
 Important runtime semantics:
 
@@ -174,6 +182,9 @@ Worker diffusion scheduler backend selection:
 - if neither is present, it falls back to `request_scheduler`
 - when `step_level_request_scheduler` is selected, step chunk is always injected
 - when `request_scheduler` is selected, step-level-only flags are stripped
+- worker `--instance-scheduler-policy` is otherwise preserved from the base YAML
+  or launch args; this orchestrator does not currently add an `INSTANCE_POLICY`
+  env override
 
 ## Warmup Behavior
 

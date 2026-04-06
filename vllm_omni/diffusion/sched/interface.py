@@ -63,6 +63,8 @@ class DiffusionExecutionState:
     dispatch_epoch: int = 0
     estimated_runtime_s: float | None = None
     abort_pending: bool = False
+    last_dispatch_time: float | None = None
+    cumulative_execute_time_s: float = 0.0
 
 
 @dataclass

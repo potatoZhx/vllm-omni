@@ -126,10 +126,32 @@ def test_request_scheduler_rejects_step_chunk():
         )
 
 
-def test_step_level_scheduler_rejects_non_fcfs_policy():
-    with pytest.raises(NotImplementedError, match="fcfs"):
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        ("fcfs", "fcfs"),
+        ("sjf", "sjf"),
+        ("sjf_aging", "sjf_aging"),
+        ("sjf_aging_guarded", "sjf_aging_guarded"),
+        ("sjf_aging_guard", "sjf_aging_guarded"),
+        ("sjf_aging_guarded_tail", "sjf_aging_guarded_tail"),
+        ("p95-first", "p95-first"),
+    ],
+)
+def test_step_level_scheduler_accepts_supported_policies(policy, expected):
+    config = OmniDiffusionConfig(
+        diffusion_scheduler_backend="step_level_request_scheduler",
+        diffusion_enable_step_chunk=True,
+        instance_scheduler_policy=policy,
+    )
+
+    assert config.instance_scheduler_policy == expected
+
+
+def test_step_level_scheduler_rejects_unknown_policy():
+    with pytest.raises(NotImplementedError, match="instance_scheduler_policy"):
         OmniDiffusionConfig(
             diffusion_scheduler_backend="step_level_request_scheduler",
             diffusion_enable_step_chunk=True,
-            instance_scheduler_policy="sjf",
+            instance_scheduler_policy="unknown-policy",
         )

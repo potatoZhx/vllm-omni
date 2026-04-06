@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from time import monotonic
+
 from vllm.logger import init_logger
 
 from vllm_omni.diffusion.request import OmniDiffusionRequest
@@ -35,6 +37,7 @@ class StepLevelRequestScheduler(_BaseScheduler):
         super().initialize(od_config)
         if self._policy is None:
             self._policy = build_request_selection_policy(od_config.instance_scheduler_policy)
+        self._policy.initialize(od_config)
 
     def add_request(self, request: OmniDiffusionRequest) -> str:
         if len(request.prompts) != 1:
@@ -47,6 +50,8 @@ class StepLevelRequestScheduler(_BaseScheduler):
         self._request_states[sched_req_id] = state
         self._ensure_execution_state(sched_req_id)
         self._register_request_ids(request.request_ids, sched_req_id)
+        assert self._policy is not None
+        self._policy.on_request_arrival(sched_req_id, state, self._execution_states[sched_req_id])
         self._waiting.append(sched_req_id)
         logger.debug("StepLevelRequestScheduler add_request: %s (waiting=%d)", sched_req_id, len(self._waiting))
         return sched_req_id
@@ -89,6 +94,8 @@ class StepLevelRequestScheduler(_BaseScheduler):
             exec_state = self._ensure_execution_state(sched_req_id)
             exec_state.dispatch_epoch += 1
             exec_state.planned_chunk_budget_steps = 1
+            exec_state.last_dispatch_time = monotonic()
+            self._policy.on_request_scheduled(sched_req_id, state, exec_state)
 
             if was_new_request:
                 scheduled_new_reqs.append(NewRequestData.from_state(state))
@@ -138,13 +145,29 @@ class StepLevelRequestScheduler(_BaseScheduler):
             self._running.remove(sched_req_id)
 
         exec_state = self._ensure_execution_state(sched_req_id)
+        previous_executed_steps = exec_state.executed_steps
         if output.step_index is not None:
             exec_state.executed_steps = max(exec_state.executed_steps, output.step_index)
+        step_latency_s = None
+        if exec_state.last_dispatch_time is not None:
+            step_latency_s = max(monotonic() - exec_state.last_dispatch_time, 0.0)
+            exec_state.cumulative_execute_time_s += step_latency_s
+        exec_state.last_dispatch_time = None
+        assert self._policy is not None
+        self._policy.on_step_complete(
+            sched_req_id,
+            state,
+            exec_state,
+            output,
+            previous_executed_steps,
+            step_latency_s,
+        )
 
         if self.is_abort_pending(sched_req_id):
             finished_req_ids |= self._finish_requests(
                 {sched_req_id: DiffusionRequestStatus.FINISHED_ABORTED},
             )
+            self._notify_finished_requests(finished_req_ids)
             return finished_req_ids
 
         if output.finished:
@@ -162,8 +185,33 @@ class StepLevelRequestScheduler(_BaseScheduler):
                 finished_req_ids |= self._finish_requests(
                     {sched_req_id: DiffusionRequestStatus.FINISHED_COMPLETED},
                 )
+            self._notify_finished_requests(finished_req_ids)
             return finished_req_ids
 
         state.status = DiffusionRequestStatus.PREEMPTED
         self._waiting.append(sched_req_id)
         return finished_req_ids
+
+    def finish_requests(self, sched_req_ids: str | list[str], status: DiffusionRequestStatus) -> None:
+        assert DiffusionRequestStatus.is_finished(status)
+        if isinstance(sched_req_ids, str):
+            sched_req_ids = [sched_req_ids]
+        finished_req_ids = self._finish_requests({sched_req_id: status for sched_req_id in sched_req_ids})
+        self._notify_finished_requests(finished_req_ids)
+
+    def _notify_finished_requests(self, finished_req_ids: set[str]) -> None:
+        if not finished_req_ids or self._policy is None:
+            return
+        finished_at = monotonic()
+        for sched_req_id in finished_req_ids:
+            state = self._request_states.get(sched_req_id)
+            exec_state = self._execution_states.get(sched_req_id)
+            if state is None or exec_state is None:
+                continue
+            self._policy.on_request_finished(
+                sched_req_id,
+                state,
+                exec_state,
+                state.status,
+                finished_at,
+            )

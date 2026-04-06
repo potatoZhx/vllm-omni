@@ -383,7 +383,9 @@ class OmniServeCommand(CLISubcommand):
             "--instance-scheduler-policy",
             type=str,
             default="fcfs",
-            help="Instance selection policy for the diffusion step-level scheduler. MVP currently supports only fcfs.",
+            help="Instance selection policy for the diffusion step-level scheduler. "
+            "Supported values: fcfs, sjf, sjf_aging, sjf_aging_guarded, "
+            "sjf_aging_guarded_tail, p95-first. Alias: sjf_aging_guard -> sjf_aging_guarded.",
         )
         return serve_parser
 
