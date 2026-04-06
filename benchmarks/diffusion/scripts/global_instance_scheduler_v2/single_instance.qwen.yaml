@@ -35,7 +35,6 @@ benchmark:
       {"width":1024,"height":1024,"num_inference_steps":25},
       {"width":1536,"height":1536,"num_inference_steps":35}
     ]
-  output_file: ./logs/global_scheduler_qwen_image_benchmark_metrics.json
   auto_stop: true
 instances:
   - id: worker0

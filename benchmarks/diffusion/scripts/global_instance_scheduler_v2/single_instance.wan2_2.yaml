@@ -33,7 +33,6 @@ benchmark:
       {"width":854,"height":480,"num_inference_steps":4,"num_frames":120,"fps":24},
       {"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16}
     ]
-  output_file: ./logs/global_scheduler_wan22_benchmark_metrics.json
   auto_stop: true
 instances:
   - id: worker0
