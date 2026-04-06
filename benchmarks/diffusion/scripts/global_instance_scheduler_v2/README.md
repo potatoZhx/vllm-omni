@@ -182,9 +182,10 @@ Worker diffusion scheduler backend selection:
 - if neither is present, it falls back to `request_scheduler`
 - when `step_level_request_scheduler` is selected, step chunk is always injected
 - when `request_scheduler` is selected, step-level-only flags are stripped
-- worker `--instance-scheduler-policy` is otherwise preserved from the base YAML
-  or launch args; this orchestrator does not currently add an `INSTANCE_POLICY`
-  env override
+- if `INSTANCE_POLICY` is set, it overrides the worker
+  `--instance-scheduler-policy` from the base YAML or launch args
+- otherwise the existing worker instance policy is preserved from the base YAML
+  or launch args
 
 ## Warmup Behavior
 
@@ -210,6 +211,7 @@ Case-level variables:
 
 - `BASE_CONFIG`: base YAML file. Default is `single_instance.qwen.yaml`
 - `GLOBAL_POLICY`: override global routing policy
+- `INSTANCE_POLICY`: optional worker instance policy override, for example `fcfs`, `sjf`, or `sjf_aging`
 - `DIFFUSION_SCHEDULER_BACKEND`: optional worker backend override. Supported values: `request_scheduler`, `step_level_request_scheduler`
 - `ENABLE_STEP_CHUNK`: optional explicit override for the step-chunk launch flag. Only meaningful with `step_level_request_scheduler`
 - `REQUEST_RATES`: comma- or space-separated rates, for example `0.2,0.4,0.6`
@@ -240,12 +242,23 @@ Suite-only variables:
 
 - `SUITE_NAME`: output directory name for suite mode
 - `OUT_ROOT`: explicit suite output directory
-- `CASE_MATRIX`: one row per case, formatted as `case_name|global_policy`
+- `CASE_MATRIX`: one row per case. Supported formats:
+  - `case_name|global_policy`
+  - `case_name|global_policy|instance_policy`
+  - longer legacy rows are accepted, but only the first 3 columns are used
 
 Example:
 
 ```bash
 CASE_MATRIX=$'mql|min_queue_length\nrr|round_robin\nsqr|short_queue_runtime'
+```
+
+```bash
+CASE_MATRIX=$'fcfs|round_robin|fcfs\nsjf_aging|round_robin|sjf_aging'
+```
+
+```bash
+CASE_MATRIX=$'sjf|round_robin|sjf|0|0|5\nsjf_aging|round_robin|sjf_aging|1|1|5'
 ```
 
 ## Output Layout

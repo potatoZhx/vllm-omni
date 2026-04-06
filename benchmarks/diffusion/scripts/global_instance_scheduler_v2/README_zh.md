@@ -185,8 +185,9 @@ worker diffusion scheduler backend 的选择规则：
 - 如果两边都没有，就回退到 `request_scheduler`
 - 如果选中 `step_level_request_scheduler`，orchestrator 会强制注入 step chunk
 - 如果选中 `request_scheduler`，会自动剥离 step-level 专用参数
-- `--instance-scheduler-policy` 则默认沿用基础 YAML / launch args 中已有的值；
-  当前没有额外的 `INSTANCE_POLICY` 环境变量覆盖入口
+- 如果设置了 `INSTANCE_POLICY`，它会覆盖基础 YAML / launch args 中已有的
+  `--instance-scheduler-policy`
+- 如果没设置，就沿用基础 YAML / launch args 中已有的实例内策略
 
 ## Warmup 语义
 
@@ -211,6 +212,7 @@ case 级变量：
 
 - `BASE_CONFIG`：基础 YAML 路径，默认是 `single_instance.qwen.yaml`
 - `GLOBAL_POLICY`：覆盖全局路由策略
+- `INSTANCE_POLICY`：可选的 worker 实例内策略覆盖，例如 `fcfs`、`sjf`、`sjf_aging`
 - `DIFFUSION_SCHEDULER_BACKEND`：可选的 worker backend 覆盖。支持 `request_scheduler`、`step_level_request_scheduler`
 - `ENABLE_STEP_CHUNK`：可选的 step-chunk 布尔覆盖，只对 `step_level_request_scheduler` 有意义
 - `REQUEST_RATES`：逗号或空格分隔的 request rate，例如 `0.2,0.4,0.6`
@@ -241,12 +243,23 @@ suite 专用变量：
 
 - `SUITE_NAME`：suite 输出目录名
 - `OUT_ROOT`：显式 suite 输出根目录
-- `CASE_MATRIX`：每行一个 case，格式是 `case_name|global_policy`
+- `CASE_MATRIX`：每行一个 case，支持以下格式：
+  - `case_name|global_policy`
+  - `case_name|global_policy|instance_policy`
+  - 兼容更长的 legacy 行格式，但当前只会读取前 3 列，其余列会被忽略
 
 示例：
 
 ```bash
 CASE_MATRIX=$'mql|min_queue_length\nrr|round_robin\nsqr|short_queue_runtime'
+```
+
+```bash
+CASE_MATRIX=$'fcfs|round_robin|fcfs\nsjf_aging|round_robin|sjf_aging'
+```
+
+```bash
+CASE_MATRIX=$'sjf|round_robin|sjf|0|0|5\nsjf_aging|round_robin|sjf_aging|1|1|5'
 ```
 
 ## 输出目录结构
