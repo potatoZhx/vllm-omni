@@ -128,6 +128,7 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
         ("BENCHMARK_DATASET", "dataset"),
         ("BENCHMARK_DATASET_PATH", "dataset_path"),
         ("BENCHMARK_RANDOM_REQUEST_CONFIG", "random_request_config"),
+        ("BENCHMARK_WARMUP_REQUEST_CONFIG", "warmup_request_config"),
     ]:
         value = options.get(env_name, "").strip()
         if value:
@@ -231,6 +232,7 @@ def resolve_benchmark_runtime(config_path: Path) -> dict[str, Any]:
         "dataset": str(benchmark.get("dataset", "trace")),
         "dataset_path": resolve_config_path(benchmark.get("dataset_path")),
         "random_request_config": normalize_shell_value(benchmark.get("random_request_config")),
+        "warmup_request_config": normalize_shell_value(benchmark.get("warmup_request_config")),
         "max_concurrency": int(benchmark.get("max_concurrency", 20)),
         "warmup_requests": int(benchmark.get("warmup_requests", 0)),
         "warmup_num_inference_steps": int(benchmark.get("warmup_num_inference_steps", 1)),
@@ -394,6 +396,8 @@ def build_benchmark_command(
         cmd.extend(["--dataset-path", runtime["dataset_path"]])
     if runtime["random_request_config"]:
         cmd.extend(["--random-request-config", runtime["random_request_config"]])
+    if runtime["warmup_request_config"]:
+        cmd.extend(["--warmup-request-config", runtime["warmup_request_config"]])
     if output_file:
         cmd.extend(["--output-file", output_file])
     return cmd

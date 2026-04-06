@@ -15,6 +15,9 @@ What remains in scope:
 - worker launch requirements:
   - `--diffusion-scheduler-backend step_level_request_scheduler`
   - `--diffusion-enable-step-chunk`
+- benchmark warmup profile construction:
+  - `benchmark.warmup_request_config`
+  - env override `BENCHMARK_WARMUP_REQUEST_CONFIG`
 
 What is intentionally out of scope in this migration:
 
@@ -22,3 +25,8 @@ What is intentionally out of scope in this migration:
 - `diffusion_engine_max_concurrency`
 - orchestration dependence on `chunk_preemption` or `chunk_budget`
 - instance-level complex policies such as `sjf` / `p95-first` / `fusion`
+
+Template configs:
+
+- `benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.qwen.yaml`
+- `benchmarks/diffusion/scripts/global_instance_scheduler_v2/single_instance.wan2_2.yaml`

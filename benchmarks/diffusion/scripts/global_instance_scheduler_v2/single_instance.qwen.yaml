@@ -26,8 +26,15 @@ benchmark:
       {"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}
     ]
   max_concurrency: 20
-  warmup_requests: 1
+  warmup_requests: 4
   warmup_num_inference_steps: 1
+  warmup_request_config: >-
+    [
+      {"width":512,"height":512,"num_inference_steps":20},
+      {"width":768,"height":768,"num_inference_steps":20},
+      {"width":1024,"height":1024,"num_inference_steps":25},
+      {"width":1536,"height":1536,"num_inference_steps":35}
+    ]
   output_file: ./logs/global_scheduler_qwen_image_benchmark_metrics.json
   auto_stop: true
 instances:
