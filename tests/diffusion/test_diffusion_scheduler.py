@@ -76,6 +76,10 @@ def _set_request_age(scheduler: StepLevelRequestScheduler, sched_req_id: str, ag
     scheduler.get_execution_state(sched_req_id).arrival_time = monotonic() - age_s
 
 
+def _render_log_messages(log_calls) -> list[str]:
+    return [call.args[0] % call.args[1:] for call in log_calls.call_args_list]
+
+
 class _StubScheduler(SchedulerInterface):
     def __init__(self, request: OmniDiffusionRequest, output: DiffusionOutput) -> None:
         self._request = request
@@ -329,6 +333,63 @@ class TestStepLevelRequestScheduler:
 
         assert finished == {req_id}
         assert self.scheduler.get_request_state(req_id).status == DiffusionRequestStatus.FINISHED_COMPLETED
+
+    def test_logs_per_step_schedule_and_completion_details(self) -> None:
+        req_id = self.scheduler.add_request(
+            _make_request("step-log", num_inference_steps=2, estimated_cost_s=4.0),
+        )
+
+        with (
+            patch("vllm_omni.diffusion.sched.step_level_request_scheduler.logger.isEnabledFor", return_value=True),
+            patch("vllm_omni.diffusion.sched.step_level_request_scheduler.logger.info") as log_info,
+        ):
+            first = self.scheduler.schedule()
+            self.scheduler.update_from_output(
+                first,
+                RunnerOutput(req_id=req_id, step_index=1, finished=False, result=None),
+            )
+
+            second = self.scheduler.schedule()
+            self.scheduler.update_from_output(
+                second,
+                RunnerOutput(
+                    req_id=req_id,
+                    step_index=2,
+                    finished=True,
+                    result=DiffusionOutput(output=None),
+                ),
+            )
+
+        rendered = _render_log_messages(log_info)
+        assert any(
+            "[StepSchedule]" in message
+            and "policy=fcfs" in message
+            and "selected=step-log" in message
+            and "kind=new" in message
+            and "progress=0/2" in message
+            for message in rendered
+        )
+        assert any(
+            "[StepComplete]" in message
+            and "req=step-log" in message
+            and "progress=0->1/2" in message
+            and "status=PREEMPTED" in message
+            for message in rendered
+        )
+        assert any(
+            "[StepSchedule]" in message
+            and "selected=step-log" in message
+            and "kind=resumed" in message
+            and "progress=1/2" in message
+            for message in rendered
+        )
+        assert any(
+            "[StepComplete]" in message
+            and "req=step-log" in message
+            and "progress=1->2/2" in message
+            and "status=FINISHED_COMPLETED" in message
+            for message in rendered
+        )
 
     def test_abort_pending_finishes_on_next_scheduler_update(self) -> None:
         req_id = self.scheduler.add_request(_make_request("abort"))
