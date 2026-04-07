@@ -44,6 +44,20 @@ def parse_request_rates(raw: str) -> list[str]:
     return tokens
 
 
+def parse_case_matrix_scheduler_backend(raw: str) -> str:
+    value = raw.strip()
+    if value == "0":
+        return "request_scheduler"
+    if value == "1":
+        return "step_level_request_scheduler"
+    if value in SUPPORTED_DIFFUSION_SCHEDULER_BACKENDS:
+        return value
+    raise ValueError(
+        "Invalid CASE_MATRIX scheduler backend column: "
+        f"{raw!r}. Expected 0/1 or one of {sorted(SUPPORTED_DIFFUSION_SCHEDULER_BACKENDS)!r}."
+    )
+
+
 def parse_case_matrix(raw: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in raw.splitlines():
@@ -59,6 +73,8 @@ def parse_case_matrix(raw: str) -> list[dict[str, str]]:
         row = {"case_name": case_name, "global_policy": global_policy}
         if len(parts) >= 3 and parts[2]:
             row["instance_policy"] = parts[2]
+        if len(parts) >= 4 and parts[3]:
+            row["scheduler_backend"] = parse_case_matrix_scheduler_backend(parts[3])
         rows.append(row)
     if not rows:
         raise ValueError("CASE_MATRIX is empty.")
@@ -212,12 +228,13 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
                 )
             args.extend(["--diffusion-scheduler-backend", "step_level_request_scheduler"])
             args.append("--diffusion-enable-step-chunk")
+            desired_instance_policy = explicit_instance_policy or existing_instance_policy
+            if desired_instance_policy:
+                args.extend(["--instance-scheduler-policy", desired_instance_policy])
         else:
             if explicit_enable_step_chunk == "1":
                 raise ValueError("ENABLE_STEP_CHUNK=1 is incompatible with request_scheduler")
-        desired_instance_policy = explicit_instance_policy or existing_instance_policy
-        if desired_instance_policy:
-            args.extend(["--instance-scheduler-policy", desired_instance_policy])
+            args.extend(["--diffusion-scheduler-backend", "request_scheduler"])
         launch["args"] = args
         matched_instances.append(instance_id)
 
@@ -674,7 +691,14 @@ def run_suite(options: dict[str, str]) -> Path:
                 "SCHEDULER_LOG_FILE": "",
             }
         )
-        if case.get("instance_policy"):
+        if case.get("scheduler_backend"):
+            case_options["DIFFUSION_SCHEDULER_BACKEND"] = case["scheduler_backend"]
+            if case["scheduler_backend"] == "request_scheduler":
+                case_options["ENABLE_STEP_CHUNK"] = "0"
+                case_options["INSTANCE_POLICY"] = ""
+            else:
+                case_options["ENABLE_STEP_CHUNK"] = "1"
+        if case.get("instance_policy") and case_options.get("DIFFUSION_SCHEDULER_BACKEND", "").strip() != "request_scheduler":
             case_options["INSTANCE_POLICY"] = case["instance_policy"]
         run_case(case_options)
 

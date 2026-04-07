@@ -182,6 +182,7 @@ Worker diffusion scheduler backend selection:
 - if neither is present, it falls back to `request_scheduler`
 - when `step_level_request_scheduler` is selected, step chunk is always injected
 - when `request_scheduler` is selected, step-level-only flags are stripped
+- when the final backend is `request_scheduler`, `--instance-scheduler-policy` is also omitted from worker args
 - if `INSTANCE_POLICY` is set, it overrides the worker
   `--instance-scheduler-policy` from the base YAML or launch args
 - otherwise the existing worker instance policy is preserved from the base YAML
@@ -245,7 +246,20 @@ Suite-only variables:
 - `CASE_MATRIX`: one row per case. Supported formats:
   - `case_name|global_policy`
   - `case_name|global_policy|instance_policy`
-  - longer legacy rows are accepted, but only the first 3 columns are used
+  - `case_name|global_policy|instance_policy|scheduler_backend_flag`
+  - longer legacy rows are accepted, but only the first 4 columns are used
+
+The 4th column `scheduler_backend_flag` supports:
+
+- `0`: use `request_scheduler`
+- `1`: use `step_level_request_scheduler`
+- literal backend names are also accepted
+
+Additional semantics:
+
+- when the 4th column is `0`, the orchestrator runs the case with `request_scheduler`
+- in that mode, `--diffusion-enable-step-chunk` is not applied
+- in that mode, the `instance_policy` column and `INSTANCE_POLICY` env var are ignored
 
 Example:
 
@@ -255,6 +269,10 @@ CASE_MATRIX=$'mql|min_queue_length\nrr|round_robin\nsqr|short_queue_runtime'
 
 ```bash
 CASE_MATRIX=$'fcfs|round_robin|fcfs\nsjf_aging|round_robin|sjf_aging'
+```
+
+```bash
+CASE_MATRIX=$'sjf_req|round_robin|sjf|0\nsjf_aging_step|round_robin|sjf_aging|1'
 ```
 
 ```bash

@@ -185,6 +185,7 @@ worker diffusion scheduler backend 的选择规则：
 - 如果两边都没有，就回退到 `request_scheduler`
 - 如果选中 `step_level_request_scheduler`，orchestrator 会强制注入 step chunk
 - 如果选中 `request_scheduler`，会自动剥离 step-level 专用参数
+- 如果最终 backend 是 `request_scheduler`，`--instance-scheduler-policy` 也不会写回 worker args
 - 如果设置了 `INSTANCE_POLICY`，它会覆盖基础 YAML / launch args 中已有的
   `--instance-scheduler-policy`
 - 如果没设置，就沿用基础 YAML / launch args 中已有的实例内策略
@@ -246,7 +247,20 @@ suite 专用变量：
 - `CASE_MATRIX`：每行一个 case，支持以下格式：
   - `case_name|global_policy`
   - `case_name|global_policy|instance_policy`
-  - 兼容更长的 legacy 行格式，但当前只会读取前 3 列，其余列会被忽略
+  - `case_name|global_policy|instance_policy|scheduler_backend_flag`
+  - 兼容更长的 legacy 行格式，但当前只会读取前 4 列，其余列会被忽略
+
+其中第 4 列 `scheduler_backend_flag` 支持：
+
+- `0`：使用 `request_scheduler`
+- `1`：使用 `step_level_request_scheduler`
+- 也兼容直接写 backend 名字
+
+补充语义：
+
+- 当第 4 列为 `0` 时，orchestrator 会按 `request_scheduler` 运行
+- 这时 `--diffusion-enable-step-chunk` 不会生效
+- 这时 `instance_policy` 列和 `INSTANCE_POLICY` 环境变量也会被忽略
 
 示例：
 
@@ -256,6 +270,10 @@ CASE_MATRIX=$'mql|min_queue_length\nrr|round_robin\nsqr|short_queue_runtime'
 
 ```bash
 CASE_MATRIX=$'fcfs|round_robin|fcfs\nsjf_aging|round_robin|sjf_aging'
+```
+
+```bash
+CASE_MATRIX=$'sjf_req|round_robin|sjf|0\nsjf_aging_step|round_robin|sjf_aging|1'
 ```
 
 ```bash
