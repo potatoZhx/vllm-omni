@@ -9,10 +9,14 @@ enabling concurrent request handling and streaming generation.
 """
 
 import asyncio
+import os
 import uuid
 import weakref
 from collections.abc import AsyncGenerator, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 from vllm.logger import init_logger
@@ -26,6 +30,37 @@ from vllm_omni.lora.request import LoRARequest
 from vllm_omni.outputs import OmniRequestOutput
 
 logger = init_logger(__name__)
+
+_EXECUTOR_MAX_WORKERS_ENV = "VLLM_OMNI_DIFFUSION_EXECUTOR_MAX_WORKERS"
+_DEFAULT_EXECUTOR_MAX_WORKERS = max(8, min(64, (os.cpu_count() or 1) * 4))
+
+
+def _resolve_executor_max_workers() -> int:
+    raw_value = os.getenv(_EXECUTOR_MAX_WORKERS_ENV, "").strip()
+    if not raw_value:
+        return _DEFAULT_EXECUTOR_MAX_WORKERS
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; falling back to default executor size %d",
+            _EXECUTOR_MAX_WORKERS_ENV,
+            raw_value,
+            _DEFAULT_EXECUTOR_MAX_WORKERS,
+        )
+        return _DEFAULT_EXECUTOR_MAX_WORKERS
+
+    if value < 1:
+        logger.warning(
+            "Ignoring non-positive %s=%r; falling back to default executor size %d",
+            _EXECUTOR_MAX_WORKERS_ENV,
+            raw_value,
+            _DEFAULT_EXECUTOR_MAX_WORKERS,
+        )
+        return _DEFAULT_EXECUTOR_MAX_WORKERS
+
+    return value
 
 
 def _weak_close_async_omni_diffusion(engine: DiffusionEngine, executor: ThreadPoolExecutor) -> None:
@@ -73,6 +108,10 @@ class AsyncOmniDiffusion:
 
         # Set batch size (default 1 for backward compatibility)
         self._batch_size = max(1, batch_size)
+        self._executor_max_workers = _resolve_executor_max_workers()
+        self._executor_state_lock = Lock()
+        self._executor_pending = 0
+        self._executor_active = 0
 
         # Capture stage info from kwargs before they might be filtered out
         stage_id = kwargs.get("stage_id")
@@ -141,8 +180,12 @@ class AsyncOmniDiffusion:
         # Initialize engine
         self.engine: DiffusionEngine = DiffusionEngine.make_engine(od_config)
 
-        # Thread pool for running sync engine in async context
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        # Each in-flight request blocks inside engine.step() until it completes,
+        # so this thread pool also acts as the worker-side admission limit.
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._executor_max_workers,
+            thread_name_prefix="async-omni-diffusion",
+        )
         self._closed = False
         self._weak_finalizer = weakref.finalize(
             self,
@@ -151,7 +194,12 @@ class AsyncOmniDiffusion:
             self._executor,
         )
 
-        logger.info("AsyncOmniDiffusion initialized with model: %s, batch_size: %d", model, self._batch_size)
+        logger.info(
+            "AsyncOmniDiffusion initialized with model: %s, batch_size: %d, executor_max_workers: %d",
+            model,
+            self._batch_size,
+            self._executor_max_workers,
+        )
 
     # ------------------------------------------------------------------
     # batch_size property
@@ -167,6 +215,119 @@ class AsyncOmniDiffusion:
         if not isinstance(value, int) or value < 1:
             raise ValueError("batch_size must be a positive integer")
         self._batch_size = value
+
+    def _record_executor_enqueue(
+        self,
+        *,
+        request_id: str,
+        kind: str,
+        prompt_count: int,
+    ) -> float:
+        submitted_at = monotonic()
+        with self._executor_state_lock:
+            self._executor_pending += 1
+            pending = self._executor_pending
+            active = self._executor_active
+        logger.info(
+            "[AsyncDiffusionExecutorEnqueue] req=%s kind=%s prompt_count=%d pending=%d active=%d executor_max_workers=%d",
+            request_id,
+            kind,
+            prompt_count,
+            pending,
+            active,
+            self._executor_max_workers,
+        )
+        return submitted_at
+
+    def _run_engine_step_with_logging(
+        self,
+        request: OmniDiffusionRequest,
+        *,
+        request_id: str,
+        kind: str,
+        prompt_count: int,
+        submitted_at: float,
+    ) -> list[OmniRequestOutput]:
+        started_at = monotonic()
+        with self._executor_state_lock:
+            if self._executor_pending > 0:
+                self._executor_pending -= 1
+            self._executor_active += 1
+            pending = self._executor_pending
+            active = self._executor_active
+        logger.info(
+            "[AsyncDiffusionExecutorStart] req=%s kind=%s prompt_count=%d queue_ms=%.2f pending=%d active=%d executor_max_workers=%d",
+            request_id,
+            kind,
+            prompt_count,
+            (started_at - submitted_at) * 1000.0,
+            pending,
+            active,
+            self._executor_max_workers,
+        )
+        try:
+            return self.engine.step(request)
+        finally:
+            finished_at = monotonic()
+            with self._executor_state_lock:
+                if self._executor_active > 0:
+                    self._executor_active -= 1
+                pending_after = self._executor_pending
+                active_after = self._executor_active
+            logger.info(
+                "[AsyncDiffusionExecutorDone] req=%s kind=%s prompt_count=%d run_ms=%.2f total_ms=%.2f pending=%d active=%d executor_max_workers=%d",
+                request_id,
+                kind,
+                prompt_count,
+                (finished_at - started_at) * 1000.0,
+                (finished_at - submitted_at) * 1000.0,
+                pending_after,
+                active_after,
+                self._executor_max_workers,
+            )
+
+    async def _run_engine_step_async(
+        self,
+        request: OmniDiffusionRequest,
+        *,
+        request_id: str,
+        kind: str,
+        prompt_count: int,
+    ) -> list[OmniRequestOutput]:
+        submitted_at = self._record_executor_enqueue(
+            request_id=request_id,
+            kind=kind,
+            prompt_count=prompt_count,
+        )
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._executor,
+                partial(
+                    self._run_engine_step_with_logging,
+                    request,
+                    request_id=request_id,
+                    kind=kind,
+                    prompt_count=prompt_count,
+                    submitted_at=submitted_at,
+                ),
+            )
+        except Exception:
+            with self._executor_state_lock:
+                if self._executor_pending > 0:
+                    self._executor_pending -= 1
+                pending = self._executor_pending
+                active = self._executor_active
+            logger.warning(
+                "[AsyncDiffusionExecutorSubmitFailed] req=%s kind=%s prompt_count=%d pending=%d active=%d executor_max_workers=%d",
+                request_id,
+                kind,
+                prompt_count,
+                pending,
+                active,
+                self._executor_max_workers,
+            )
+            raise
 
     # ------------------------------------------------------------------
     # Public batch generation API
@@ -232,12 +393,12 @@ class AsyncOmniDiffusion:
 
         logger.debug("Starting batch generation for %d prompts, request_id=%s", len(prompts), request_id)
 
-        loop = asyncio.get_event_loop()
         try:
-            results = await loop.run_in_executor(
-                self._executor,
-                self.engine.step,
+            results = await self._run_engine_step_async(
                 request,
+                request_id=request_id,
+                kind="batch",
+                prompt_count=len(prompts),
             )
         except Exception as e:
             logger.error("Batch generation failed for request %s: %s", request_id, e)
@@ -300,12 +461,12 @@ class AsyncOmniDiffusion:
 
         logger.debug("Starting generation for request %s", request_id)
 
-        loop = asyncio.get_event_loop()
         try:
-            result = await loop.run_in_executor(
-                self._executor,
-                self.engine.step,
+            result = await self._run_engine_step_async(
                 request,
+                request_id=request_id,
+                kind="single",
+                prompt_count=1,
             )
             result = result[0]
         except Exception as e:
