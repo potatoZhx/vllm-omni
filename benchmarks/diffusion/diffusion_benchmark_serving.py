@@ -86,6 +86,7 @@ from PIL import Image
 from tqdm.asyncio import tqdm
 
 logger = logging.getLogger(__name__)
+DEFAULT_ARRIVAL_SEED = 42
 
 
 class BaseDataset(ABC):
@@ -961,6 +962,7 @@ def _inject_scheduler_slo_fields(
 async def iter_requests(
     requests_list: list[RequestFuncInput],
     request_rate: float,
+    arrival_seed: int = DEFAULT_ARRIVAL_SEED,
 ) -> AsyncGenerator[RequestFuncInput, None]:
     """Yield requests using a Poisson process if request_rate is set.
 
@@ -972,9 +974,10 @@ async def iter_requests(
         if request_rate <= 0:
             raise ValueError(f"request_rate must be positive or inf, got {request_rate}.")
 
+    arrival_rng = random.Random(arrival_seed)
     for i, req in enumerate(requests_list):
         if request_rate != float("inf") and i > 0:
-            interval_s = random.expovariate(request_rate)
+            interval_s = arrival_rng.expovariate(request_rate)
             await asyncio.sleep(interval_s)
         yield req
 
@@ -1251,7 +1254,11 @@ async def benchmark(args):
 
         start_time = time.perf_counter()
         tasks = []
-        async for req in iter_requests(requests_list=requests_list, request_rate=args.request_rate):
+        async for req in iter_requests(
+            requests_list=requests_list,
+            request_rate=args.request_rate,
+            arrival_seed=args.arrival_seed,
+        ):
             task = asyncio.create_task(limited_request_func(req, session, pbar))
             tasks.append(task)
 
@@ -1290,6 +1297,7 @@ async def benchmark(args):
     print(f"{'-' * 50}")
     print("{:<40} {:<15.2f}".format("Benchmark duration (s):", metrics["duration"]))
     print("{:<40} {:<15}".format("Request rate:", str(args.request_rate)))
+    print("{:<40} {:<15}".format("Arrival seed:", str(args.arrival_seed)))
     print(
         "{:<40} {:<15}".format(
             "Max request concurrency:",
@@ -1391,6 +1399,15 @@ if __name__ == "__main__":
         default=float("inf"),
         help="Number of requests per second. If this is inf, then all the requests are sent at time 0. "
         "Otherwise, we use Poisson process to synthesize the request arrival times. Default is inf.",
+    )
+    parser.add_argument(
+        "--arrival-seed",
+        type=int,
+        default=DEFAULT_ARRIVAL_SEED,
+        help=(
+            "Random seed used for Poisson inter-arrival sampling. "
+            f"Default is {DEFAULT_ARRIVAL_SEED} so reruns share the same arrival trace."
+        ),
     )
     parser.add_argument(
         "--warmup-requests",
