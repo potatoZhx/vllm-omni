@@ -247,4 +247,3 @@ tmp_test
 vllm_omni/_version.py
 # output files
 *.wav
-/workplan/
