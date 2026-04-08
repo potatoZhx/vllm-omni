@@ -317,6 +317,7 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
         """,
     )
     app = create_app(config)
+    followup_calls: list[tuple[str, str, str]] = []
 
     def _fake_proxy(endpoint, upstream_path, body, headers, timeout_s):
         assert endpoint == "http://127.0.0.1:9001"
@@ -328,15 +329,55 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
             (),
             {
                 "status_code": 200,
-                "body": b'{"id": "video-1"}',
+                "body": b'{"id": "video-1", "status": "queued"}',
                 "headers": {"content-type": "application/json"},
             },
         )()
 
+    def _fake_proxy_with_method(endpoint, upstream_path, body, headers, timeout_s, *, method):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert timeout_s == 2
+        followup_calls.append((method, upstream_path, body.decode("utf-8") if body else ""))
+        if method == "GET" and upstream_path == "/v1/videos/video-1":
+            assert method == "GET"
+            return type(
+                "_Resp",
+                (),
+                {
+                    "status_code": 200,
+                    "body": b'{"id": "video-1", "status": "completed"}',
+                    "headers": {"content-type": "application/json"},
+                },
+            )()
+        if upstream_path == "/v1/videos/video-1/content":
+            assert method == "GET"
+            return type(
+                "_Resp",
+                (),
+                {
+                    "status_code": 200,
+                    "body": b"video-bytes",
+                    "headers": {"content-type": "video/mp4"},
+                },
+            )()
+        if method == "DELETE" and upstream_path == "/v1/videos/video-1":
+            assert method == "DELETE"
+            return type(
+                "_Resp",
+                (),
+                {
+                    "status_code": 200,
+                    "body": b'{"id": "video-1", "deleted": true}',
+                    "headers": {"content-type": "application/json"},
+                },
+            )()
+        raise AssertionError(f"unexpected upstream path: {upstream_path}")
+
     monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request", _fake_proxy)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request_with_method", _fake_proxy_with_method)
 
     client = TestClient(app)
-    response = client.post(
+    create_response = client.post(
         "/v1/videos",
         data={
             "prompt": "city at sunset",
@@ -348,10 +389,49 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
             "request_id": "req-video-1",
         },
     )
+    status_response = client.get("/v1/videos/video-1")
+    content_response = client.get("/v1/videos/video-1/content")
+    delete_response = client.delete("/v1/videos/video-1")
+    missing_after_delete = client.get("/v1/videos/video-1")
 
-    assert response.status_code == 200
-    assert response.headers["X-Routed-Instance"] == "worker-0"
+    assert create_response.status_code == 200
+    assert create_response.headers["X-Routed-Instance"] == "worker-0"
+    assert status_response.status_code == 200
+    assert status_response.headers["X-Routed-Instance"] == "worker-0"
+    assert status_response.headers["X-Route-Reason"] == "video_job_affinity"
+    assert content_response.status_code == 200
+    assert content_response.content == b"video-bytes"
+    assert content_response.headers["X-Routed-Instance"] == "worker-0"
+    assert delete_response.status_code == 200
+    assert delete_response.headers["X-Routed-Instance"] == "worker-0"
+    assert missing_after_delete.status_code == 404
+    assert missing_after_delete.json()["error"]["code"] == "GS_UNKNOWN_VIDEO_JOB"
+    assert followup_calls == [
+        ("GET", "/v1/videos/video-1", ""),
+        ("GET", "/v1/videos/video-1/content", ""),
+        ("DELETE", "/v1/videos/video-1", ""),
+    ]
     assert app.state.runtime_state_store.snapshot()["worker-0"].inflight == 0
+
+
+def test_video_job_followup_returns_404_for_unknown_job_id(tmp_path):
+    config = _write_config(
+        tmp_path / "scheduler.yaml",
+        """
+        server:
+          instance_health_check_interval_s: 100
+        instances:
+          - id: worker-0
+            endpoint: http://127.0.0.1:9001
+            backends: [v1/videos]
+        """,
+    )
+    client = TestClient(create_app(config))
+
+    response = client.get("/v1/videos/video-missing")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "GS_UNKNOWN_VIDEO_JOB"
 
 
 def test_instance_lifecycle_ops_endpoints_update_process_state(tmp_path):

@@ -299,8 +299,28 @@ def _proxy_request(
     headers: dict[str, str],
     timeout_s: int,
 ) -> UpstreamResult:
+    return _proxy_request_with_method(
+        endpoint,
+        upstream_path,
+        body,
+        headers,
+        timeout_s,
+        method="POST",
+    )
+
+
+def _proxy_request_with_method(
+    endpoint: str,
+    upstream_path: str,
+    body: bytes,
+    headers: dict[str, str],
+    timeout_s: int,
+    *,
+    method: str,
+) -> UpstreamResult:
     url = f"{endpoint}{upstream_path}"
-    request = urllib_request.Request(url=url, data=body, headers=headers, method="POST")
+    payload = body if body else None
+    request = urllib_request.Request(url=url, data=payload, headers=headers, method=method.upper())
 
     try:
         with _NO_PROXY_OPENER.open(request, timeout=timeout_s) as upstream_response:  # noqa: S310
@@ -318,6 +338,39 @@ def _proxy_request(
         raise OSError(f"upstream network error: {reason}") from exc
     except (socket.timeout, TimeoutError) as exc:
         raise TimeoutError("upstream request timed out") from exc
+
+
+def _parse_json_object(body: bytes) -> dict[str, Any] | None:
+    if not body:
+        return None
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _remember_video_job_route(app: FastAPI, video_id: str, decision: RouteDecision) -> None:
+    sticky_decision = RouteDecision(
+        instance_id=decision.instance_id,
+        endpoint=decision.endpoint,
+        reason="video_job_affinity",
+        score=0.0,
+    )
+    with app.state.video_job_routes_lock:
+        app.state.video_job_routes[video_id] = sticky_decision
+
+
+def _lookup_video_job_route(app: FastAPI, video_id: str) -> RouteDecision | None:
+    with app.state.video_job_routes_lock:
+        return app.state.video_job_routes.get(video_id)
+
+
+def _forget_video_job_route(app: FastAPI, video_id: str) -> None:
+    with app.state.video_job_routes_lock:
+        app.state.video_job_routes.pop(video_id, None)
 
 
 async def _open_streaming_upstream(
@@ -507,6 +560,8 @@ def create_app(
     app.state.lifecycle_operation_locks = {}
     app.state.lifecycle_operation_locks_guard = RLock()
     app.state.routing_lock = asyncio.Lock()
+    app.state.video_job_routes = {}
+    app.state.video_job_routes_lock = RLock()
 
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -773,6 +828,81 @@ def create_app(
         response.headers["X-Route-Reason"] = decision.reason
         response.headers["X-Route-Score"] = str(decision.score)
         return response
+
+    async def _proxy_video_job_request(
+        request: Request,
+        *,
+        video_id: str,
+        method: str,
+        upstream_suffix: str = "",
+        forget_on_success: bool = False,
+    ) -> Response:
+        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        decision = _lookup_video_job_route(app, video_id)
+        if decision is None:
+            return JSONResponse(
+                status_code=404,
+                content=_build_error_payload(
+                    code="GS_UNKNOWN_VIDEO_JOB",
+                    message=f"Unknown video job id: {video_id}",
+                    request_id=request_id,
+                ),
+            )
+
+        current_config = getattr(app.state, "global_scheduler_config", config)
+        filtered_headers = _filter_forward_headers(request.headers)
+        payload_bytes = await request.body()
+
+        try:
+            upstream_result = await asyncio.to_thread(
+                _proxy_request_with_method,
+                decision.endpoint,
+                f"/v1/videos/{video_id}{upstream_suffix}",
+                payload_bytes,
+                filtered_headers,
+                current_config.server.request_timeout_s,
+                method=method,
+            )
+            response = Response(
+                status_code=upstream_result.status_code,
+                content=upstream_result.body,
+                media_type=upstream_result.headers.get("content-type") or "application/json",
+            )
+            for key, value in _select_upstream_response_headers(upstream_result.headers).items():
+                response.headers[key] = value
+            if forget_on_success:
+                _forget_video_job_route(app, video_id)
+        except UpstreamHTTPError as exc:
+            if exc.status_code == 404:
+                _forget_video_job_route(app, video_id)
+            response = JSONResponse(
+                status_code=exc.status_code,
+                content=_build_error_payload(
+                    code="GS_UPSTREAM_HTTP_ERROR",
+                    message=f"Upstream returned HTTP {exc.status_code}",
+                    request_id=request_id,
+                ),
+            )
+        except TimeoutError:
+            response = JSONResponse(
+                status_code=502,
+                content=_build_error_payload(
+                    code="GS_UPSTREAM_TIMEOUT",
+                    message="upstream request timed out",
+                    request_id=request_id,
+                ),
+            )
+        except OSError as exc:
+            response = JSONResponse(
+                status_code=502,
+                content=_build_error_payload(
+                    code="GS_UPSTREAM_NETWORK_ERROR",
+                    message=str(exc),
+                    request_id=request_id,
+                ),
+            )
+
+        return _attach_route_headers(response, decision)
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
@@ -1055,6 +1185,10 @@ def create_app(
             )
             for key, value in _select_upstream_response_headers(upstream_result.headers).items():
                 response.headers[key] = value
+            video_payload = _parse_json_object(upstream_result.body)
+            video_id = video_payload.get("id") if video_payload is not None else None
+            if isinstance(video_id, str) and video_id:
+                _remember_video_job_route(app, video_id, decision)
             ok = True
         except UpstreamHTTPError as exc:
             response = JSONResponse(
@@ -1092,6 +1226,28 @@ def create_app(
             )
 
         return _attach_route_headers(response, decision)
+
+    @app.get("/v1/videos/{video_id}")
+    async def retrieve_video(request: Request, video_id: str) -> Response:
+        return await _proxy_video_job_request(request, video_id=video_id, method="GET")
+
+    @app.get("/v1/videos/{video_id}/content")
+    async def download_video(request: Request, video_id: str) -> Response:
+        return await _proxy_video_job_request(
+            request,
+            video_id=video_id,
+            method="GET",
+            upstream_suffix="/content",
+        )
+
+    @app.delete("/v1/videos/{video_id}")
+    async def delete_video(request: Request, video_id: str) -> Response:
+        return await _proxy_video_job_request(
+            request,
+            video_id=video_id,
+            method="DELETE",
+            forget_on_success=True,
+        )
 
     return app
 
