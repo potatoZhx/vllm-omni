@@ -58,6 +58,7 @@ class DiffusionExecutionState:
 
     sched_req_id: str
     arrival_time: float | None = None
+    arrival_seq: int | None = None
     planned_chunk_budget_steps: int = 1
     executed_steps: int = 0
     dispatch_epoch: int = 0

@@ -189,7 +189,7 @@ class _EstimatedRuntimePolicy(RequestSelectionPolicy):
 
 
 class FCFSSelectionPolicy(RequestSelectionPolicy):
-    """Preserve arrival order from the waiting deque."""
+    """Preserve original request arrival order across step requeueing."""
 
     def order_waiting(
         self,
@@ -197,8 +197,17 @@ class FCFSSelectionPolicy(RequestSelectionPolicy):
         request_states: dict[str, DiffusionRequestState],
         execution_states: dict[str, DiffusionExecutionState],
     ) -> list[str]:
-        del request_states, execution_states
-        return list(waiting)
+        del request_states
+        waiting_order = {req_id: index for index, req_id in enumerate(waiting)}
+        return sorted(
+            waiting,
+            key=lambda req_id: (
+                execution_states[req_id].arrival_seq
+                if execution_states[req_id].arrival_seq is not None
+                else float("inf"),
+                waiting_order[req_id],
+            ),
+        )
 
 
 class SJFSelectionPolicy(_EstimatedRuntimePolicy):

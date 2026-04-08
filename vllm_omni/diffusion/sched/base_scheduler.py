@@ -23,6 +23,7 @@ class _BaseScheduler(SchedulerInterface):
         self._request_states: dict[str, DiffusionRequestState] = {}
         self._execution_states: dict[str, DiffusionExecutionState] = {}
         self._request_id_to_sched_req_id: dict[str, str] = {}
+        self._arrival_seq_counter: int = 0
         self._step_id: int = 0
         self._waiting: deque[str] = deque()
         self._running: list[str] = []
@@ -37,6 +38,7 @@ class _BaseScheduler(SchedulerInterface):
         self._request_states.clear()
         self._execution_states.clear()
         self._request_id_to_sched_req_id.clear()
+        self._arrival_seq_counter = 0
         self._step_id = 0
         self._waiting.clear()
         self._running.clear()
@@ -97,6 +99,7 @@ class _BaseScheduler(SchedulerInterface):
         self._request_states.clear()
         self._execution_states.clear()
         self._request_id_to_sched_req_id.clear()
+        self._arrival_seq_counter = 0
         self._waiting.clear()
         self._running.clear()
         self._finished_req_ids.clear()
@@ -174,6 +177,8 @@ class _BaseScheduler(SchedulerInterface):
             exec_state = DiffusionExecutionState(
                 sched_req_id=sched_req_id,
                 arrival_time=monotonic(),
+                arrival_seq=self._arrival_seq_counter,
             )
+            self._arrival_seq_counter += 1
             self._execution_states[sched_req_id] = exec_state
         return exec_state
