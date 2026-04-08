@@ -317,6 +317,27 @@ class TestStepLevelRequestScheduler:
         assert _new_ids(second) == []
         assert _cached_ids(second) == [req_id]
 
+    def test_fcfs_resumes_original_arrival_before_later_request(self) -> None:
+        first_req_id = self.scheduler.add_request(_make_request("first", num_inference_steps=2))
+        second_req_id = self.scheduler.add_request(_make_request("second", num_inference_steps=2))
+
+        first = self.scheduler.schedule()
+        assert first.scheduled_req_ids == [first_req_id]
+
+        finished = self.scheduler.update_from_output(
+            first,
+            RunnerOutput(req_id=first_req_id, step_index=1, finished=False, result=None),
+        )
+
+        assert finished == set()
+        assert list(self.scheduler._waiting) == [second_req_id, first_req_id]  # noqa: SLF001
+
+        second = self.scheduler.schedule()
+
+        assert second.scheduled_req_ids == [first_req_id]
+        assert _new_ids(second) == []
+        assert _cached_ids(second) == [first_req_id]
+
     def test_finished_runner_output_marks_request_completed(self) -> None:
         req_id = self.scheduler.add_request(_make_request("done"))
         sched_output = self.scheduler.schedule()
