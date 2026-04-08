@@ -1,7 +1,7 @@
 server:
   host: 0.0.0.0
   port: 8089
-  request_timeout_s: 1800
+  request_timeout_s: 1800000
   instance_health_check_interval_s: 5.0
   instance_health_check_timeout_s: 1.0
 scheduler:
@@ -14,7 +14,7 @@ benchmark:
   worker_ids:
     - worker0
   worker_ready_timeout_s: 2400
-  model: Wan-AI/Wan2.2-T2V-A14B-Diffusers
+  model: Wan2.2-T2V-A14B-Diffusers
   backend: v1/videos
   task: t2v
   dataset: random
@@ -24,7 +24,7 @@ benchmark:
       {"width":854,"height":480,"num_inference_steps":4,"num_frames":120,"fps":24,"weight":0.25},
       {"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16,"weight":0.6}
     ]
-  max_concurrency: 8
+  max_concurrency: 8000000
   warmup_requests: 3
   warmup_num_inference_steps: 1
   warmup_request_config: >-
@@ -44,7 +44,7 @@ instances:
       - openai
     launch:
       executable: vllm
-      model: Wan-AI/Wan2.2-T2V-A14B-Diffusers
+      model: Wan2.2-T2V-A14B-Diffusers
       args:
         - --omni
         - --diffusion-scheduler-backend
@@ -57,7 +57,7 @@ instances:
         - --tensor-parallel-size
         - "1"
         - --usp
-        - "2"
+        - "4"
         - --ring
         - "1"
         - --cfg-parallel-size
@@ -65,14 +65,14 @@ instances:
         - --use-hsdp
         - --hsdp-replicate-size
         - "1"
-        - --vae-use-slicing
-        - --vae-use-tiling
         - --num-weight-load-threads
         - "8"
+        - --vae-patch-parallel-size
+        - "8"
       env:
-        CUDA_VISIBLE_DEVICES: "0,1,2,3"
+        CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
     stop:
       executable: pkill
       args:
         - -f
-        - vllm serve Wan-AI/Wan2.2-T2V-A14B-Diffusers --port {endpoint_port}
+        - vllm serve Wan2.2-T2V-A14B-Diffusers --port {endpoint_port}
