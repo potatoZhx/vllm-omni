@@ -31,7 +31,7 @@ from vllm_omni.diffusion.sched.interface import (
 )
 from vllm_omni.diffusion.worker.diffusion_model_runner import DiffusionModelRunner
 from vllm_omni.diffusion.worker.diffusion_worker import DiffusionWorker
-from vllm_omni.diffusion.worker.utils import RunnerOutput
+from vllm_omni.diffusion.worker.utils import DiffusionRequestState, RunnerOutput
 from vllm_omni.platforms import current_omni_platform
 
 pytestmark = [pytest.mark.core_model, pytest.mark.diffusion]
@@ -173,6 +173,74 @@ class _DistributedStepPipeline(CFGParallelMixin):
     def post_decode(self, state, **kwargs):
         del kwargs
         return DiffusionOutput(output=state.latents.detach().cpu())
+
+
+class _FakePerRequestScheduler:
+    def __init__(self):
+        self.timesteps = torch.tensor([9, 3], dtype=torch.float32)
+        self.config = SimpleNamespace(num_train_timesteps=1000)
+        self.begin_index = None
+
+    def set_timesteps(self, num_inference_steps: int, device: torch.device | None = None):
+        del num_inference_steps, device
+        self.timesteps = torch.tensor([9, 3], dtype=torch.float32)
+
+    def set_begin_index(self, begin_index: int = 0):
+        self.begin_index = begin_index
+
+
+def _make_wan22_step_test_pipeline():
+    from vllm_omni.diffusion.models.wan2_2.pipeline_wan2_2 import Wan22Pipeline
+
+    pipeline = object.__new__(Wan22Pipeline)
+    pipeline.boundary_ratio = None
+    pipeline.device = torch.device("cpu")
+    pipeline.expand_timesteps = False
+    pipeline.scheduler = _FakePerRequestScheduler()
+    pipeline.transformer = SimpleNamespace(dtype=torch.float32)
+    pipeline.transformer_2 = None
+    pipeline.transformer_config = SimpleNamespace(
+        patch_size=(1, 2, 2),
+        in_channels=16,
+        out_channels=16,
+    )
+    pipeline.vae_scale_factor_temporal = 4
+    pipeline.vae_scale_factor_spatial = 8
+    pipeline._guidance_scale = None
+    pipeline._guidance_scale_2 = None
+    pipeline._num_timesteps = None
+    pipeline._current_timestep = None
+    pipeline._interrupt = False
+    pipeline.check_inputs = lambda **kwargs: None
+    pipeline.encode_prompt = lambda **kwargs: (
+        torch.ones((1, 4, 8), dtype=torch.float32),
+        torch.zeros((1, 4, 8), dtype=torch.float32),
+    )
+    pipeline.prepare_latents = lambda **kwargs: torch.ones((1, 16, 2, 8, 8), dtype=torch.float32)
+    return pipeline
+
+
+def _make_wan22_step_state(prompts: list[object] | None = None):
+    sampling = SimpleNamespace(
+        height=None,
+        width=None,
+        num_frames=9,
+        num_inference_steps=2,
+        guidance_scale_provided=False,
+        guidance_scale=4.0,
+        guidance_scale_2=None,
+        boundary_ratio=None,
+        generator=None,
+        seed=None,
+        num_outputs_per_prompt=1,
+        max_sequence_length=32,
+        latents=None,
+    )
+    return DiffusionRequestState(
+        req_id="req-1",
+        sampling=sampling,
+        prompts=prompts if prompts is not None else [{"prompt": "A moving cat"}],
+    )
 
 
 def _make_step_request(num_inference_steps: int = 2):
@@ -468,6 +536,57 @@ class TestSupportedPipelines:
         assert pipeline.supports_step_execution is True
         assert supports_step_execution(pipeline) is True
         assert isinstance(pipeline, SupportsStepExecution) is True
+
+    def test_wan22_supports_step_execution(self):
+        from vllm_omni.diffusion.models.interface import SupportsStepExecution, supports_step_execution
+        from vllm_omni.diffusion.models.wan2_2.pipeline_wan2_2 import Wan22Pipeline
+
+        pipeline = object.__new__(Wan22Pipeline)
+
+        assert pipeline.supports_step_execution is True
+        assert supports_step_execution(pipeline) is True
+        assert isinstance(pipeline, SupportsStepExecution) is True
+
+    def test_wan22_prepare_encode_populates_t2v_state(self):
+        pipeline = _make_wan22_step_test_pipeline()
+        state = _make_wan22_step_state()
+
+        prepared = pipeline.prepare_encode(state)
+
+        assert prepared is state
+        assert state.prompt_embeds is not None
+        assert state.negative_prompt_embeds is not None
+        assert state.latents is not None
+        assert state.timesteps is not None
+        assert state.step_index == 0
+        assert state.scheduler is not pipeline.scheduler
+        assert state.scheduler.begin_index == 0
+        assert state.extra["guidance_low"] == 4.0
+        assert state.extra["guidance_high"] == 4.0
+        assert state.extra["output_type"] == "np"
+
+    def test_wan22_prepare_encode_rejects_image_conditioned_step_mode(self):
+        pipeline = _make_wan22_step_test_pipeline()
+        state = _make_wan22_step_state(
+            prompts=[
+                {
+                    "prompt": "A moving cat",
+                    "multi_modal_data": {"image": torch.zeros((3, 16, 16), dtype=torch.float32)},
+                }
+            ]
+        )
+
+        with pytest.raises(ValueError, match="supports T2V only"):
+            pipeline.prepare_encode(state)
+
+    def test_wan22_prepare_encode_resets_interrupt_flag(self):
+        pipeline = _make_wan22_step_test_pipeline()
+        pipeline._interrupt = True
+        state = _make_wan22_step_state()
+
+        pipeline.prepare_encode(state)
+
+        assert pipeline.interrupt is False
 
 
 @hardware_test(

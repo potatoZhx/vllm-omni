@@ -40,6 +40,63 @@
 - `batch_size > 1`
 - `generate_batch()` / multi-prompt / stage batch fast path
 
+## 0.1 `Wan22Pipeline` T2V Step Execution 增量更新
+
+> 对齐文档: `workplan/wan22_t2v_step_execution_minimal_landing_plan.md`
+>
+> 实施日期: `2026-04-08`
+
+本轮在不改 scheduler / engine / executor 主链路的前提下，完成了 `Wan22Pipeline` 的最小 step-execution MVP，对齐目标是让 `Wan2.2-T2V-A14B-Diffusers` 可以进入 `step_level_request_scheduler + diffusion_enable_step_chunk=True` 路径，而不再在 worker 初始化阶段因 unsupported contract 失败。
+
+已完成改动:
+
+- 在 `vllm_omni/diffusion/models/wan2_2/pipeline_wan2_2.py` 中为 `Wan22Pipeline` 增加 `supports_step_execution = True`
+- 新增 stepwise 四段式接口：
+  - `prepare_encode()`
+  - `denoise_step()`
+  - `step_scheduler()`
+  - `post_decode()`
+- 新增最小共享 helper：
+  - `_prepare_generation_context()`
+  - `_select_active_model()`
+  - `_decode_latents()`
+  - `_extract_request_inputs()`
+  - `_get_model_dtype()`
+- step mode 首版只支持 T2V：
+  - 若请求包含 image-conditioned 输入，`prepare_encode()` 会显式抛出
+    `Wan22Pipeline step execution currently supports T2V only.`
+- request-mode `forward()` 继续保留原有主路径，只抽取了少量共享 helper，避免本轮为了支持 step mode 而扩大 request-mode 回归面
+
+本轮未做:
+
+- `Wan22I2VPipeline` step mode
+- `Wan22TI2VPipeline` step mode
+- `Wan22Pipeline` image-conditioned step mode
+- benchmark 模板策略切换
+
+新增测试:
+
+- `test_wan22_supports_step_execution`
+- `test_wan22_prepare_encode_populates_t2v_state`
+- `test_wan22_prepare_encode_rejects_image_conditioned_step_mode`
+
+验证结果:
+
+- `pytest tests/diffusion/test_diffusion_step_pipeline.py -k "wan22 or qwen_image_supports_step_execution or load_model_rejects_unsupported_step_execution"`
+  - 结果: `5 passed`
+- `pytest tests/diffusion/test_diffusion_step_pipeline.py -m cpu`
+  - 结果: `10 passed, 3 deselected`
+- 全文件 `pytest tests/diffusion/test_diffusion_step_pipeline.py`
+  - 当前环境下有 `3` 个 hardware tests 失败
+  - 失败原因是 `current_omni_platform` 为 `UnspecifiedOmniPlatform`，调用 `get_device_count()` 时抛 `NotImplementedError`
+  - 该问题与本轮 `Wan22Pipeline` 修改无关，属于当前测试环境的 GPU 平台探测问题
+
+本轮结论:
+
+- `Wan22Pipeline` 已具备 T2V step-execution 最小 contract
+- worker 模型加载期不再需要因 `WanPipeline does not support that contract` 被动失败
+- 继续支持 image-conditioned Wan step mode 仍需 follow-up PR，首版不应扩大范围
+
 ## 1. 设计基线
 
 本轮实现严格按原方案的分层落地，而不是回退到 `v16-base` 的结构:
