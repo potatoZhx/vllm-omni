@@ -573,7 +573,7 @@ class OmniDiffusionConfig:
 
     def __post_init__(self):
         # TODO: remove hard code
-        initial_master_port = (self.master_port or 30005) + random.randint(0, 100)
+        initial_master_port = (self.master_port or 30005) + random.randint(0, 10000)
         self.master_port = self.settle_port(initial_master_port, 37)
 
         if isinstance(self.profiler_config, dict):
