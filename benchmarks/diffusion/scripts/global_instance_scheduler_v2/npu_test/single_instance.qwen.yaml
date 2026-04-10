@@ -1,0 +1,70 @@
+server:
+  host: 0.0.0.0
+  port: 8089
+  request_timeout_s: 600
+  instance_health_check_interval_s: 5.0
+  instance_health_check_timeout_s: 1.0
+scheduler:
+  tie_breaker: random
+  ewma_alpha: 0.2
+policy:
+  baseline:
+    algorithm: min_queue_length
+benchmark:
+  worker_ids:
+    - worker0
+  worker_ready_timeout_s: 1200
+  model: Qwen/Qwen-Image
+  backend: vllm-omni
+  task: t2i
+  dataset: random
+  random_request_config: >-
+    [
+      {"width":512,"height":512,"num_inference_steps":20,"weight":0.15},
+      {"width":768,"height":768,"num_inference_steps":20,"weight":0.25},
+      {"width":1024,"height":1024,"num_inference_steps":25,"weight":0.45},
+      {"width":1536,"height":1536,"num_inference_steps":35,"weight":0.15}
+    ]
+  max_concurrency: 200000
+  warmup_requests: 4
+  warmup_num_inference_steps: 1
+  warmup_request_config: >-
+    [
+      {"width":512,"height":512,"num_inference_steps":20},
+      {"width":768,"height":768,"num_inference_steps":20},
+      {"width":1024,"height":1024,"num_inference_steps":25},
+      {"width":1536,"height":1536,"num_inference_steps":35}
+    ]
+  auto_stop: true
+instances:
+  - id: worker0
+    endpoint: http://127.0.0.1:8001
+    instance_type: qwen-image
+    backends:
+      - vllm-omni
+      - openai
+    launch:
+      executable: vllm
+      model: Qwen/Qwen-Image
+      args:
+        - --omni
+        - --diffusion-scheduler-backend
+        - step_level_request_scheduler
+        - --diffusion-enable-step-chunk
+        - --instance-scheduler-policy
+        - sjf_aging_guarded_tail
+        - --ulysses-degree
+        - "1"
+        - --cfg-parallel-size
+        - "1"
+        - --vae-use-slicing
+        - --vae-use-tiling
+        - --num-weight-load-threads
+        - "4"
+      env:
+        ASCEND_RT_VISIBLE_DEVICES: "0"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - vllm serve Qwen/Qwen-Image --port {endpoint_port}

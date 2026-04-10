@@ -1,0 +1,116 @@
+server:
+  host: 0.0.0.0
+  port: 8089
+  request_timeout_s: 1800000
+  instance_health_check_interval_s: 5.0
+  instance_health_check_timeout_s: 1.0
+scheduler:
+  tie_breaker: random
+  ewma_alpha: 0.2
+policy:
+  baseline:
+    algorithm: short_queue_runtime
+benchmark:
+  worker_ids: [worker0,worker1]
+  worker_ready_timeout_s: 2400
+  model: Wan2.2-T2V-A14B-Diffusers
+  backend: v1/videos
+  task: t2v
+  dataset: random
+  random_request_config: >-
+    [
+      {"width":854,"height":480,"num_inference_steps":3,"num_frames":80,"fps":16,"weight":0.15},
+      {"width":854,"height":480,"num_inference_steps":4,"num_frames":120,"fps":24,"weight":0.25},
+      {"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16,"weight":0.6}
+    ]
+  max_concurrency: 8000000
+  warmup_requests: 3
+  warmup_num_inference_steps: 1
+  warmup_request_config: >-
+    [
+      {"width":854,"height":480,"num_inference_steps":3,"num_frames":80,"fps":16},
+      {"width":854,"height":480,"num_inference_steps":4,"num_frames":120,"fps":24},
+      {"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16}
+    ]
+  auto_stop: true
+instances:
+  - id: worker0
+    endpoint: http://127.0.0.1:8111
+    instance_type: wan2_2_t2v
+    backends:
+      - v1/videos
+      - openai
+    launch:
+      executable: vllm
+      model: Wan2.2-T2V-A14B-Diffusers
+      args:
+        - --omni
+        - --diffusion-scheduler-backend
+        - step_level_request_scheduler
+        - --diffusion-enable-step-chunk
+        - --instance-scheduler-policy
+        - sjf_aging_guarded_tail
+        - --num-gpus
+        - "4"
+        - --tensor-parallel-size
+        - "1"
+        - --usp
+        - "2"
+        - --ring
+        - "1"
+        - --cfg-parallel-size
+        - "2"
+        - --use-hsdp
+        - --hsdp-replicate-size
+        - "1"
+        - --num-weight-load-threads
+        - "8"
+        - --vae-patch-parallel-size
+        - "4"
+      env:
+        ASCEND_RT_VISIBLE_DEVICES: "0,1,2,3"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - vllm serve Wan2.2-T2V-A14B-Diffusers --port {endpoint_port}
+  - id: worker1
+    endpoint: http://127.0.0.1:8112
+    instance_type: wan2_2_t2v
+    backends:
+      - v1/videos
+      - openai
+    launch:
+      executable: vllm
+      model: Wan2.2-T2V-A14B-Diffusers
+      args:
+        - --omni
+        - --diffusion-scheduler-backend
+        - step_level_request_scheduler
+        - --diffusion-enable-step-chunk
+        - --instance-scheduler-policy
+        - sjf_aging_guarded_tail
+        - --num-gpus
+        - "4"
+        - --tensor-parallel-size
+        - "1"
+        - --usp
+        - "2"
+        - --ring
+        - "1"
+        - --cfg-parallel-size
+        - "2"
+        - --use-hsdp
+        - --hsdp-replicate-size
+        - "1"
+        - --num-weight-load-threads
+        - "8"
+        - --vae-patch-parallel-size
+        - "4"
+      env:
+        ASCEND_RT_VISIBLE_DEVICES: "4,5,6,7"
+    stop:
+      executable: pkill
+      args:
+        - -f
+        - vllm serve Wan2.2-T2V-A14B-Diffusers --port {endpoint_port}
