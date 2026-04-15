@@ -389,7 +389,15 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
             "request_id": "req-video-1",
         },
     )
+    snapshot_after_create = app.state.runtime_state_store.snapshot()["worker-0"]
+    assert snapshot_after_create.inflight == 1
+    assert snapshot_after_create.outstanding_runtime_s == pytest.approx(2.4)
+
     status_response = client.get("/v1/videos/video-1")
+    snapshot_after_completed = app.state.runtime_state_store.snapshot()["worker-0"]
+    assert snapshot_after_completed.inflight == 0
+    assert snapshot_after_completed.outstanding_runtime_s == pytest.approx(0.0)
+
     content_response = client.get("/v1/videos/video-1/content")
     delete_response = client.delete("/v1/videos/video-1")
     missing_after_delete = client.get("/v1/videos/video-1")
@@ -412,6 +420,73 @@ def test_videos_success_sets_route_headers_and_state(tmp_path, monkeypatch):
         ("DELETE", "/v1/videos/video-1", ""),
     ]
     assert app.state.runtime_state_store.snapshot()["worker-0"].inflight == 0
+
+
+def test_video_delete_releases_pending_runtime_reservation(tmp_path, monkeypatch):
+    config = _write_config(
+        tmp_path / "scheduler.yaml",
+        """
+        server:
+          request_timeout_s: 2
+          instance_health_check_interval_s: 100
+        instances:
+          - id: worker-0
+            endpoint: http://127.0.0.1:9001
+            backends: [v1/videos]
+        """,
+    )
+    app = create_app(config)
+
+    def _fake_proxy(endpoint, upstream_path, body, headers, timeout_s):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert upstream_path == "/v1/videos"
+        assert timeout_s == 2
+        return type(
+            "_Resp",
+            (),
+            {
+                "status_code": 200,
+                "body": b'{"id": "video-delete", "status": "queued"}',
+                "headers": {"content-type": "application/json"},
+            },
+        )()
+
+    def _fake_proxy_with_method(endpoint, upstream_path, body, headers, timeout_s, *, method):
+        assert endpoint == "http://127.0.0.1:9001"
+        assert upstream_path == "/v1/videos/video-delete"
+        assert method == "DELETE"
+        return type(
+            "_Resp",
+            (),
+            {
+                "status_code": 200,
+                "body": b'{"id": "video-delete", "deleted": true}',
+                "headers": {"content-type": "application/json"},
+            },
+        )()
+
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request", _fake_proxy)
+    monkeypatch.setattr("vllm_omni.global_scheduler.server._proxy_request_with_method", _fake_proxy_with_method)
+
+    client = TestClient(app)
+    create_response = client.post(
+        "/v1/videos",
+        data={
+            "prompt": "city at sunset",
+            "estimated_cost_s": "4.5",
+            "request_id": "req-video-delete",
+        },
+    )
+    snapshot_after_create = app.state.runtime_state_store.snapshot()["worker-0"]
+    delete_response = client.delete("/v1/videos/video-delete")
+    snapshot_after_delete = app.state.runtime_state_store.snapshot()["worker-0"]
+
+    assert create_response.status_code == 200
+    assert snapshot_after_create.inflight == 1
+    assert snapshot_after_create.outstanding_runtime_s == pytest.approx(4.5)
+    assert delete_response.status_code == 200
+    assert snapshot_after_delete.inflight == 0
+    assert snapshot_after_delete.outstanding_runtime_s == pytest.approx(0.0)
 
 
 def test_video_job_followup_returns_404_for_unknown_job_id(tmp_path):

@@ -10,12 +10,14 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
 from threading import RLock
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+from urllib.parse import parse_qsl
 
 import httpx
 import uvicorn
@@ -70,6 +72,14 @@ class LifecycleOpResponse(BaseModel):
     process_state: str
     message: str
     log_path: str | None = None
+
+
+@dataclass(slots=True)
+class VideoJobRoute:
+    decision: RouteDecision
+    request_id: str
+    started_at: float
+    released: bool = False
 
 
 def _build_error_payload(code: str, message: str, request_id: str) -> dict[str, Any]:
@@ -165,7 +175,15 @@ def _extract_request_meta_from_payload(payload: dict[str, Any], request_id: str)
 
 
 def _extract_multipart_form_fields(body: bytes, content_type: str | None) -> dict[str, str]:
-    if not body or not content_type or "multipart/form-data" not in content_type.lower():
+    if not body or not content_type:
+        return {}
+
+    content_type_lower = content_type.lower()
+    if "application/x-www-form-urlencoded" in content_type_lower:
+        body_text = body.decode("utf-8", errors="replace")
+        return {key: value for key, value in parse_qsl(body_text, keep_blank_values=True)}
+
+    if "multipart/form-data" not in content_type_lower:
         return {}
 
     mime_message = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
@@ -352,7 +370,14 @@ def _parse_json_object(body: bytes) -> dict[str, Any] | None:
     return payload
 
 
-def _remember_video_job_route(app: FastAPI, video_id: str, decision: RouteDecision) -> None:
+def _remember_video_job_route(
+    app: FastAPI,
+    video_id: str,
+    decision: RouteDecision,
+    *,
+    request_id: str,
+    started_at: float,
+) -> None:
     sticky_decision = RouteDecision(
         instance_id=decision.instance_id,
         endpoint=decision.endpoint,
@@ -360,10 +385,14 @@ def _remember_video_job_route(app: FastAPI, video_id: str, decision: RouteDecisi
         score=0.0,
     )
     with app.state.video_job_routes_lock:
-        app.state.video_job_routes[video_id] = sticky_decision
+        app.state.video_job_routes[video_id] = VideoJobRoute(
+            decision=sticky_decision,
+            request_id=request_id,
+            started_at=started_at,
+        )
 
 
-def _lookup_video_job_route(app: FastAPI, video_id: str) -> RouteDecision | None:
+def _lookup_video_job_route(app: FastAPI, video_id: str) -> VideoJobRoute | None:
     with app.state.video_job_routes_lock:
         return app.state.video_job_routes.get(video_id)
 
@@ -371,6 +400,33 @@ def _lookup_video_job_route(app: FastAPI, video_id: str) -> RouteDecision | None
 def _forget_video_job_route(app: FastAPI, video_id: str) -> None:
     with app.state.video_job_routes_lock:
         app.state.video_job_routes.pop(video_id, None)
+
+
+def _release_video_job_runtime(
+    app: FastAPI,
+    video_id: str,
+    *,
+    ok: bool,
+    latency_s: float | None = None,
+) -> bool:
+    with app.state.video_job_routes_lock:
+        route = app.state.video_job_routes.get(video_id)
+        if route is None or route.released:
+            return False
+        route.released = True
+        decision = route.decision
+        request_id = route.request_id
+        started_at = route.started_at
+
+    if latency_s is None:
+        latency_s = time.monotonic() - started_at
+    app.state.runtime_state_store.on_request_finish(
+        decision.instance_id,
+        latency_s=latency_s,
+        ok=ok,
+        request_id=request_id,
+    )
+    return True
 
 
 async def _open_streaming_upstream(
@@ -838,8 +894,8 @@ def create_app(
         forget_on_success: bool = False,
     ) -> Response:
         request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
-        decision = _lookup_video_job_route(app, video_id)
-        if decision is None:
+        job_route = _lookup_video_job_route(app, video_id)
+        if job_route is None:
             return JSONResponse(
                 status_code=404,
                 content=_build_error_payload(
@@ -848,6 +904,7 @@ def create_app(
                     request_id=request_id,
                 ),
             )
+        decision = job_route.decision
 
         current_config = getattr(app.state, "global_scheduler_config", config)
         filtered_headers = _filter_forward_headers(request.headers)
@@ -870,10 +927,19 @@ def create_app(
             )
             for key, value in _select_upstream_response_headers(upstream_result.headers).items():
                 response.headers[key] = value
+            if method.upper() == "GET" and upstream_suffix == "":
+                video_payload = _parse_json_object(upstream_result.body)
+                status = video_payload.get("status") if video_payload is not None else None
+                if status in {"completed", "failed"}:
+                    _release_video_job_runtime(app, video_id, ok=status == "completed")
+            elif method.upper() == "GET" and upstream_suffix == "/content" and upstream_result.status_code == 200:
+                _release_video_job_runtime(app, video_id, ok=True)
             if forget_on_success:
+                _release_video_job_runtime(app, video_id, ok=False, latency_s=-1.0)
                 _forget_video_job_route(app, video_id)
         except UpstreamHTTPError as exc:
             if exc.status_code == 404:
+                _release_video_job_runtime(app, video_id, ok=False, latency_s=-1.0)
                 _forget_video_job_route(app, video_id)
             response = JSONResponse(
                 status_code=exc.status_code,
@@ -1169,6 +1235,7 @@ def create_app(
         filtered_headers = _filter_forward_headers(request.headers)
 
         ok = False
+        release_on_exit = True
         try:
             upstream_result = await asyncio.to_thread(
                 _proxy_request,
@@ -1188,7 +1255,14 @@ def create_app(
             video_payload = _parse_json_object(upstream_result.body)
             video_id = video_payload.get("id") if video_payload is not None else None
             if isinstance(video_id, str) and video_id:
-                _remember_video_job_route(app, video_id, decision)
+                _remember_video_job_route(
+                    app,
+                    video_id,
+                    decision,
+                    request_id=request_id,
+                    started_at=started_at,
+                )
+                release_on_exit = False
             ok = True
         except UpstreamHTTPError as exc:
             response = JSONResponse(
@@ -1218,12 +1292,13 @@ def create_app(
                 ),
             )
         finally:
-            app.state.runtime_state_store.on_request_finish(
-                decision.instance_id,
-                latency_s=time.monotonic() - started_at,
-                ok=ok,
-                request_id=request_id,
-            )
+            if release_on_exit:
+                app.state.runtime_state_store.on_request_finish(
+                    decision.instance_id,
+                    latency_s=time.monotonic() - started_at,
+                    ok=ok,
+                    request_id=request_id,
+                )
 
         return _attach_route_headers(response, decision)
 
