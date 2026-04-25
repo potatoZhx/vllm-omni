@@ -28,6 +28,7 @@ benchmark:
   max_concurrency: 200000
   warmup_requests: 4
   warmup_num_inference_steps: 1
+  seed: 42
   warmup_request_config: >-
     [
       {"width":512,"height":512,"num_inference_steps":20},
@@ -35,6 +36,7 @@ benchmark:
       {"width":1024,"height":1024,"num_inference_steps":25},
       {"width":1536,"height":1536,"num_inference_steps":35}
     ]
+  save_output_dir: ""
   auto_stop: true
 instances:
   - id: worker0

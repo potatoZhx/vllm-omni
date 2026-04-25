@@ -90,7 +90,9 @@ class BenchmarkConfig(BaseModel):
     max_concurrency: int = Field(default=20, ge=1)
     warmup_requests: int = Field(default=0, ge=0)
     warmup_num_inference_steps: int = Field(default=1, ge=1)
+    seed: int | None = Field(default=None, ge=0)
     output_file: str | None = None
+    save_output_dir: str | None = None
     auto_stop: bool = True
 
     @field_validator("worker_ids")
@@ -141,6 +143,16 @@ class BenchmarkConfig(BaseModel):
                 "benchmark.dataset_path, benchmark.random_request_config, "
                 "benchmark.warmup_request_config, and benchmark.output_file cannot be empty"
             )
+        return value
+
+    @field_validator("save_output_dir")
+    @classmethod
+    def validate_save_output_dir(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            return None
         return value
 
 

@@ -165,15 +165,26 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
         ("BENCHMARK_DATASET_PATH", "dataset_path"),
         ("BENCHMARK_RANDOM_REQUEST_CONFIG", "random_request_config"),
         ("BENCHMARK_WARMUP_REQUEST_CONFIG", "warmup_request_config"),
+        ("BENCHMARK_SAVE_OUTPUT_DIR", "save_output_dir"),
     ]:
         value = options.get(env_name, "").strip()
         if value:
             benchmark[config_key] = value
 
+    save_output_dir = str(benchmark.get("save_output_dir", "")).strip()
+    if save_output_dir:
+        save_output_path = Path(save_output_dir)
+        if not save_output_path.is_absolute():
+            save_output_path = (base_config.parent / save_output_path).resolve()
+        benchmark["save_output_dir"] = str(save_output_path)
+    else:
+        benchmark.pop("save_output_dir", None)
+
     for env_name, config_key in [
         ("BENCHMARK_MAX_CONCURRENCY", "max_concurrency"),
         ("BENCHMARK_WARMUP_REQUESTS", "warmup_requests"),
         ("BENCHMARK_WARMUP_NUM_INFERENCE_STEPS", "warmup_num_inference_steps"),
+        ("BENCHMARK_SEED", "seed"),
     ]:
         value = options.get(env_name, "").strip()
         if value:
@@ -306,8 +317,9 @@ def resolve_benchmark_runtime(config_path: Path) -> dict[str, Any]:
         "max_concurrency": int(benchmark.get("max_concurrency", 20)),
         "warmup_requests": int(benchmark.get("warmup_requests", 0)),
         "warmup_num_inference_steps": int(benchmark.get("warmup_num_inference_steps", 1)),
+        "seed": int(benchmark["seed"]) if benchmark.get("seed") is not None else None,
         "output_file": resolve_config_path(benchmark.get("output_file")),
-        "save_output_dir": "",
+        "save_output_dir": resolve_config_path(benchmark.get("save_output_dir")),
     }
 
 
@@ -432,6 +444,7 @@ def build_benchmark_command(
     num_prompts = resolve_num_prompts(mode, rate, duration_s, fixed_num_prompts)
     run_duration = resolve_run_duration(mode, rate, duration_s, fixed_num_prompts)
     output_file = resolve_output_file(runtime["output_file"], rate, request_rates)
+    save_output_dir = runtime["save_output_dir"]
 
     print(
         f"[bench] start benchmark: mode={mode}, rate={rate}, "
@@ -468,8 +481,12 @@ def build_benchmark_command(
         cmd.extend(["--random-request-config", runtime["random_request_config"]])
     if runtime["warmup_request_config"]:
         cmd.extend(["--warmup-request-config", runtime["warmup_request_config"]])
+    if runtime["seed"] is not None:
+        cmd.extend(["--seed", str(runtime["seed"])])
     if output_file:
         cmd.extend(["--output-file", output_file])
+    if save_output_dir:
+        cmd.extend(["--save-output-dir", save_output_dir])
     return cmd
 
 
@@ -583,9 +600,11 @@ def collect_case_options() -> dict[str, str]:
         "BENCHMARK_DATASET": env_str("BENCHMARK_DATASET"),
         "BENCHMARK_DATASET_PATH": env_str("BENCHMARK_DATASET_PATH"),
         "BENCHMARK_RANDOM_REQUEST_CONFIG": env_str("BENCHMARK_RANDOM_REQUEST_CONFIG"),
+        "BENCHMARK_SAVE_OUTPUT_DIR": env_str("BENCHMARK_SAVE_OUTPUT_DIR"),
         "BENCHMARK_MAX_CONCURRENCY": env_str("BENCHMARK_MAX_CONCURRENCY"),
         "BENCHMARK_WARMUP_REQUESTS": env_str("BENCHMARK_WARMUP_REQUESTS"),
         "BENCHMARK_WARMUP_NUM_INFERENCE_STEPS": env_str("BENCHMARK_WARMUP_NUM_INFERENCE_STEPS"),
+        "BENCHMARK_SEED": env_str("BENCHMARK_SEED"),
     }
 
 
