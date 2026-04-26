@@ -87,6 +87,8 @@ class BenchmarkConfig(BaseModel):
     dataset_path: str | None = None
     random_request_config: str | None = None
     warmup_request_config: str | None = None
+    arrival_seed: int = Field(default=42, ge=0)
+    random_request_seed: int = Field(default=42, ge=0)
     max_concurrency: int = Field(default=20, ge=1)
     warmup_requests: int = Field(default=0, ge=0)
     warmup_num_inference_steps: int = Field(default=1, ge=1)

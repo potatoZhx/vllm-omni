@@ -184,6 +184,8 @@ def generate_config(base_config: Path, generated_config: Path, options: dict[str
         ("BENCHMARK_MAX_CONCURRENCY", "max_concurrency"),
         ("BENCHMARK_WARMUP_REQUESTS", "warmup_requests"),
         ("BENCHMARK_WARMUP_NUM_INFERENCE_STEPS", "warmup_num_inference_steps"),
+        ("BENCHMARK_ARRIVAL_SEED", "arrival_seed"),
+        ("BENCHMARK_RANDOM_REQUEST_SEED", "random_request_seed"),
         ("BENCHMARK_SEED", "seed"),
     ]:
         value = options.get(env_name, "").strip()
@@ -314,6 +316,8 @@ def resolve_benchmark_runtime(config_path: Path) -> dict[str, Any]:
         "dataset_path": resolve_config_path(benchmark.get("dataset_path")),
         "random_request_config": normalize_shell_value(benchmark.get("random_request_config")),
         "warmup_request_config": normalize_shell_value(benchmark.get("warmup_request_config")),
+        "arrival_seed": int(benchmark.get("arrival_seed", 42)),
+        "random_request_seed": int(benchmark.get("random_request_seed", 42)),
         "max_concurrency": int(benchmark.get("max_concurrency", 20)),
         "warmup_requests": int(benchmark.get("warmup_requests", 0)),
         "warmup_num_inference_steps": int(benchmark.get("warmup_num_inference_steps", 1)),
@@ -470,6 +474,8 @@ def build_benchmark_command(
         str(runtime["max_concurrency"]),
         "--request-rate",
         rate,
+        "--arrival-seed",
+        str(runtime["arrival_seed"]),
         "--warmup-requests",
         str(runtime["warmup_requests"]),
         "--warmup-num-inference-steps",
@@ -479,6 +485,7 @@ def build_benchmark_command(
         cmd.extend(["--dataset-path", runtime["dataset_path"]])
     if runtime["random_request_config"]:
         cmd.extend(["--random-request-config", runtime["random_request_config"]])
+        cmd.extend(["--random-request-seed", str(runtime["random_request_seed"])])
     if runtime["warmup_request_config"]:
         cmd.extend(["--warmup-request-config", runtime["warmup_request_config"]])
     if runtime["seed"] is not None:
@@ -600,6 +607,8 @@ def collect_case_options() -> dict[str, str]:
         "BENCHMARK_DATASET": env_str("BENCHMARK_DATASET"),
         "BENCHMARK_DATASET_PATH": env_str("BENCHMARK_DATASET_PATH"),
         "BENCHMARK_RANDOM_REQUEST_CONFIG": env_str("BENCHMARK_RANDOM_REQUEST_CONFIG"),
+        "BENCHMARK_ARRIVAL_SEED": env_str("BENCHMARK_ARRIVAL_SEED"),
+        "BENCHMARK_RANDOM_REQUEST_SEED": env_str("BENCHMARK_RANDOM_REQUEST_SEED"),
         "BENCHMARK_SAVE_OUTPUT_DIR": env_str("BENCHMARK_SAVE_OUTPUT_DIR"),
         "BENCHMARK_MAX_CONCURRENCY": env_str("BENCHMARK_MAX_CONCURRENCY"),
         "BENCHMARK_WARMUP_REQUESTS": env_str("BENCHMARK_WARMUP_REQUESTS"),

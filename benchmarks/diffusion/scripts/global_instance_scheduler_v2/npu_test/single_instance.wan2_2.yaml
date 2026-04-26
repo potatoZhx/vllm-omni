@@ -24,6 +24,8 @@ benchmark:
       {"width":854,"height":480,"num_inference_steps":4,"num_frames":120,"fps":24,"weight":0.25},
       {"width":1280,"height":720,"num_inference_steps":6,"num_frames":80,"fps":16,"weight":0.6}
     ]
+  arrival_seed: 42
+  random_request_seed: 42
   max_concurrency: 8000000
   warmup_requests: 3
   warmup_num_inference_steps: 1

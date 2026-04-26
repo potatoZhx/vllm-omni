@@ -163,10 +163,14 @@ benchmarks/diffusion/scripts/global_instance_scheduler_v2/run_case.sh
 - `dataset`：`random`、`trace` 或 `vbench`
 - `dataset_path`：可选的数据集路径
 - `random_request_config`：`dataset=random` 时的请求混合分布
+- `arrival_seed`：请求到达过程（Poisson inter-arrival）的随机种子
+- `random_request_seed`：`random_request_config` 抽样的随机种子
+- `seed`：图像 / 视频生成本身使用的随机种子
 - `warmup_requests`：warmup 请求数量
 - `warmup_num_inference_steps`：warmup 的兜底 steps
 - `warmup_request_config`：可选 warmup profile 列表
 - `max_concurrency`：客户端侧 in-flight 请求上限
+- `save_output_dir`：可选，保存 benchmark 导出图片 / 视频的目录
 - metrics 输出路径由 orchestrator 接管，不建议在基础 YAML 中维护
 
 `instances[*]` 中常用字段：
@@ -235,7 +239,11 @@ benchmark 覆盖变量：
 - `BENCHMARK_DATASET`
 - `BENCHMARK_DATASET_PATH`
 - `BENCHMARK_RANDOM_REQUEST_CONFIG`
+- `BENCHMARK_ARRIVAL_SEED`
+- `BENCHMARK_RANDOM_REQUEST_SEED`
+- `BENCHMARK_SEED`
 - `BENCHMARK_WARMUP_REQUEST_CONFIG`
+- `BENCHMARK_SAVE_OUTPUT_DIR`
 - `BENCHMARK_MAX_CONCURRENCY`
 - `BENCHMARK_WARMUP_REQUESTS`
 - `BENCHMARK_WARMUP_NUM_INFERENCE_STEPS`

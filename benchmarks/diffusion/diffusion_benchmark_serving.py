@@ -569,7 +569,7 @@ class RandomDataset(BaseDataset):
                 {k: v for k, v in p.items() if k != "weight"} for p in self.random_request_config
             ]
 
-            seed = getattr(args, "random_request_seed", 42)
+            seed = args.random_request_seed
             self._rng = random.Random(seed)
 
             self._sampled_requests = self._rng.choices(
@@ -1502,6 +1502,15 @@ if __name__ == "__main__":
             "Example: "
             '[{"width":512,"height":512,"num_inference_steps":20,"weight":0.15},'
             '{"width":768,"height":768,"num_inference_steps":20,"weight":0.85}]'
+        ),
+    )
+    parser.add_argument(
+        "--random-request-seed",
+        type=int,
+        default=42,
+        help=(
+            "Random seed used to sample request profiles from --random-request-config. "
+            "This is independent from --seed, which controls generation randomness."
         ),
     )
 
